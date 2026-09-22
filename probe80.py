@@ -90,7 +90,6 @@ def build_child(*, planner, max_steps: int, engine) -> tuple[AgentLoop, ChildRun
 
     from packages.agent_domain.intelligence.state import State
     from packages.execution_kernel import Scheduler, Worker, WorkerConfig
-    from packages.execution_kernel.tool import ToolCallExecutor  # noqa
 
     from tests.unit.test_agent_loop import LoopTestBase
 

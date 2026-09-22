@@ -1,4 +1,4 @@
-# AgentOS — 企业级 Agent 平台架构（v2.1.67 最终冻结版）
+# AgentOS — 企业级 Agent 平台架构（v2.1.72 最终冻结版）
 
 > 项目定位：Enterprise Agent Harness & Runtime Platform
 > 架构状态：Final / Frozen
@@ -837,6 +837,150 @@ v2.1.65 相对 v2.1.64：**M77（带着没被处理的失败，不许宣布完�
 
 顺带它给 M76 修好的那条 REPLAN 边带来了**第一个真正的触发条件**：
 在此之前没有任何引擎会产出 REPLAN，那条边只是"通了"而已。详见 §114。
+
+---
+
+v2.1.72 相对 v2.1.71：**M84（那条"偶发红"根本不是偶发）落地后的回写 ——
+它治的是**故障排查本身**的一个洞。**
+
+M83 收尾时集成本层出现过"6 次跑、2 次各红 1 条、且不重名"的记录，
+被当成时序不稳定登记了下来。这一轮按纪律先把**完整输出落盘**再连跑：
+**13 次全绿、2613 条用例无一失败**（9 次串行 + 4 次并发双跑）。
+
+撞不出来之后换方向去查"这个红有没有被记录过" —— 结果它不是新问题，
+而是 **M66 那轮已经诊断过、写了任务卡、却没写进基线也没固化成测试**的旧账：
+
+> 唯一红的那条是 `TheProcessServesTest.test_the_version_it_serves_is_the_frozen_baseline`，
+> 报 `'2.1.53' != '2.1.54'`。
+
+根因是**升版是个多步的手动动作**：冻结基线文档要改名（`_v2.1.71_`），
+`apps/api/app.py` 的 `version=` 要跟上，`deploy/k8s/` 14 处镜像 tag 要跟上。
+而集成层有一条断言是**跨文件**的 —— 真 uvicorn 报 `app.py` 的值，
+`_frozen_baseline_version()` 读**文档文件名**。停在两步之间跑测试，
+两边当场对不上。
+
+它显得"偶发"，只因为**只在两步之间跑才红**。被测代码一秒都没坏过。
+
+本轮实证（A/B 都拿到了）：
+
+    态 A  app.py=2.1.70（其他不动）  → AssertionError: '2.1.70' != '2.1.71'
+    态 B  恢复 2.1.71                → OK
+
+新增 **PR-33**：版本号的三处落点必须**同源**，不允许存在"只有部分落点
+更新"的中间状态。中间状态一旦被允许，它产出的红灯就**指向错的地方**
+（PR-19 反过来用）。补两条单测把三处落点都钉住（不依赖 PG，纯文本一致性
+不该被数据库是否在线绑架）。详见 §121。
+
+---
+
+v2.1.71 相对 v2.1.70：**M83（取消不是"什么都不知道"）落地后的回写 ——
+它验的是 M82 里一句没有实证的判断。**
+
+M82 把 `unknown` 那扇门治了，但文档对 `cancelled` 只写了一句判断：
+
+> S-15 说取消是父侧主动的选择，父 Run 自己知道，
+> 不构成"被隐瞒的失败"。
+
+**判断不能当结论用。** 这一轮把父子两侧关于"取消"的信息都撞了一遍
+（`probe83.py`），分两件事测：
+
+    case A  父 Run 等不下去，自己取消子 Run
+    case B  子 Run 被别人取消，父 Run 只是收到通知
+
+探针实测：两者留下的记录**完全一样** —— 因为**能走到这里的只有 A**
+（`child_cancelled()` 的调用者是父侧）。"子 Run 被别人取消、父 Run 事后
+才知道"是**还没有实现的能力**，不是一个正在说谎的既有路径。
+所以这里**不该发明**一个"父侧主动 vs 被动"的区分 ——
+那会是一个描述不了任何真实路径的字段。
+
+新增 **I-15**：三个终态在父侧的**信息量**不同，必须分得开 ——
+`failed`（它失败了）／`cancelled`（**为什么被取消**，谁、什么理由）／
+`unknown`（**什么都不知道**）。取消不产生 `execution_failed` 是对的，
+但它必须在父侧留下**可读的原因**，且**不能被记成"不知道"**（那是 D-19 的形状）。
+详见 §120。
+
+---
+
+v2.1.70 相对 v2.1.69：**M82（委派没有回音的父 Run，不许宣布完成）落地后的回写 ——
+它补的是 M81 自己留下的另一扇门。**
+
+M81 只治了 `failed` 一扇门，刻意留着 `cancelled` 与 `unknown` 没治。
+按 §0.4 回头查它们说不说谎 —— 探针实测（`probe82.py`）：
+
+    step 2  → 等到上限、不再等（`child_wait_expired`）
+    kernel.status_of(父委派 Execution) = FAILED      ← 确实被判死了
+    State: plan.created / child_run.spawned / child_run.unknown
+    I-11 判据 _failures_since_last_plan() = 0        ← 数不到
+    step 3  → FINISHED   status=completed
+    账本     {'status': 'completed', 'reason': 'goal reached'}
+
+**与 M81 一字不差的同一句话，只是换了一扇门进来。**
+
+难处在于这条 Execution 进 State 时面临两个都不对的选项：
+写 `execution_failed` 违反 PR-19（那条子 Run 可能正在某个 worker 上跑得
+好好的，"判死"是**我们不再等**，不是"它做不成"）；干脆不写就是上面这一幕。
+所以要第三个 kind：**`execution_unresolved`** —— 它必须进 State，
+但不许冒充失败。
+
+新增 **I-14**：查不出来的失败也算。I-11 的判据从"数 `execution_failed`"
+扩成"**这一步没有被证明成功**"：证明不了的与证明失败的，一样不该被当成功汇报。
+`cancelled` 仍不在此列 —— S-15 说取消不是失败，它是**父侧主动的选择**，
+父 Run 自己知道，不构成"被隐瞒的失败"。详见 §119。
+
+---
+
+v2.1.69 相对 v2.1.68：**M81（委派失败了的父 Run，不许宣布完成）落地后的回写 ——
+它补的是 I-11 自己留下的一道后门。**
+
+按 §0.4 那条回头问了一句：**I-11 刚落地，它自己引入的机制能不能绕过它？**
+探针实测（`probe81.py`）：
+
+    step 1  → WAITING_CHILD
+    step 2  → 子 Run 失败交回（父 Run 那条委派 Execution 真的进了 FAILED）
+    父 State: plan.created / child_run.spawned / child_run.finished
+    I-11 判据 _failures_since_last_plan() = 0        ← 数不到
+    step 3  → FINISHED   status=completed
+    账本     {'status': 'completed', 'reason': 'goal reached'}
+
+**一个委派失败了的父 Run 被宣布 completed，账本上还写着 goal reached。**
+形状是"同一个事实，两条路给出两个答案"：正常执行失败时 Loop 会写
+`execution.failed`，而委派这条路不经 Worker，没人写 ——
+State 上只有 `child_run.finished`（那说的是"子 Run 完事了"，不是"这条
+execution 失败了"）。I-11 从 State 读，于是读不到。
+
+新增 **I-13**：委派失败就是一次执行失败，必须进 State，且绑定那条真实的
+委派 Execution（I-6）。只治 `failed`：取消不是失败（S-15），
+`unknown` 是"不知道做没做成"（D-19），算成失败会说过头。详见 §118。
+
+---
+
+v2.1.68 相对 v2.1.67：**M80（子 Run 的死因必须跟着结果一起交给父 Run）落地后的回写 ——
+它补的是 B-12 自己留下的一个洞。**
+
+B-12 让子 Run 的终态带上了死因，于是去问了一句"父 Run 听到的是不是它"，
+探针实测（`probe80.py`）：
+
+    === A 子 Run 预算耗尽 ===
+      子 Run 真正的死因   step budget exhausted (2/2)
+      父 Run 会听到的     child run failed: execution exec_xxx attempt#1
+                          COMPLETED (completed)
+
+    === B 子 Run 换不出新计划 ===
+      子 Run 真正的死因   replan produced a plan with the same shape ...
+      父 Run 会听到的     child run failed: plan invalidated; replanning
+
+A 那条最刺眼：**不是说漏了，是说反了** —— 父 Run 被告知"一个已 COMPLETED
+的执行导致了失败"。原因是 `summary` 是"最后一条 observation"，
+它是**过程**不是**结论**；而预算耗尽恰恰不产生 observation，
+于是最后那句自言自语是上一步的，且方向相反。
+
+它比空洞 238 强在**有真实消费者**：`_reason()` 的产物就是父 State 里
+`child_run.finished` 的 `content["error"]`，是父 Agent 决定下一步时唯一能
+看到的东西 —— 而 I-12 要求重规划**换一条路**，理由错了就换不对路。
+
+新增 **D-37**：子 Run 交给父 Run 的失败原因，必须是子 Run 真正的死因；
+死因缺失时说"没记录到"，不许拿 summary 顶替。`reason` 同样是**必填关键字参数**。
+详见 §117。
 
 ---
 
@@ -3875,6 +4019,10 @@ AgentOS Scheduler ≠ Kubernetes Scheduler
 | M47 | Cancellation Events | **`run_cancellations` 表的三条写路径（request / settle / abandon）全部不发事件**，与 M40 治过的 `compensations` 是同一族病（X-3）。照 M40 的模式：新增三个事件常量 + `cancellation_events.py` + 接进内存和 PG 两个 store 的全部写路径。空洞 225 原始登记"永远 pending"已被 M37（R-11 等待上限）治掉，这一轮治的是"改了 PG 没发事件"（**已在 v2.1.36 落地，见 §85**） |
 | M78 | A Replan Must Actually Change The Plan | **重规划必须真的换一份计划**：M77 落地后探针发现，重规划拿到的计划 `plan_id` 每次都新、但**形状一模一样**（节点一个没变）—— 系统在"换一条路"，换来的路和原来那条是同一条。★ 更要命的是它把上一轮的 I-11 洗白了：I-11 只看"上次规划以来"，重规划一次计数就归零 → **一个失败过的 Run 多花一轮重规划就又"成功"了**。新增 **I-12**：换不出形状不同的计划 → 判 FAILED，不许拿同一份计划再撞一次墙。判据比**形状**不比对象（`plan_id` 必然不同，比对象等于宣布"每次都换了"）。⭐ 顺带修掉一个测试设计问题：M76 那两条 I-10 用例原本用恒定 Planner，I-12 加上之后它们**测的是 I-12 而不是 I-10** —— 已改用 VaryingPlanner（**已在 v2.1.66 落地，见 §115**） |
 | M79 | A Terminal State Must Say Why | **终态必须带上原因**：S-7 把 FAILED 收成唯一出口是对的，代价是四种不同的死法（预算耗尽 / 换不出新计划 / 连续被拒 / …）出去之后长得一模一样 —— 探针实测两条死法的 `run.finished` payload **完全相同**。★ 而那段 docstring 自己写着这条 trace 是谁宣布了这个 Run 结束的**唯一证据**，唯一证据里恰恰没有最关键的那个字：为什么。运维手上只有账本，`loop.history` 与 `last_outcome` 只在内存、快照不带，进程一死就蒸发。新增 **B-12**：原因落在 `run.finished` 的 payload 上，且 `reason` 是**必填关键字参数** —— 新增出口时不写原因就构造不出这次调用（默认值会让忘了说为什么看起来像没什么可说的）。（**已在 v2.1.67 落地，见 §116**） |
+| M80 | A Child Run's Cause Must Travel With Its Result | **子 Run 的死因必须跟着结果一起交给父 Run**：B-12 给子 Run 的终态加上了死因，但那个原因只落在子 Run 自己的 trace 上，没跟着事件走 —— 探针实测父 Run 听到的是子 Run **最后一句自言自语**（`summary`），而预算耗尽那条恰恰是反的：`child run failed: execution exec_xxx attempt#1 COMPLETED (completed)`。★ 不是说漏了，是**说反了**。它有真实消费者：`_reason()` 的产物就是父 State 里 `child_run.finished` 的 `content["error"]`，父 Agent 唯一能看到的线索；I-12 要求重规划换一条路，理由错了就换不对路。新增 **D-37**：`reason` 必填关键字参数，死因跟着 `result` 走；死因缺失时必须说"没记录到"，**不许拿 summary 顶替**（那是用过程冒充结论）。（**已在 v2.1.68 落地，见 §117**） |
+| M81 | A Run Whose Delegation Failed Must Not Announce Completion | **委派失败了的父 Run，不许宣布完成**：按 §0.4 回头查"刚落地的 I-11 能不能被绕过"，探针实测一个委派失败的父 Run 照常 FINISH → `completed`，账本写着 `goal reached`。★ 形状是**同一个事实两条路给出两个答案**：那条委派 Execution 真的被判成了 FAILED，但委派路径不经 Worker，没人给它写 `execution.failed` observation —— State 上只有 `child_run.finished`（说的是"子 Run 完事了"），I-11 从 State 读于是读不到。新增 **I-13**：委派失败必须进 State，且绑定真实 Execution（I-6）。只治 `failed`（取消不是失败 S-15；`unknown` 是不知道 D-19）。⭐ 测试设计上踩到一处：不能断言"最终不是 completed" —— I-11 按上次规划划界，换了形状不同的计划之后完成是**设计允许的**；真正的可观测后果是**不能从委派失败直接走到 FINISH**。详见 §118 |
+| M82 | A Voice-Less Delegation Must Not Announce Completion | **委派没有回音的父 Run，不许宣布完成**：M81 只治了 `failed`，回头查 `unknown` 那扇门 —— 探针实测委派等到上限、Kernel 那条 Execution 确实被判死（不判死它永远挂着），但 State 上只有 `child_run.unknown`，I-11 判据 = 0 → 父 Run 宣布 `completed` / `goal reached`。**与 M81 一字不差的同一句话，换了一扇门进来。**★ 难处：写 `execution_failed` 违反 PR-19（那条子 Run 可能正在别的 worker 上跑得好好的，"判死"是**我们不再等**，不是"它做不成"），不写就是上面这一幕 ⇒ 必须要有第三个 kind。新增 **I-14**：`execution_unresolved` 必须进 State 但不许冒充失败；I-11 判据扩成"**这一步没有被证明成功**"（证明不了的与证明失败的同等对待）。`cancelled` 仍不在此列 —— S-15 说取消是父侧主动选择，父 Run 自己知道，不构成"被隐瞒的失败"。⭐ 变红验证第一轮 M4 没红，漏在**测试自己**：reducer 末尾有兜底分支，只断言 `obs.kind` 存在是守不住分支的 —— 要断言"它把这一步当结束了"（从 `active_tasks` 摘掉、进 `completed_tasks`）。详见 §119 |
+| M84 | The Flaky Red Was Never Flaky | **那条「偶发红」根本不是偶发**：M83 收尾把集成本层「6 次跑、2 次各红 1 条」当成时序不稳定登记了下来。本轮按纪律**完整输出落盘**再连跑 —— 9 次串行 + 4 次并发双跑：**13 次全绿、2613 条用例无一失败**。撞不出来之后换方向翻**任务账本**：它不是新问题，而是 M66 那轮已经诊断过（`'2.1.53' != '2.1.54'`）、**写进了任务卡却没写进基线也没固化成测试**的旧账。根因是升版要动**三处**（文档名 / `app.py` / k8s 14 处 tag），而集成那条断言是**跨文件**的：左边来自 `app.py`，右边来自文档**文件名** —— 停在两步之间跑就红。**被测代码一秒都没坏过**，那次红灯指向了一个不存在的问题。新增 **PR-33**（三处落点必须同源，不许有中间状态），补两条**不依赖 PG** 的守卫，3 变异全红。详见 §121 |
 
 | M77 | No Completion With An Unhandled Failure | **带着没被处理的失败，不许宣布完成**：探针实测——一个工具调用失败（`StepOutcome.FAILED`）之后，引擎脚本用完返回 FINISH，于是 `agent_run` 变成 **completed**；而失败证据就躺在 `state.variables["result:…"]` 里没人看。引擎看不见失败，但**宣布终态的是 Runtime**（B-7），于是"这条 Run 成功了"是 Runtime 说的假话。新增 **I-11**：完成前必须没有"自上次规划以来未被处理的失败"，有则 REPLAN（不是 FINISH）；重规划吃预算（I-10）→ 救不回来的走到 FAILED，**既不谎报成功也不空转**。判据钉在 Loop（不是引擎）—— 换一个笨引擎谎言也不回来。⭐ 它同时给 M76 修好的 REPLAN 边带来了**第一个真正的触发条件**（**已在 v2.1.65 落地，见 §114**） |
 | M76 | Replanning Is A Real Edge | **REPLAN 机制齐全但从没人走过**：`ActionType.REPLAN` / `PLAN_INVALIDATED` / `StepOutcome.REPLANNED` / `task_factory` 全都写好了，但没有任何 DecisionEngine 产出它，也没有任何测试触发它 —— 而 `derive.py` 拿「Agent 可能还要 REPLAN」当作 **B-7 的一条论据**（一条不变量的论据依赖一个从未接线的机制）。新增 `tests/unit/test_replan.py`（7 条）证明这条边通：失效 Observation → `current_plan` 清空 → **下一轮真的重新规划**。⭐ 补的时候抓到真 bug：**重规划不吃预算** —— `steps += 1` 只在执行完成那条路径上，于是 `steps >= budget` 永远不成立，一个一直 REPLAN 的引擎会让 Run **永远跑下去**，既不终止也不报错（L-7 同族）。新增 **I-10：重规划必须吃预算**（**已在 v2.1.64 落地，见 §113**） |
@@ -12979,3 +13127,613 @@ def _declare_terminal(self, status: AgentRunStatus, *, reason: str) -> None:
 再一句：**内存里分得清，不等于账本上分得清。**
 `last_outcome` 一直在那儿，而且一直是准的 ——
 准到让人以为"为什么失败"这个问题已经有答案了。
+
+---
+
+## §117　M80 · 子 Run 的死因必须跟着结果一起走
+
+> 上一轮冻结的是：*一条宣布结束的记录，必须说清为什么结束。*
+> 这一轮冻结的是：**那个"为什么"必须真的到达听它的人。**
+
+### 117.1　探针：父 Run 听到的是不是真因
+
+B-12 落地之后，子 Run 的终态已经带上了死因。于是把问题往前推一格：
+**父 Run 听到的是不是它？** 造一条被登记过的子 Run，让它死于预算耗尽，
+然后分别读"子 Run 自己账本上的死因"和"父 Run 会听到的那句话"（`probe80.py`）：
+
+    === A 子 Run 预算耗尽 ===
+      子 Run 真正的死因（B-12 写在 trace 上）:
+           {'status': 'failed', 'reason': 'step budget exhausted (2/2)'}
+      事件 payload['result']:
+           {'status': 'failed', 'steps': 2,
+            'summary': 'execution exec_xxx attempt#1 COMPLETED (completed)'}
+      父 Run 会听到的 reason:
+           'child run failed: execution exec_xxx attempt#1 COMPLETED (completed)'
+
+    === B 子 Run 换不出新计划 ===
+      子 Run 真正的死因:
+           {'status': 'failed', 'reason': 'replan produced a plan with the
+            same shape as the invalidated one; no alternative path available'}
+      父 Run 会听到的 reason:
+           'child run failed: plan invalidated; replanning'
+
+两条都对不上。A 那条尤其严重。
+
+### 117.2　不是说漏了，是说反了
+
+`summary` 是子 Run **最后一条 observation** 的摘要 —— 它是**过程**，不是**结论**。
+两个方向都会错：
+
+| 真因 | 父 Run 听到 | 错在哪 |
+|---|---|---|
+| `step budget exhausted (2/2)` | `execution exec_xxx attempt#1 COMPLETED (completed)` | **说反了**：被告知"一个已完成的执行导致了失败" |
+| `replan produced a plan with the same shape` | `plan invalidated; replanning` | 听起来像**还在进行中**，而真实结局是这条路也走不通 |
+
+第一条之所以必然错，还有一层结构性原因：
+**预算耗尽恰恰不产生 observation**（就是空洞 238 的形状），
+于是"最后一条 observation"是**上一步**的，方向完全相反。
+
+### 117.3　它比空洞 238 强在哪：有真实消费者
+
+`ChildRunWaker._reason()` 的产物会写进父 State 那条 `child_run.finished`
+的 `content["error"]`，而这**是父 Agent 决定下一步怎么走时唯一能看到的东西**。
+
+I-12 要求重规划**换一条路**。理由错了就换不对路 ——
+父 Agent 以为"子任务其实完成了、只是整体失败"，和你告诉它"预算不够"，
+它接下来选的动作是完全不同的两条。
+
+空洞 238（`state.runtime_status` 说谎）之所以被否掉，正是因为它是
+**只写不读**的字段；这一条不一样，它有读者。
+
+### 117.4　D-37
+
+    D-37：子 Run 交给父 Run 的失败原因，必须是子 Run 真正的死因。
+
+两处改动，都走"必填关键字参数"这条路（与 B-12 同款理由）：
+
+```python
+# 发射侧：死因跟着 result 一起走
+def _emit_child_run_outcome(self, status: AgentRunStatus, *, reason: str) -> None:
+    result = {"status": ..., "steps": ..., "reason": reason, "summary": ...}
+
+# 消费侧：优先用 reason
+def _reason(self, handle: ChildRunHandle) -> str:
+    reason = str(result.get("reason") or "").strip()
+    if reason:
+        return f"child run {verb}: {reason}"
+    if summary:
+        return f"child run {verb} (cause not recorded; last observation: {summary})"
+    return f"child run {verb} (cause not recorded)"
+```
+
+**死因缺失时为什么不能退回 summary**：落库早于 D-37 的那批 `result`
+没有 `reason` 字段。这时把 summary 当死因说出去就是**编造** ——
+用一句过程描述冒充结论，而它恰恰可能是反的（117.2 第一条）。
+宁可少说，也要说清那句话是什么性质的。
+
+### 117.5　测试（9 条，`tests/unit/test_child_failure_reason.py`）
+
+| 用例 | 守的是什么 |
+|---|---|
+| 预算耗尽 → 事件 result 与父 Run 都提到 budget | 发射侧 + 消费侧 |
+| 换不出新计划 → 都提到 replan | 与上一条**不同**的死法同样到达 |
+| 父 Run 听到死因而非最后一句自言自语 | ⚠️ 同时断言 summary 里**确实**写着 COMPLETED（控制组），否则会在两者恰好一样时假绿 |
+| 取消 → `child run cancelled:` + 带 by/why | B-8 的归因同样要走到父 Run |
+| 新发射点不能省略 reason | 不带 reason 调 → `TypeError` |
+| 遗留 result 说"没记录到" | 不许编造 |
+| 遗留 result 不把 summary 当死因 | 旧格式 `child run failed: <summary>` 必须消失 |
+| 连 summary 都没有时仍然诚实 | 只说"没记录到" |
+| 控制组：真因存在时照原样传达 | 证明上面三条不是因为这一路走不通 |
+
+第三条那半句是本轮特意补的：**一条用例绿着 ≠ 它守着它以为自己在守的东西。**
+"父 Run 听到的不是执行摘要"在 summary 恰好等于 reason 时会假绿，
+而它之所以值得断言，恰恰因为它们是**反**的。
+
+### 117.6　变红验证（4 变异）
+
+| 变异 | 红了 |
+|---|---|
+| 事件 result 去掉 `reason` | 4 条 |
+| `_emit_child_run_outcome` 的 `reason` 变可选 | 1 条 |
+| `_reason` 拿 summary 当死因（旧行为） | 5 条 |
+| 死因缺失时把 summary 当死因说出去 | 2 条 |
+
+第二条只红 1 条是对的：它动的只是"能不能省略"，
+所以只有那条 `TypeError` 用例会响。
+
+### 117.7　空洞表
+
+| # | 形状 | 处置 |
+|---|---|---|
+| **239** | 子 Run 的 `result` 是自由 JSON，`reason` **没有任何 schema 约束** —— D-37 靠调用约定成立，不是靠结构 | **登记不治**：给 JSONB 加 CHECK 会影响历史行，而落库早于 D-37 的那批本来就缺这个字段；且 `mark_finished` 的调用方在 PG 适配器层，加约束会牵动迁移。`_reason` 侧已有"没记录到"的诚实降级 |
+
+（空洞 238 维持"登记不治"：它是只写不读的字段，与这一轮不同。）
+
+### 117.8　冻结
+
+> 上一轮冻结的是：*一条宣布结束的记录，必须说清为什么结束。*
+>
+> 这一轮冻结的是：**那个"为什么"必须真的到达听它的人。**
+
+**加了字段不等于送达。** B-12 把死因写进了子 Run 的账本，
+而父 Run 读的是另一条路径（`mark_finished` 的 `result` → 事件 → `_reason`）。
+中间任何一段不接力，死因就停在半路上，而系统照样"有原因" ——
+只是那个原因没有到该听的人耳朵里。
+
+**判断"信息到没到"的唯一方法：沿着它实际走的那条路，读到终点那一份。**
+不是"写了就算"，不是"字段存在就算"。
+
+---
+
+## §118　M81 · 委派失败了的父 Run，不许宣布完成
+
+> 上一轮冻结的是：*那个"为什么"必须真的到达听它的人。*
+> 这一轮冻结的是：**同一类失败，走不同的门进来，判据必须一样认得。**
+
+### 118.1　探针：I-11 有没有后门
+
+M80 冻完之后按 §0.4 那条回头问了一句：
+**刚落地的不变量，可能被它自己引入的机制绕过去** ——
+I-11/REPLAN 这条边刚被 M76~M78 打通，那么"失败"这个概念，
+是不是所有进 State 的门都能被它认出来？
+
+造一个父 Run，让它派一条子 Run，然后让那条子 Run 失败：
+
+    step 1  → WAITING_CHILD
+    step 2  → 子 Run 失败交回（StepOutcome.FAILED）
+    父 State: plan.created / child_run.spawned / child_run.finished
+    I-11 判据 _failures_since_last_plan() = 0        ← 数不到
+    step 3  → FINISHED   status=completed
+    账本     {'status': 'completed', 'reason': 'goal reached'}
+
+**一个委派失败了的父 Run 被宣布 completed，而且账本上写着"目标达成"。**
+
+### 118.2　形状：同一个事实，两条路给出两个答案
+
+父 Run 那条委派 Execution 确实被 `_close_child_gate` 判成了 **FAILED** ——
+这一点没有争议，Kernel 里就是 FAILED。
+
+但"这条 execution 失败了"这个事实有没有进 State，取决于它是从哪扇门进来的：
+
+| 门 | 谁写 observation | State 上留下 |
+|---|---|---|
+| Worker 执行失败 | Loop 的 `_record()` | `execution.failed` ✅ |
+| 委派的子 Run 失败 | 无人写 | 只有 `child_run.finished` ❌ |
+
+而 `child_run.finished` 说的是**另一件事**："那条子 Run 完事了"
+（`outcome` 是它的结构化字段）。它不是"这条 execution 失败了"。
+
+I-11 的判据从 `state.observations` 里数 `EXECUTION_FAILED`，于是数不到
+—— 事实在 Kernel 里成立，在 State 里不成立。
+
+### 118.3　I-13
+
+    I-13：委派失败就是一次执行失败，必须进 State
+          （`execution.failed`，且绑定那条真实的委派 Execution —— I-6）。
+
+落点在 `_finish_child`：那条委派 Execution 刚被判成 FAILED，
+就在这里为它补上那条 observation。用 `Observation.from_execution_result`
+而不是手搓 —— I-6 要求执行类 Observation 必须绑定真实 Execution，
+这个工厂会在 `execution_id` 为空时直接抛。
+
+**只治 `failed`**：
+
+| outcome | 算不算执行失败 | 理由 |
+|---|---|---|
+| `failed` | ✅ | 它真的失败了 |
+| `cancelled` | ❌ | S-15：取消不是失败 |
+| `unknown` | ❌ | D-19：不知道做没做成，算成失败是说过头 |
+
+### 118.4　测试（8 条，`tests/unit/test_delegation_failure_blocks_completion.py`）
+
+| 用例 | 守的是什么 |
+|---|---|
+| 下一步是 REPLANNED 而不是 FINISHED | ★ I-13 真正的可观测后果 |
+| 控制组：委派**成功**时不 REPLAN | 上一条的 REPLANNED 是失败引起的，不是委派机制本身 |
+| 顽固 Planner → 最终 FAILED | 探针原样 |
+| `execution.failed` 真的进 State | I-13 的落点 |
+| 那条 observation 绑定真实 Execution | I-6 |
+| `_failures_since_last_plan() == 1` | 探针里那个 0 反过来写 |
+| 换了计划之后仍能完成 | ⭐ 划界语义不能被修法破坏 |
+| 取消的子 Run 不产生 `execution.failed` | S-15 |
+| 成功的子 Run 不产生 `execution.failed` | 控制组 |
+
+### 118.5　⭐ 一处测试设计上的坑：断言写错了方向
+
+第一版写的是 **"最终状态不是 completed"**，结果**红了** ——
+因为 `VaryingPlanner` 下，委派失败 → REPLAN（拿到形状不同的新计划）
+→ 判据归零 → FINISH → **completed**。
+
+**而那是设计允许的。** I-11 按"上次规划"划界，M78 又用 I-12 堵住了
+"重规划一次就洗白"（必须换形状）。换了一份真的不同的计划之后完成，
+正是 I-11 想表达的"失败可以被救回来"。
+
+于是 I-13 真正的可观测后果不是"最终不能完成"，而是
+**不能从委派失败直接走到 FINISH** —— 中间必须隔着一次 REPLAN。
+
+**另一处踩到的**：新计划是在 REPLANNED 的**下一步**才落到 State 上的
+（`plan.invalidated` 与新的 `plan.created` 分两步写），
+所以"判据归零"不能在 REPLANNED 当场断言。
+
+### 118.6　变红验证（4 变异）
+
+| 变异 | 红了 |
+|---|---|
+| I-13 整块失效（委派失败不进 State） | 5 条 |
+| `kind` 写成 `EXECUTION_RESULT`（记了但不算失败） | 5 条 |
+| 取消也算执行失败（说过头） | 1 条 |
+| 绑定到错的 execution（违反 I-6） | 1 条 |
+
+### 118.7　冻结
+
+> 上一轮冻结的是：*那个"为什么"必须真的到达听它的人。*
+>
+> 这一轮冻结的是：**同一类失败，走不同的门进来，判据必须一样认得。**
+
+**判据读什么，决定了它能看见什么。** I-11 的判据写的是
+"数 `execution.failed` observation" —— 这句话本身没错，
+但它把"什么算失败"这件事**外包给了写 observation 的人**。
+谁忘写，那条失败就从判据的视野里消失，而判据自己毫不知情。
+
+于是补完一条不变量之后，值得问的不只是"它还能被绕过吗"，
+还有：**它依赖的那些事实，是不是每一扇门都在写？**
+委派这扇门就没写 —— 而且从 M77 到 M80 整整四轮，没人发现。
+
+---
+
+## §119　M82 · 委派没有回音的父 Run，不许宣布完成
+
+> 上一轮冻结的是：*同一类失败，走不同的门进来，判据必须一样认得。*
+> 这一轮冻结的是：**认不出来的时候，也要说"我认不出来"，而不是当没发生。**
+
+### 119.1　探针：M81 只治了一扇门
+
+M81 修完之后，`_finish_child` 里那句话写着"只治 `failed`"——
+于是按 §0.4 回头查另外两扇门。委派**没有任何回音**时（`child_wait_expired`）：
+
+    step 2  → 等到上限、不再等
+    kernel.status_of(父委派 Execution) = FAILED      ← 确实被判死了
+    State: plan.created / child_run.spawned / child_run.unknown
+    I-11 判据 _failures_since_last_plan() = 0        ← 数不到
+    step 3  → FINISHED   status=completed
+    账本     {'status': 'completed', 'reason': 'goal reached'}
+
+**与 M81 一字不差的同一句话。**
+
+### 119.2　难处：两个选项都不对
+
+`child_wait_expired` 的 docstring 明写它会"关闸门（Kernel 那条 Execution
+判死）" —— 因为不判死它永远挂着。但**"判死"是"我们不再等"，
+不是"它做不成"**（D-19）：那条子 Run 可能正在某个 worker 上跑得好好的。
+
+于是这条 Execution 进 State 时，两个现成的选择都有问题：
+
+| 选项 | 后果 |
+|---|---|
+| 写成 `execution_failed` | PR-19：报错说的 ≠ 真实发生的。排障的人去查"它为什么失败"，而它可能压根没失败 |
+| 干脆不写 | 父 Run 带着"这一步什么都没拿到"宣布 `goal reached`（就是 119.1 这一幕） |
+
+**两个选项都不对，说明缺的是第三个 kind。**
+
+### 119.3　I-14
+
+    I-14：查不出来的失败也算。
+
+两处改动：
+
+1. **新增 `EXECUTION_UNRESOLVED = "execution_unresolved"`**（`reducer.py`）。
+   它必须进 State，但不许冒充失败。
+2. **I-11 的判据扩成"这一步没有被证明成功"**：
+
+```python
+return sum(
+    1
+    for obs in observations[last_plan + 1 :]
+    if obs.kind in (EXECUTION_FAILED, EXECUTION_UNRESOLVED)
+)
+```
+
+判据的名字仍然叫"失败"，但它的语义是**"没有被证明成功"**：
+证明不了的，和证明失败的，一样不该被人当成功汇报。
+
+**`cancelled` 为什么仍然不在此列**：S-15 说取消不是失败，
+而且它是**父侧主动的选择** —— 父 Run 自己按下了那个按钮，
+`pending_child` 就此清掉，不构成"被隐瞒的失败"。
+（`failed` 是子 Run 自己判的，`unknown` 是我们判的，`cancelled` 是父侧判的。
+只有前两种是"父 Agent 不知道的坏消息"。）
+
+### 119.4　测试（10 条，`tests/unit/test_unresolved_delegation_blocks_completion.py`）
+
+| 用例 | 守的是什么 |
+|---|---|
+| 下一步是 REPLANNED | 探针那个 `FINISHED` 反过来写 |
+| `execution_unresolved` 进 State | I-14 的落点 |
+| `_failures_since_last_plan() == 1` | 探针里那个 0 反过来写 |
+| ★ kind **不是** `execution_failed` | D-19 / PR-19：不许冒充失败 |
+| ★ 摘要说 unresolved 不说 failed | 同上，文本层 |
+| 绑定真实 Execution（I-6） | 且 Kernel 里那条确实是 FAILED |
+| ★ reducer 真的把它当"这一步结束了" | 见 119.5 |
+| 控制组 | 证明上一条在测分支 |
+| 换了计划之后仍能完成 | 划界语义不被破坏 |
+| 取消的子 Run 不产生 unresolved | S-15：父侧主动选择 |
+| 成功的子 Run 也不产生 | 控制组 |
+
+### 119.5　⭐ 变红验证第一轮 M4 没红 —— 漏在测试自己
+
+M4 的变异是"reducer 不认识这个新 kind"，预期应该红。结果 **0 条红**。
+
+查下来是测试的漏：**`reducer.py` 末尾有一个兜底分支**——
+
+```python
+# 兜底：任何 Observation 都留下摘要，便于 Replay / 调试
+state.variables[f"obs:{obs.observation_id}"] = obs.summary
+```
+
+所以"新 kind 没被认"时，那条 observation 照样**存在**于 State 上，
+`assertIn(EXECUTION_UNRESOLVED, kinds)` 照样绿。
+
+真正能区分的是**它有没有把这一步当"结束了"**：
+
+```python
+self.assertIn(execution_id, loop.state.completed_tasks, ...)
+```
+
+补上之后 M4 红了 2 条。
+
+**这与 M75 那次是同一个坑**：变异没红，先去怀疑测试。
+那次的两个漏是扫描正则 `[a-z_]+` 不含数字、环境变量只认 `KEY=` 形式；
+这次是**把"存在"当成了"被处理"**。
+
+### 119.6　变红验证（5 变异，全红）
+
+| 变异 | 红了 |
+|---|---|
+| unresolved 不进 State | 9 条 |
+| unresolved 冒充 failed | 4 条 |
+| I-11 判据退回只数 `EXECUTION_FAILED` | 3 条 |
+| reducer 不认这个新 kind | 2 条（补断言后） |
+| 摘要说 failed | 1 条 |
+
+### 119.7　冻结
+
+> 上一轮冻结的是：*同一类失败，走不同的门进来，判据必须一样认得。*
+>
+> 这一轮冻结的是：**认不出来的时候，也要说"我认不出来"，而不是当没发生。**
+
+**"不确定"是一种必须被记录的状态，不是"没有状态"。**
+D-19 早就说过"等不到 ≠ 失败"，M82 才发现它从来没把这句话落到 State 上 ——
+系统在**判断**这一层是诚实的（`child_run.unknown` 这个名字很准），
+在**汇报**那一层却把它当空气。
+于是父 Agent 拿到的是一个"什么都没发生"的世界，并据此宣布目标达成。
+
+**两个现成选项都不对的时候，检查一下是不是缺了第三个。**
+这里缺的那个 kind（`execution_unresolved`）不是中间态、不是技术妥协，
+它就是 D-19 那句话本身。
+
+---
+
+## §120　M83 · 取消不是"什么都不知道"
+
+> 上一轮冻结的是：*认不出来的时候，也要说"我认不出来"，而不是当没发生。*
+> 这一轮冻结的是：**"不知道"和"知道但结果不好"是两种不同的东西，别混。**
+
+### 120.1　起因：一句没有实证的判断
+
+M82 把 `unknown` 那扇门治了。文档里对 `cancelled` 写了一句判断：
+
+> S-15 说取消是父侧主动的选择，父 Run 自己知道，
+> 不构成"被隐瞒的失败"。
+
+**这句话当结论用是不够的。** 判断的判据是"父 Run 自己知道"，
+而"知道"这件事有没有落到 State 上、能不能被 A/B 两种情形分开，
+上一轮**没验**。
+
+### 120.2　探针：A 和 B 一模一样
+
+    case A  父 Run 等不下去，自己取消子 Run
+    case B  子 Run 被别人取消，父 Run 只是收到通知
+
+    A: kernel=FAILED  State=[plan.created, child_run.spawned,
+                             child_run.finished]  I-11=0  → completed
+    B: kernel=FAILED  State=[plan.created, child_run.spawned,
+                             child_run.finished]  I-11=0  → completed
+    父 State 那条记录：A/B 都是 outcome='cancelled'
+                        error='parent gave up waiting' / 'operator cancelled...'
+
+两者的记录**完全一样**。
+
+### 120.3　这恰恰说明不该区分它们
+
+因为**能走到这里的只有 A**：`child_cancelled()` 的调用者是父侧
+（`ChildRunWaker` 收到 `child_run.cancelled` 事件后交回结果）。
+"子 Run 被别人取消、父 Run 事后才知道"是**还没有实现的能力**，
+不是一个正在说谎的既有路径。
+
+所以这里**不该发明**一个"父侧主动 vs 被动"的字段 ——
+那会是一个描述不了任何真实路径的字段，而为它写测试，
+测的就是一个想象中的系统。（这类"为不存在的能力写区分"是另一种方向的
+不诚实：账本上多出一个没人能填的维度。）
+
+### 120.4　I-15
+
+    I-15：三个终态在父侧的**信息量**不同，必须分得开 ——
+          failed（它失败了）／cancelled（为什么被取消）／unknown（什么都不知道）。
+
+| 终态 | State 上的痕迹 | 父 Agent 知道的 |
+|---|---|---|
+| `failed` | `child_run.finished` + `execution_failed`（I-13） | 它失败了，因为什么 |
+| `cancelled` | `child_run.finished`（`outcome` + `error` 都在） | **为什么被取消**（谁、什么理由） |
+| `unknown` | `child_run.finished` + `execution_unresolved`（I-14） | **什么都不知道** |
+
+要守的两条：
+
+1. 取消**必须在父侧留下可读的原因**（`outcome='cancelled'` + `error=<理由>`）；
+2. 取消**不能被记成"不知道"** —— 那是 D-19 的形状，会把它已知的原因抹掉。
+
+### 120.5　测试（13 条，`tests/unit/test_cancellation_is_not_ignorance.py`）
+
+| 用例 | 守的是什么 |
+|---|---|
+| 父侧读得到取消的原因 | I-15 落点：`outcome` + `error` 都在 |
+| summary 说 cancelled | 文本层 |
+| ★ **不是** `execution_unresolved` | 不许记成"不知道" |
+| **不是** `execution_failed` | S-15：取消不是失败 |
+| 控制组：同一夹具下走 `unknown` 痕迹明显不同 | 证明上面那条不是"这套断言区分不了东西" |
+| `_reason` 说 cancelled 带理由 | D-37 文本层 |
+| 控制组：无理由时仍是 cancelled 不是 failed | 证明不是因为一律输出 cancelled |
+| 控制组：failed 仍说 failed | 同上 |
+
+### 120.6　变红验证（4 变异，全红）
+
+| 变异 | 红了 |
+|---|---|
+| 取消不把原因写进父 State | 2 条 |
+| 取消被记成 failed | 2 条 |
+| 取消被记成 unresolved | 3 条 |
+| 取消的 summary 不再说 cancelled | 2 条 |
+
+**这一轮零代码改动** —— 13 条测试全部通过，`packages/` 一行没动。
+这正是 §0.5 说的那一类里程碑：**"这条保证好像没有测试"本身就是一个
+很强的信号**，值得单独开一轮；而补完之后它就从"读过代码觉得对"
+变成了"有 4 条变异守着"。
+
+### 120.7　冻结
+
+> 上一轮冻结的是：*认不出来的时候，也要说"我认不出来"，而不是当没发生。*
+>
+> 这一轮冻结的是：**"不知道"和"知道但结果不好"是两种不同的东西，别混。**
+
+**判断不是结论。** "父 Run 自己知道"这种话听起来不证自明，
+但它是一个**关于系统状态的断言** —— 而系统状态是可测的。
+写成判断留在文档里，它会在下一轮被当成前提使用；
+写成有变异守着的测试，它才是一份可以承重的结论。
+
+**另一句，方向相反但同样要紧：不要为不存在的能力写区分。**
+探针发现 A/B 无法区分时，第一反应可能是"补一个字段把它们分开"。
+但那会造出一个谁也填不了的维度 —— **账本上的每一列都该对应一条真实路径。**
+
+---
+
+## §121　M84 · 那条"偶发红"根本不是偶发
+
+### 121.1　起因：一条被登记为"时序不稳定"的记录
+
+M83 收尾时留下一句：
+
+> 集成测试**出现了间歇性红**：本轮 6 次运行中 4 次全绿、**2 次各红 1 条
+> 且不重名**……我连跑三次确认了不稳定存在，但没有复现到具体那条。
+
+按项目一贯的精神，**偶发红本身就是账本上的一个洞** ——
+如果它是真的，"这一层什么时候可信"就没有答案；如果它是假的，
+它已经骗走了排查时间，而且会继续骗。所以这一轮第一件事就是把它查清。
+
+纪律先立：**完整输出落盘**，不再用 `tail`。
+上一轮之所以定位不到，就是因为失败名被 `tail -3` 截掉了 ——
+一个"排查工具把证据吃掉"的低级失误。
+
+### 121.2　撞它：13 次真跑，一次都不红
+
+    · 先确认环境：项目用 `unittest`（不是 pytest）；
+      必须用带 `psycopg` / `httpx` 的解释器（系统 python 缺这两个，
+      用它跑会得到 `skipped=188` —— **一条都没真跑**，看着却像"只红一条"）
+    · 9 次串行 `discover -s tests/integration`：全绿，每次 201 条 / 约 130 s
+    · 4 次**并发双跑**（两个进程同时跑整层）：全绿
+
+并发那 4 次尤其值得看：B 的耗时是 A 的两倍多（275 s vs 122 s），
+说明 `_pg.py` 那把 PG 咨询锁**确实在排队** —— 设计生效了，
+"两个进程互相拆台"这条已知的老路也排除了。
+
+累计 **13 次、2613 条用例无一失败**。撞不出来。
+
+### 121.3　换方向：这个红有没有被记录过
+
+撞不出来之后，去翻**任务账本**。结果它不是新问题 ——
+M66 那轮已经诊断过、写进了任务卡，**但没有写进基线，也没有固化成测试**：
+
+> **真实根因**：`test_the_version_it_serves_is_the_frozen_baseline`
+> 报 `'2.1.53' != '2.1.54'`。集成测试起真 uvicorn 读 `app.py` 版本；
+> `_frozen_baseline_version()` 从基线文档**文件名**读。
+> 在测试运行期间改版本号 → 两边不同步 → 红。
+>
+> 规范：改版本号（`mv` 文档 + 改 `app.py`）要在跑测试之前连着做完。
+
+**这条诊断当时是对的**，问题出在它的**归宿**：它停在"一张已完成的任务卡"里。
+下一轮接手的人（包括写这段的我自己）看的是**基线文档**，
+而基线里没有它 —— 于是同一个坑又踩一次，又查一遍。
+
+### 121.4　形状：一个跨文件断言 + 一个多步手动动作
+
+升版要动**三处**：
+
+    AgentOS_…_v2.1.72_最终冻结版.md      ← 文件名里的版本
+    apps/api/app.py                      ← FastAPI(version="2.1.72")
+    deploy/k8s/*.yaml                    ← agentos:2.1.72-b1（14 处）
+
+而集成层那条断言是**跨文件**的：
+
+    断言左边 = 真 uvicorn 答的 `/openapi.json` → 来自 apps/api/app.py
+    断言右边 = _frozen_baseline_version()      → 来自基线文档**文件名**
+
+只要**停在两步之间**跑测试，两边当场对不上。它显得"偶发"，
+只因为"停在两步之间"是个**手动动作的时间窗**，不是代码里的随机性。
+
+**被测代码一秒都没坏过。** 这才是最要紧的一句：
+那次红灯**指向了一个不存在的问题**，而 PR-19 说红灯要指向真凶。
+
+### 121.5　PR-33
+
+> **版本号的三处落点必须同源，且不允许存在"只有部分落点更新"的中间状态。
+> 中间状态一旦被允许，它产出的红灯就指向错的地方。**
+
+### 121.6　落地：两条不依赖 PG 的守卫
+
+补在 `tests/unit/test_http_api.py`：
+
+| 测试 | 盯什么 |
+|---|---|
+| `test_the_version_bump_is_atomic_across_all_its_landing_sites` | 文档名与 `app.py` 的**声明点**必须都等于冻结版本 |
+| `test_the_k8s_image_tags_follow_the_frozen_version` | `deploy/k8s/` 里每个 `agentos:` tag 都跟着冻结版本走 |
+
+两个设计决定值得记：
+
+1. **只认"声明点"，不扫全文。** 基线文档正文里有一整节「版本变更」，
+   列着历代版本；k8s 清单里也可能有注释。去扫"文件里所有版本号"
+   会把**历史记录**判成**漂移** —— 一条永远红的噪声，比没有更坏。
+
+2. ⭐ **声明点在哪一层，就要在哪一层去读它。** 写这条测试时我自己踩了
+   一次：文档那一处声明在**文件名**上，我却对它做了 `read_text()`，
+   于是永远匹到 0 次。**把"存在"当成了"被处理"** ——
+   与 §119.5（M82 变红 M4 没红）是同一种错，只是换了个位置。
+
+放在单测而不是集成层的理由：这是个**纯文本一致性**约束，
+不该被"数据库是否在线"绑架。集成层本来就有 `test_deploy_manifest` 盯着
+tag，但那要真 PG 才跑得起来 —— 忘了同步 tag 恰恰是**本地最容易漏**的一种。
+
+### 121.7　变红验证（3 变异，全红）
+
+| 变异 | 结果 |
+|---|---|
+| `app.py` → 2.1.70 | 2 条红（新那条 + 原有那条） |
+| k8s 一处 tag → 2.1.70-b1 | `test_the_k8s_image_tags_follow_the_frozen_version` 红 |
+| 文档名 → `_v2.1.72_` | 3 条全红 |
+
+恢复后全绿。单测 **1285 → 1287**；集成 **201** 不变。
+
+### 121.8　冻结
+
+> 上一轮冻结的是：*判断不是结论，要写成有变异守着的测试。*
+>
+> 这一轮冻结的是：**诊断也是有归宿的 —— 写进任务卡的结论，不等于
+> 写进基线的结论。**
+
+**一句诊断正确的结论，如果没有落进"下一个人一定会读到的地方"，
+就等于没有做过。** 任务卡是**过程**，基线是**结论**；
+把结论留在过程里，下一个接手的人得到的不是"已知问题"，
+而是"疑似新问题" —— 于是他会再花一遍同样的时间，
+再得到一遍同样的结论。**这才是真正的浪费，比红灯本身贵得多。**
+
+**另一句：排查的第一步是保证证据不被工具吃掉。**
+这一轮能定位到，靠的不是更聪明，而是两件很朴素的事 ——
+输出**完整落盘**（`> 文件 2>&1`，不是 `tail`），
+以及**先去翻账本**（这个红有没有被记录过）。
+上一轮定位不到，正是因为两件都没做。

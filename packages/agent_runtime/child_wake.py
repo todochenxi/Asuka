@@ -403,12 +403,45 @@ class ChildRunWaker:
         )
 
     def _reason(self, handle: ChildRunHandle) -> str:
+        """父 Run 会听到的那句话（D-37）。
+
+        这句话会变成父 State 里那条 `child_run.finished` 的
+        `content["error"]`，是父 Agent 决定"下一步怎么走"时唯一能看到的
+        东西。而 I-12 要求重规划**换一条路** —— 理由错了就换不对路。
+
+        ------------------------------------------------------------------
+        为什么不能拿 `summary` 当原因（实测，M80 探针）
+
+        `summary` 是子 Run **最后一条 observation**，它是过程不是结论：
+
+            真因      step budget exhausted (2/2)
+            summary   execution exec_xxx attempt#1 COMPLETED (completed)
+            → 父 Run 读到"一个已完成的执行导致了失败"
+
+            真因      replan produced a plan with the same shape
+            summary   plan invalidated; replanning
+            → 父 Run 读到"还在重规划中"，听起来像没结束
+
+        第一条尤其刺眼：**不是说漏了，是说反了**。
+
+        ------------------------------------------------------------------
+        死因缺失时必须说"没记录到"，不许拿 summary 顶替
+
+        落库早于 D-37 的那批 `result` 没有 `reason` 字段。这时把 summary
+        当死因说出去就是编造 —— 用一句过程描述冒充结论，而它恰恰可能是
+        反的（上面第一条）。所以宁可少说，也要说清那句话是什么性质的。
+        """
         result = dict(handle.result or {})
+        reason = str(result.get("reason") or "").strip()
         summary = str(result.get("summary") or "").strip()
-        tail = f": {summary}" if summary else ""
-        if handle.status == "cancelled":
-            return f"child run cancelled{tail}"
-        return f"child run failed{tail}"
+
+        verb = "cancelled" if handle.status == "cancelled" else "failed"
+        if reason:
+            return f"child run {verb}: {reason}"
+        if summary:
+            # 不是死因，但也不是垃圾 —— 标清楚它是"最后一条 observation"。
+            return f"child run {verb} (cause not recorded; last observation: {summary})"
+        return f"child run {verb} (cause not recorded)"
 
 
 __all__ = [

@@ -758,6 +758,117 @@ class FrameworkBindingTest(unittest.TestCase):
         source = (ROOT / "apps" / "api" / "app.py").read_text(encoding="utf-8")
         self.assertIn(f'version="{baseline.group(1)}"', source)
 
+    def test_the_version_bump_is_atomic_across_all_its_landing_sites(self) -> None:
+        """版本号有**三个**落点，升版必须一次升完 —— 不许停在中途。
+
+        ------------------------------------------------------------------
+        为什么这条值得单独立一个用例（不是洁癖）
+
+        它已经害过一次**假红**了：M66 之后某次跑集成，唯一红的一条是
+        `TheProcessServesTest.test_the_version_it_serves_is_the_frozen_baseline`
+        —— 报 `'2.1.53' != '2.1.54'`。
+
+        那看起来像"测试不稳定"（同一份代码时红时绿），于是有人会去查
+        连接泄漏、查 `terminate()` 没 `wait`、查 PG 咨询锁……**全查错方向**。
+        真相是：改版本号改到一半（文档名字已经换了、`app.py` 还没跟上，
+        或者反过来），此时**立刻**跑集成 —— 真 uvicorn 报的是 `app.py` 的值，
+        而 `_frozen_baseline_version()` 读的是**文档文件名**，两边当场对不上。
+
+        它之所以"偶发"，只因为升版是个**手动的多步动作**：
+        正好在两步之间跑测试就红，跑在动作之外就绿。
+        被测代码一秒都没坏过 —— 坏的是"我们没有一条断言盯着它升完整"。
+
+        ------------------------------------------------------------------
+        这条不变量（PR-33）
+
+            版本号的三处落点必须**同源**，且不允许存在"只有部分落点更新"
+            的中间状态。中间状态一旦被允许，它产出的红灯就**指向错的地方**
+            （PR-19 反过来用：红灯要指向真凶）。
+
+        ------------------------------------------------------------------
+        控制组：三处都写同一个数时这条必须绿（否则它只是个永远红的噪声源）。
+        它同时钉住"新增落点"——将来多一个 `deploy/` 清单，
+        忘了加进 `_VERSION_SITES` 就会被这条提醒（而不是又变成一次手查）。
+        """
+        docs = sorted(p.name for p in ROOT.glob("AgentOS_*_最终冻结版.md"))
+        self.assertEqual(len(docs), 1, f"应当只有一份冻结基线，现在是：{docs}")
+        baseline = re.search(r"v(\d+\.\d+\.\d+)", docs[0])
+        self.assertIsNotNone(baseline, docs[0])
+        version = baseline.group(1)
+
+        #: (人话名字, 相对路径, 相对**声明点**的正则, 匹配对象)
+        #:
+        #: ⚠️ 刻意**不**去"扫描整个文件里的所有版本号"：
+        #: 冻结基线文档正文里有一整节「版本变更」，列着历代版本；
+        #: `deploy/k8s` 的清单里也可能带着注释。那样扫会把**历史记录**
+        #: 判成**漂移** —— 一条永远红的噪声，比没有还坏。
+        #:
+        #: 所以每一处只认它**声明身份**的那一处（文件名 / `version=`）。
+        #: 这正是"升版要改的到底是什么"的精确表述：
+        #: 不是"文件里不许出现旧号"，而是"**这个对象对外声称自己是哪一版**"。
+        #:
+        #: 最后一个字段是匹配对象 —— 文档那一处声明在**文件名**上，
+        #: 不在文件内容里（照抄 `read_text` 会永远匹到 0 次，正是本用例
+        #: 第一次写出来时踩的坑：**声明点在哪一层，就要在哪一层去读它**）。
+        sites: list[tuple[str, str, str, str]] = [
+            # 文件名：`AgentOS_…_v2.1.71_最终冻结版.md`（中间那段是中文标题）
+            ("冻结基线文档名", docs[0], r"_v(\d+\.\d+\.\d+)_最终冻结版", "name"),
+            (
+                "apps/api/app.py",
+                "apps/api/app.py",
+                r'version="(\d+\.\d+\.\d+)"',
+                "body",
+            ),
+        ]
+
+        for label, rel, site, where in sites:
+            subject = rel if where == "name" else (ROOT / rel).read_text(
+                encoding="utf-8"
+            )
+            declared = re.findall(site, subject)
+            self.assertEqual(
+                len(declared),
+                1,
+                f"{label} 的声明点应恰好出现一次，实际 {len(declared)} 次"
+                f"（正则：{site}）",
+            )
+            self.assertEqual(
+                declared[0],
+                version,
+                f"{label} 声称自己是 {declared[0]}，冻结版本是 {version} —— "
+                f"升版漏了这一处，这是个中途状态",
+            )
+
+    def test_the_k8s_image_tags_follow_the_frozen_version(self) -> None:
+        """K8s 清单里的镜像 tag 也必须跟着冻结版本走（M75 的约束）。
+
+        它此前只被集成层盯着 —— 而那一层要真 PG 才能跑。
+        一个纯文本的一致性约束不该依赖数据库是否在线：
+        忘了同步 tag 是**最容易发生、最难在本地发现**的一种漂移
+        （集群照常拉起**上一个版本**的镜像，没有任何红灯）。
+        """
+        docs = sorted(p.name for p in ROOT.glob("AgentOS_*_最终冻结版.md"))
+        self.assertEqual(len(docs), 1, f"应当只有一份冻结基线，现在是：{docs}")
+        baseline = re.search(r"v(\d+\.\d+\.\d+)", docs[0])
+        self.assertIsNotNone(baseline, docs[0])
+        version = baseline.group(1)
+
+        manifests = sorted((ROOT / "deploy" / "k8s").glob("*.yaml"))
+        self.assertTrue(manifests, "deploy/k8s 里一个清单都没有")
+
+        #: `agentos:2.1.71-b1` —— 只认我们自己的镜像，不误伤别人的 tag。
+        tag = re.compile(r"agentos:(\d+\.\d+\.\d+)")
+        total = 0
+        for path in manifests:
+            for found in tag.findall(path.read_text(encoding="utf-8")):
+                total += 1
+                self.assertEqual(
+                    found,
+                    version,
+                    f"{path.name} 的镜像 tag 是 {found}，冻结版本是 {version}",
+                )
+        self.assertGreater(total, 0, "一个 agentos 镜像 tag 都没扫到 —— 正则或路径变了")
+
 
 # ---------------------------------------------------------------------------
 # HTTP 语义（走真的 handler，不经过 fastapi —— A-7）

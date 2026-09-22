@@ -17,6 +17,17 @@ PLAN_CREATED = "plan.created"
 PLAN_INVALIDATED = "plan.invalidated"
 EXECUTION_RESULT = "execution_result"
 EXECUTION_FAILED = "execution_failed"
+#: M82 / I-14：这条 Execution 进了 FAILED，但**我们不知道它是否失败**。
+#:
+#: 空洞 229 的形状：等到上限也没有任何结果，Kernel 那条委派 Execution
+#: 被 `_close_child_gate` 判死（必须判死，否则它永远挂着）。
+#: 而"判死"是**我们不再等**，不是"它做不成"（D-19）——
+#: 它可能正在某个 worker 上跑得好好的。
+#:
+#: 于是它既不能写成 `execution_failed`（PR-19：报错说的 ≠ 真实发生的），
+#: 也不能不写（不写的话父 Run 可以带着"这一步什么都没拿到"宣布目标达成，
+#: 那正是 I-11 治掉的谎言，只是从这扇门又进来了）。
+EXECUTION_UNRESOLVED = "execution_unresolved"
 RUN_FINISHED = "run.finished"
 #: M33 / B-8：被叫停也是一件**事实**，同样要进 State。
 #:
@@ -65,9 +76,13 @@ class RuntimeReducer:
         elif obs.kind == PLAN_INVALIDATED:
             state.current_plan = None
 
-        elif obs.kind in (EXECUTION_RESULT, EXECUTION_FAILED):
+        elif obs.kind in (EXECUTION_RESULT, EXECUTION_FAILED, EXECUTION_UNRESOLVED):
             execution_id = obs.execution_id or ""
-            # 成功和失败都要记账：失败也是事实，Agent 要靠它 Replan
+            # 成功和失败都要记账：失败也是事实，Agent 要靠它 Replan。
+            #
+            # I-14 把 `EXECUTION_UNRESOLVED` 也并进来，因为它同样是
+            # "这一步结束了"—— 它必须把这一步从 active_tasks 上摘掉，
+            # 否则那条 Execution 会永远挂在"还在跑"的名单上。
             if execution_id and execution_id not in state.completed_tasks:
                 state.active_tasks = [t for t in state.active_tasks if t != execution_id]
                 state.completed_tasks.append(execution_id)

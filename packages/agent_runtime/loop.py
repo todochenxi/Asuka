@@ -115,6 +115,7 @@ from .reducer import (
     CHILD_RUN_UNKNOWN,
     EXECUTION_FAILED,
     EXECUTION_RESULT,
+    EXECUTION_UNRESOLVED,
     PLAN_CREATED,
     PLAN_INVALIDATED,
     POLICY_DENIED,
@@ -1704,6 +1705,57 @@ class AgentLoop:
                 },
             )
         )
+        # I-13：委派失败就是**一次执行失败**，它必须进 State。
+        #
+        # 那条委派 Execution 刚被 `_close_child_gate` 真的判成了 FAILED，
+        # 但这条路径不经 Worker，于是没有人给它写 EXECUTION_FAILED
+        # observation —— State 上只有 `child_run.finished`，而那条说的是
+        # "子 Run 完事了"，不是"这条 execution 失败了"，是两件事。
+        #
+        # I-11 从 State 读"自上次规划以来有没有失败"，读不到它 →
+        # 一个委派失败了的父 Run 照常 FINISH，账本上写 `goal reached`
+        # （M81 探针实测）。那是 M77 治掉的那句谎言，
+        # 只是从委派这扇门又进来了。
+        #
+        # I-14：两种 outcome 都要进 State，但**用不同的 kind**。
+        #
+        #     failed   它真的失败了          → `execution_failed`
+        #     unknown  我们不知道（D-19）     → `execution_unresolved`
+        #
+        # 后者必须有一个自己的 kind，不能借用 `failed`：
+        # 那条子 Run 可能正在某个 worker 上跑得好好的，
+        # 说它"失败"就是 PR-19 那种错（报错说的 ≠ 真实发生的）。
+        # 但它也**必须进 State** —— 否则父 Run 可以带着"这一步什么都没拿到"
+        # 宣布目标达成（M82 探针实测，与 M81 同一形状）。
+        #
+        # `cancelled` 不在此列：S-15 说取消不是失败，它是父侧的主动选择，
+        # 父 Run 自己知道（`pending_child` 就此清掉），不构成"被隐瞒的失败"。
+        execution_kind = {
+            "failed": EXECUTION_FAILED,
+            "unknown": EXECUTION_UNRESOLVED,
+        }.get(outcome)
+        if execution_kind is not None:
+            execution = self.kernel.repository.get(execution_id)
+            attempt_no = execution.current_attempt_no if execution else 1
+            self._apply(
+                Observation.from_execution_result(
+                    run_id=self.state.run_id,
+                    execution_id=execution_id,
+                    attempt_no=attempt_no,
+                    kind=execution_kind,
+                    summary=(
+                        f"execution {execution_id} attempt#{attempt_no} "
+                        f"{'failed' if outcome == 'failed' else 'unresolved'} "
+                        f"({reason or f'child run {outcome}'})"
+                    ),
+                    content={
+                        "status": "failed",
+                        "child_run_id": child_run_id,
+                        "child_outcome": outcome,
+                        "error": reason,
+                    },
+                )
+            )
         # D-12：委派没做成，也要进账本 —— 见 `_record_delegation_unresolved`。
         if action is not None and step is not None and task_id:
             self._record_delegation_unresolved(
@@ -1804,8 +1856,28 @@ class AgentLoop:
         """
         return self.child_identity.handle if self.child_identity is not None else None
 
-    def _emit_child_run_outcome(self, status: "AgentRunStatus") -> None:
+    def _emit_child_run_outcome(
+        self, status: "AgentRunStatus", *, reason: str
+    ) -> None:
         """空洞 209：本 Run 若是一条被登记过的子 Run，向 Outbox 发射终态事件。
+
+        ------------------------------------------------------------------
+        D-37：`reason` 是**必填关键字参数**
+
+        B-12 让子 Run 的终态带上了死因，但那个原因原先只落在子 Run 自己的
+        trace 上，没有跟着事件走 —— 于是父 Run 听到的是子 Run **最后一句
+        自言自语**（`summary`），而不是它的死因。实测（M80 探针）：
+
+            子 Run 死因   step budget exhausted (2/2)
+            父 Run 听到   child run failed: execution exec_xxx attempt#1
+                          COMPLETED (completed)
+
+        **不是说漏了，是说反了**：父 Run 被告知"一个已完成的执行导致了失败"。
+
+        把 `reason` 做成必填关键字参数，是为了让"发终态事件"这个动作
+        在签名上就离不开死因 —— 新增一个发射点时，不给原因就构造不出
+        这次调用（§0.8 那条：默认值的诱惑在于它会让"忘了说为什么"
+        看起来像"没什么可说的"）。
 
         ------------------------------------------------------------------
         为什么必须在这里发，而不是让父 Run 去问
@@ -1847,6 +1919,9 @@ class AgentLoop:
         result: dict[str, Any] = {
             "status": status.value,
             "steps": self.steps,
+            # D-37：死因跟着结果一起走。`summary` 是"最后一条 observation"，
+            # 它是**过程**不是**原因** —— 两者不能互相顶替（见 `_reason`）。
+            "reason": reason,
             "summary": (
                 state.observations[-1].summary
                 if state is not None and state.observations
@@ -2111,6 +2186,22 @@ class AgentLoop:
         进程重启），于是"有没有失败过"这个问题在重启前后给出不同的答案。
         从 `state.observations` 推则没有这个问题 —— 它就是事实本身，
         而且它是 I-3 唯一允许进入 State 的那种东西。
+
+        ------------------------------------------------------------------
+        I-14：查不出来的失败也算
+
+        原先这里只数 `EXECUTION_FAILED`。但"失败"这个事实有两扇门，
+        而 M81/M82 才把第二扇补上：
+
+            执行真的失败了     → observation kind 是 `execution_failed`
+            委派等不到回音     → 我们**不知道**它失败没失败（D-19），
+                                 → `execution_unresolved`
+
+        后者如果不算，父 Run 就可以带着"这一步什么都没拿到"宣布
+        `goal reached` —— 而那正是 I-11 治掉的谎言。
+
+        判据的名字仍然是"失败"，但它的语义是**"这一步没有被证明成功"**：
+        证明不了的，和证明失败的，一样不该被人当成功汇报。
         """
         if self.state is None:
             return 0
@@ -2120,7 +2211,9 @@ class AgentLoop:
             if obs.kind == PLAN_CREATED:
                 last_plan = i
         return sum(
-            1 for obs in observations[last_plan + 1 :] if obs.kind == EXECUTION_FAILED
+            1
+            for obs in observations[last_plan + 1 :]
+            if obs.kind in (EXECUTION_FAILED, EXECUTION_UNRESOLVED)
         )
 
     def _execute(self, action: Action) -> StepOutcome:
@@ -2528,7 +2621,7 @@ class AgentLoop:
         # 空洞 209：子 Run 的终态必须**自己说出来**。
         # 它内部那些 execution.* 事件没有一个会说"这一整条子 Run 结束了"，
         # 而父 Run 等的就是这一句 —— 于是委派的结果永远回不来。
-        self._emit_child_run_outcome(status)
+        self._emit_child_run_outcome(status, reason=reason)
 
     def _apply(self, obs: Observation) -> None:
         state = self.state
