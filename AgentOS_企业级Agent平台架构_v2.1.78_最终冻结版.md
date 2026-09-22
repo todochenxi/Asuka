@@ -1,4 +1,4 @@
-# AgentOS — 企业级 Agent 平台架构（v2.1.77 最终冻结版）
+# AgentOS — 企业级 Agent 平台架构（v2.1.78 最终冻结版）
 
 > 项目定位：Enterprise Agent Harness & Runtime Platform
 > 架构状态：Final / Frozen
@@ -839,6 +839,32 @@ v2.1.65 相对 v2.1.64：**M77（带着没被处理的失败，不许宣布完�
 在此之前没有任何引擎会产出 REPLAN，那条边只是"通了"而已。详见 §114。
 
 ---
+
+v2.1.78 相对 v2.1.77：**M90（`ActionType` 必须是一份契约，不是一个"声明了却没人管"的枚举）落地后的回写**。
+`action.py` 声明了 9 个 `ActionType`；`task_factory.py` 的 `ACTION_TO_TASK` 把其中 6 个映射成真实 Task，
+另外 3 个（`FINISH` / `WAIT` / `REPLAN`）映射成 `None`，**各配一句注释解释归宿** —— 而 `None` 这一个值
+同时承担了**三种完全不同的意思**：① 有 Task 交给 Kernel、② 没有 Task 但由 Loop 自己处理、
+③ **没有 Task、也没有任何一层处理它**。前两种是"设计如此"，第三种是洞；**用同一个 `None` 表达它们，
+读代码的人和运行时都分不出来**。探针把 9 个逐个走了一遍：前 8 个各有归宿，**只有 `WAIT` 掉进一个
+未捕获的 `InvariantViolation`，而 `run()` 里没有 try/except ⇒ 异常冲出整条 Run，trace 一条都没有，
+Run 停在非终态**（probe90.py 实测：`trace 条目: []` / `有 run.finished 吗: False` / `Run 状态: created`）。
+一条**已经跑了几步、花过钱**的 Run 就这么没了，而账本读起来像什么都没发生 —— 比说假话还坏。
+那句注释"等待由 Wake-up Controller 管"描述的是一条**不存在的连接**：那个 Controller 吃 `Suspension`，
+而 `wait` 不产生 Task → 不产生 Execution → **不可能有 Suspension**；且它要等的
+`SuspensionReason.TIMER` / `EXTERNAL_EVENT` **在生产代码里零 producer**（AST 扫描实测：
+HUMAN_APPROVAL / CHILD_AGENT / CHILD_SKILL 真的被设过，TIMER 只有测试、EXTERNAL_EVENT 全仓零引用）。
+`execution.py` 里 `SuspensionReason` 的 docstring **自己写下过这个病**（"概念冻结了，实现从没跟上"）。
+新增 **I-20**：运行时必须在**执行任何动作之前**确认它**执行得了**；执行不了就判死 + 点名理由，
+且**不许执行、不许跳过、不许让它崩在一个没有账本记录的异常上、不许 REPLAN 糊过去**
+（决策本身没错，错的是运行时做不到 —— 让它"再选一个"是假话）。
+⭐ 集合**不手写、从 `ACTION_TO_TASK` 推导**（`TASK_PRODUCING_ACTION_TYPES` /
+`LOOP_HANDLED_ACTION_TYPES` / `UNEXECUTABLE_ACTION_TYPES` / `EXECUTABLE_ACTION_TYPES`，
+三者互斥且覆盖全集已实证 `True`）—— 手写白名单会在 `ActionType` 新增成员时**静默漏掉**它，
+而那正是这一族洞的成因。⭐ 理由刻意要点齐五样：**哪个动作类型 / 声明了什么 / 支持什么 /
+为什么不能凑合 / 正确的替代路径是什么**（少最后一样，读的人只知道"失败了"）。
+⭐ 补的时候 1353 条既有测试**一条不红**（第五次同款：M85 1287 / M87 1319 / M88 1334 / M89 1353）——
+`WAIT` 从来没有 producer，**那条路一次都没被走过**。24 条单元测试（六组，含控制组与穷尽性）；
+**9 变异全红**；单测 1369 → 1393。详见 §127。
 
 v2.1.77 相对 v2.1.76：**M89（一份计划必须属于它被执行的这条 Run）落地后的回写**。
 `Plan.run_id` 从来不是装饰：`Plan.__post_init__` 要求它**非空**（造不出一份"没主人的计划"）、
@@ -4191,6 +4217,7 @@ AgentOS Scheduler ≠ Kubernetes Scheduler
 | M80 | A Child Run's Cause Must Travel With Its Result | **子 Run 的死因必须跟着结果一起交给父 Run**：B-12 给子 Run 的终态加上了死因，但那个原因只落在子 Run 自己的 trace 上，没跟着事件走 —— 探针实测父 Run 听到的是子 Run **最后一句自言自语**（`summary`），而预算耗尽那条恰恰是反的：`child run failed: execution exec_xxx attempt#1 COMPLETED (completed)`。★ 不是说漏了，是**说反了**。它有真实消费者：`_reason()` 的产物就是父 State 里 `child_run.finished` 的 `content["error"]`，父 Agent 唯一能看到的线索；I-12 要求重规划换一条路，理由错了就换不对路。新增 **D-37**：`reason` 必填关键字参数，死因跟着 `result` 走；死因缺失时必须说"没记录到"，**不许拿 summary 顶替**（那是用过程冒充结论）。（**已在 v2.1.68 落地，见 §117**） |
 | M81 | A Run Whose Delegation Failed Must Not Announce Completion | **委派失败了的父 Run，不许宣布完成**：按 §0.4 回头查"刚落地的 I-11 能不能被绕过"，探针实测一个委派失败的父 Run 照常 FINISH → `completed`，账本写着 `goal reached`。★ 形状是**同一个事实两条路给出两个答案**：那条委派 Execution 真的被判成了 FAILED，但委派路径不经 Worker，没人给它写 `execution.failed` observation —— State 上只有 `child_run.finished`（说的是"子 Run 完事了"），I-11 从 State 读于是读不到。新增 **I-13**：委派失败必须进 State，且绑定真实 Execution（I-6）。只治 `failed`（取消不是失败 S-15；`unknown` 是不知道 D-19）。⭐ 测试设计上踩到一处：不能断言"最终不是 completed" —— I-11 按上次规划划界，换了形状不同的计划之后完成是**设计允许的**；真正的可观测后果是**不能从委派失败直接走到 FINISH**。详见 §118 |
 | M82 | A Voice-Less Delegation Must Not Announce Completion | **委派没有回音的父 Run，不许宣布完成**：M81 只治了 `failed`，回头查 `unknown` 那扇门 —— 探针实测委派等到上限、Kernel 那条 Execution 确实被判死（不判死它永远挂着），但 State 上只有 `child_run.unknown`，I-11 判据 = 0 → 父 Run 宣布 `completed` / `goal reached`。**与 M81 一字不差的同一句话，换了一扇门进来。**★ 难处：写 `execution_failed` 违反 PR-19（那条子 Run 可能正在别的 worker 上跑得好好的，"判死"是**我们不再等**，不是"它做不成"），不写就是上面这一幕 ⇒ 必须要有第三个 kind。新增 **I-14**：`execution_unresolved` 必须进 State 但不许冒充失败；I-11 判据扩成"**这一步没有被证明成功**"（证明不了的与证明失败的同等对待）。`cancelled` 仍不在此列 —— S-15 说取消是父侧主动选择，父 Run 自己知道，不构成"被隐瞒的失败"。⭐ 变红验证第一轮 M4 没红，漏在**测试自己**：reducer 末尾有兜底分支，只断言 `obs.kind` 存在是守不住分支的 —— 要断言"它把这一步当结束了"（从 `active_tasks` 摘掉、进 `completed_tasks`）。详见 §119 |
+| M90 | An Action Type Is A Contract, Not A Comment | **`ActionType` 必须是一份契约，不是一个"声明了却没人管"的枚举**：`action.py` 声明了 9 个 `ActionType`，`task_factory.py` 的 `ACTION_TO_TASK` 把 6 个映射成真实 Task、另外 3 个（`FINISH`/`WAIT`/`REPLAN`）映射成 `None` 并各配一句注释 —— 而 `None` 这一个值同时承担了**三种完全不同的意思**：① 有 Task 交给 Kernel、② 没有 Task 但由 Loop 自己处理（FINISH/REPLAN）、③ **没有 Task、也没有任何一层处理它**（WAIT）。前两种是"设计如此"，第三种是洞；**用同一个 `None` 表达它们，读代码的人和运行时都分不出来**。探针（`probe90.py` 场景 1）把 9 个**逐个走了一遍**，实测前 8 个各有归宿（有 Task / 挂起等审批 / Loop 自己收终态），**只有 `WAIT` 掉进一个未捕获的 `InvariantViolation`**；而 `run()` 里没有 try/except ⇒ **异常冲出整条 Run，trace 一条都没有，Run 停在非终态**（实测 `trace 条目: []` / `有 run.finished 吗: False` / `Run 状态: created`）。一条**已经跑了几步、花过钱**的 Run 就这么没了，而账本读起来像什么都没发生 —— **比说假话还坏**（与 M89 的"沉默"同族，但更重：沉默至少还留了痕）。那句注释"等待由 Wake-up Controller 管"描述的是一条**不存在的连接**：那个 Controller 的输入是 `Suspension`（一条挂起的 Execution），而 `wait` 动作**不产生 Task → 不产生 Execution → 不可能有 Suspension**，且在 Harness 之前就抛了、连挂起的机会都没有。更要紧的是那条路**本来就没接通**（`probe90.py` 场景 3，AST 扫描只认真正传给 `suspend(...)` 的）：`SuspensionReason.HUMAN_APPROVAL` / `CHILD_AGENT` / `CHILD_SKILL` 在生产代码里**真的被设过**，而 `TIMER` **只有测试设过**、`EXTERNAL_EVENT` **全仓零引用** —— `execution.py` 里 `SuspensionReason` 的 docstring **自己写下过这个病**（"M25 之前 `CHILD_AGENT` 被冻结在这里，但全仓库没有任何一处设置过它 —— 和 A-3（幂等键接到 Redis）是同一种病：概念冻结了，实现从没跟上"）。新增 **I-20**：运行时必须在**执行任何动作之前**确认它**执行得了**；执行不了 → 判死 + 点名理由，且**不许执行它**（编造"我做到了"）、**不许跳过它**（编造"它做过了"）、**不许让它崩在一个没有账本记录的异常上**（一条跑了几步的 Run 整条消失而账本像什么都没发生）、**不许 REPLAN 糊过去**（决策本身没错，错的是这个运行时做不到 —— 让 DecisionEngine"再选一个"等于告诉它"你选错了"，**那是一句假话**，且真因会被顶替，D-37）。⭐ 三个集合**不手写、从 `ACTION_TO_TASK` 推导**（`TASK_PRODUCING_ACTION_TYPES` / `LOOP_HANDLED_ACTION_TYPES` / `UNEXECUTABLE_ACTION_TYPES` / `EXECUTABLE_ACTION_TYPES`；三者互斥且覆盖全集已实证 `True`）—— 手写白名单会在 `ActionType` 新增成员时**静默漏掉**它，而那正是这一族洞的成因（与 M88 的 `SUPPORTED_PLAN_NODE_KINDS` 同一处置）。⭐ 理由刻意要点齐五样：**哪个动作类型 / 声明了什么 / 支持什么 / 为什么不能凑合 / 正确的替代路径是什么** —— 少最后一样的话，读的人只知道"失败了"，不知道该往哪走（`SkillExecutor` 的 `SKILL_NOT_WORKER_EXECUTABLE` 是模板）。⭐ `TaskFactory.from_action()` 里那句 `mapping is None` 的报错**拆成两句**：`I-4` = **调用方的 bug**（FINISH/REPLAN 该由 Loop 处理，不该走到这里）、`I-20` = **能力的缺口**（声明了但没有任何一层执行它）—— 混成一句 "produces no Task"，读的人分不出该改调用方还是该补实现。⭐ 补的时候 1353 条既有测试**一条不红**（第五次同款：M85 1287 / M87 1319 / M88 1334 / M89 1353）—— `WAIT` 从来没有 producer，**那条路一次都没被走过**。24 条单元测试（六组：控制组 5 / 集合推导 7 / 声明为真 2 含穷尽性 / 拒绝 4 / 整条 Run 存活 3 / 两种"没有 Task"可区分 3）；**9 变异全红**（M7 / M8 各自恰好红 1 条 = 隔离干净）；单测 1369 → 1393。详见 §127 |
 | M89 | A Plan Belongs To Its Run | **一份计划必须属于它被执行的这条 Run**：`Plan.run_id` 从来不是装饰 —— `__post_init__` 要求它非空、快照序列化它、恢复路径（`snapshot.py:138`）在缺失时**回填这条 Run 的 id**，**代码认为两者应当相等**；可规划路径（`_plan()`）**从不比对**（全仓 grep 为空）。于是一份声称属于 `run_someone_else` 的计划被**照单全收** —— 成为这条 Run 的 `current_plan`，节点被实例化成 Step 照常往下走，而**账本上没有任何一处说「这不是这条 Run 的计划」**（probe89.py 修前实测 `两者相等吗: False` / `实际实例化的 Step: ['n0']`）。这不是编出来的场景：**一个按目标文本做缓存的 Planner、一个「计划建一次就复用」的实现，都会正好长成这样**。新增 **I-19**：运行时必须在**执行这份计划之前**确认它属于**这条 Run**；不属于就判死 + 点名两个 run_id，且**不许执行、不许跳过、不许「再换一份计划」糊过去** —— 计划本身没错，让 Planner 再换一份等于告诉它「你的计划有问题」，**那是一句假话**，而且最终 FAILED 的理由会被 I-12 那句 "same shape" 冲淡（**真正的死因被顶替了**，D-37）。⭐ 落地形状与 I-18 **共用同一道门**：`loop.py` 的 §32 Plan Validator 区块，`PlanDefect(code, detail)` + `plan_defects(plan, *, run_id)`，两个错误码 `PLAN_BELONGS_TO_ANOTHER_RUN` / `PLAN_NODE_KIND_NOT_EXECUTABLE`；刻意分成 `code` + `detail` 两半（PR-19：合成一句话两者都会被稀释），且**两条缺陷同时成立时两条都要报**（报一条就返回的话，运维修完 kind 才发现「计划还是别人的」）。⭐ 顺带把 §32 承诺的 `Plan Validator` **建了起来 —— 只建它真的做得到的那部分**：七项逐项查完，**DAG Cycle / Dependency 真的做了**（`assert_acyclic()` / I-16 的 `_next_plan_node()`），**Permission / Risk / Budget 三项换了时机**（Harness `before_action()` / `RiskLevel` 策略 / Loop 的预算计数 —— 都在**执行期逐步**拦，不是计划期一次性），**Tool Exists / Resource 两项连表达都表达不了**（`PlanNode` **没有** `tool` 字段；全仓没有 Resource 概念）。这张归属表直接写进 `loop.py` 的模块级注释 —— **把事实写清楚，比造一个看起来像门的空壳诚实**。⭐ 补的时候 1353 条既有测试**一条不红**（第四次同款：M85 1287 / M87 1319 / M88 1334）—— 既有测试的替身 Planner 全部写着 `run_id=state.run_id` ⇒ 此前**碰巧成立**。⭐ 判据刻意钉在**每一次 step 都过**的位置而不是 `_plan()` 后面：计划有第二条来路 —— **快照恢复**（`state_from_dict` 直接 `current_plan=plan`，不走 reducer），只挂在规划路径上的话恢复回来那条会**绕过**它。16 条单元测试（三组控制组 + 一条反向边界：老快照没写 `run_id` 时回填是**合法**的，不许被误伤）；**8 变异全红**（M7 / M8 各自恰好红 1 条 = 隔离干净）；单测 1353 → 1369。详见 §126 |
 | M88 | A Declared Kind Is A Contract, Not A Comment | **`PlanNode.kind` 必须是一份契约，不是写在注释里的愿望**：`plan.py` 的 `kind: str = "task"  # task / tool / agent / human / decision` 把**五个值只放在行尾注释里** —— 类型是 `str`，`PlanNode.__post_init__` 完全不看它，运行时 `_ensure_step()` 也只读 `node.node_id` / `node.name`。同项目的 `ObservationSource` / `ChildRunKind` / `RiskLevel` / `ActionType` 全是 `str, Enum` + `__post_init__` 校验，这是**唯一的例外**。探针实测：`kind='banana'` / `''` / `'TASK'` **全部静默通过**；而 `kind='human'`（计划声明「这一步要人签字」）的节点被**当普通 task 跑完**，Run 报 COMPLETED、`approval.requested` **0 条** —— **没有任何人签过字**；`kind='agent'`（声明要委派）在本地跑完、**0 个子 Run**，照样 COMPLETED。这不是「少了个功能」，是**系统主动说了假话**（与 `SkillExecutor` 的 `SKILL_NOT_WORKER_EXECUTABLE` 同一族病，那份 docstring 自己写着「正确的行为不是假装把技能跑一遍，而是把话说清楚」）。新增 **I-18**：`kind` 是**闭集**（`PlanNodeKind`；未知值**拒绝**，**不做「兜底成 task」** —— 那正是本轮要消灭的行为）；运行时必须**自述**它真的能执行的集合（`SUPPORTED_PLAN_NODE_KINDS`，现只有 `task`），计划里出现集合外的 kind 就**在产生任何副作用之前**判死 + 点名理由 —— 不许执行它、不许跳过它、不许当 task 跑。⭐ 补的时候 1334 条既有测试**一条不红** ⇒ 此前**碰巧成立**（全仓 `PlanNode(` 只有 `snapshot.py` 一个生产构造点，测试里一个带 `kind=` 的都没有）——第三次同款（M85 1287 / M87 1319）。⭐ 判据刻意钉在**每一次 step 都过**的位置而不是 `_plan()` 后面：计划有第二条来路 —— **快照恢复**（`state_from_dict` 直接 `current_plan=plan`，不走 reducer），只挂在规划路径上的话，恢复回来那条会**绕过**它（M85 的「判据要住在所有路径的汇合处」）。⭐ 查的是**整份计划**不是「下一个要跑的节点」：一份 `[好节点, kind='human']` 的计划，第一个节点也**不许跑** —— 否则副作用白发生了，而这份计划从一开始就跑不完。19 条单元测试（含三组控制组）；**8 变异全红**（M5 恰好红 1 条 = 快照恢复那条）；单测 1334 → 1353。详见 §125 |
 | M87 | A Plan Is Consumed By Meaning, Not By Position | **计划必须按「意义」消费，不是按「位置」消费**：`PlanNode.depends_on` 被领域层用一次**完整拓扑排序**守着（拒绝自依赖 / 拒绝未知依赖 / `assert_acyclic()`），也被序列化进快照，而 `plan.py` 的 docstring 写着「Planner 的 Plan Validator 会检查 DAG 环」——**全仓没有 Plan Validator**。更要紧的是运行时**从来没读过依赖**：`_ensure_step()` 取的是 `plan.nodes[len(self.steps_of_run)]`，「下标轮到谁就是谁」。探针实测：一份合法但顺序颠倒的计划（`n2 depends_on n1`，却排在 n1 前面）会被**先跑 n2**。★ 同一个 `len(self.steps_of_run)` 还被当成「这份计划消费到第几个节点了」，而它是「**这条 Run** 跑了多少步」—— 于是重规划换出一份新计划之后，运行时从 `plan.nodes[已跑步数]` 开始取，**新计划的前 N 个节点被静默跳过**（实测 `['a0','a1','b2','ad-hoc-3']`，b0/b1 从未被执行）。新增 **I-16**：节点进 Step 的依据是「**它准备好了**」（依赖都已完成 + 没做过），不是「下标轮到它了」；计划卡住（还有节点没做、但一个就绪的都没有）时**不编造 ad-hoc 步**，走 REPLAN —— 与「计划用完」（那是常态，允许 ad-hoc）必须分得开。⭐ 补的时候 1319 条既有测试**一条不红** ⇒ 此前一直是**碰巧成立**（既有测试的计划要么没依赖、要么依赖恰好与顺序一致）—— 与 M85 同款。⭐ 变红验证**顺手撞出第二个真洞**：`run()` 的停止条件是一张 `StepOutcome` 白名单，**没有 FAILED**；当 `_plan()` 换不出形状不同的计划时 Run 被声明 FAILED，而 `step()` 从此每次都返回 FAILED、`steps` 不再增长 → **`run()` 永远转下去，没有报错也没有尽头**（L-7 自己写过这句话：「一个永远被拒的 Run 会永远空转，且没有任何报错」）。新增 **I-17**：停止条件是「**这条 Run** 到了终态」，不是「这一步的结果属于某张枚举表」—— 两张表说的是两件事，`FAILED` 作为「这一步的结果」不该进白名单（否则弄坏 I-11 的换计划路径），作为「Run 的终态」必须让它停。14 条单元测试（含两组控制组）；**8 变异全红**；单测 1319 → 1334。详见 §124 |
@@ -15145,3 +15172,239 @@ M3 / M5 两条锚点（`offenders = _unsupported_plan_nodes(state.current_plan)`
 > **差的不是"少做了几项"，是"那道门在哪一层"。**
 > **把事实写清楚（哪几项换了时机、哪几项连表达都表达不了），
 > 比造一个看起来像门的空壳诚实。**
+
+---
+
+# 127. M90 —— `ActionType` 必须是一份契约，不是一个"声明了却没人管"的枚举
+
+## 127.1 起点：M88 / M89 那条线的下一步
+
+M87 / M88 / M89 是同一族问题的三段：
+
+* **M87** 治：判据读**位置**而不是读**意义**；
+* **M88** 治：**声明与能力之间的差被沉默了**（`PlanNode.kind` 声明五种、只支持一种、不说）；
+* **M89** 治：**一个每一处都在写、没有一处在读的字段**（`Plan.run_id`）。
+
+M89 冻结时留下一条判断（§126.13）：
+
+> **一个每一处都在写、没有一处在读的字段，不是"约束"，是"注释"。**
+
+M90 从同一句话出发，去问一个更狠的版本：
+
+> 有没有一个**声明**，**连"写"都没有** —— 它只是被列在那儿，
+> 没有任何一层执行它、也没有任何一层说"我执行不了它"？
+
+按 §0 做「**机制齐全但从没人走过**」扫描，答案是 `ActionType.WAIT`。
+
+## 127.2 洞的形状：`None` 一值三义
+
+`action.py` 声明了 **9 个** `ActionType`。`task_factory.py` 的
+`ACTION_TO_TASK` 把其中 6 个映射成真实 Task，另外 3 个映射成 `None`：
+
+    ActionType.FINISH: None,   # 终态，不需要执行
+    ActionType.WAIT:   None,   # 等待由 Wake-up Controller 管，不是一个 Task
+    ActionType.REPLAN: None,   # 触发重新规划，由 Loop 自己处理
+
+**`None` 这一个值同时承担了三种完全不同的意思：**
+
+| # | 意思 | 谁负责 | 是不是洞 |
+|---|---|---|---|
+| ① | 有 Task 映射 | Kernel 执行 | 设计如此 |
+| ② | 没有 Task，但由 Loop 自己处理 | `_step()` 的 FINISH / REPLAN 分支 | 设计如此 |
+| ③ | 没有 Task，也**没有任何一层处理它** | **没有人** | **是洞** |
+
+前两种是"设计如此"，第三种是"洞"。**用同一个 `None` 表达它们，
+读代码的人和运行时都分不出来** —— 而运行时也确实分不出来：
+`_step()` 里没有 `WAIT` 的分支，于是它一路掉到 `_from_action()` 抛异常。
+
+## 127.3 探针实录（probe90.py，修前）
+
+场景 1 把 9 个 `ActionType` **逐个走了一遍**（结论从实测值推出，不写死）：
+
+    llm_call / tool_call / skill_call / agent_delegation  -> 有 Task，有账本
+    human_approval / ask_user                             -> 挂起等审批，有账本
+    replan / finish                                       -> Loop 自己处理，有终态
+    wait                                                  -> ✗ 未捕获的 InvariantViolation
+                                                              账本**一条都没有**
+
+场景 2 / 4（整条 Run 的后果）：
+
+    step() 抛异常 : InvariantViolation
+    trace 条目    : []
+    有 run.finished 吗 : False
+    Run 状态      : created
+
+    run() 也直接抛出（`run()` 里没有 try/except）
+
+**一条已经跑了几步、花过钱的 Run 就这么没了，而账本读起来像什么都没发生。**
+
+这比说假话还坏：说假话至少留下了一句可查的话，这里是**整条 Run 消失在一张空账本里**。
+
+## 127.4 那句注释描述的是一条不存在的连接
+
+    ActionType.WAIT: None,   # 等待由 Wake-up Controller 管，不是一个 Task
+
+`WakeupController` 的输入是 **`Suspension`**（一条挂起的 Execution）。
+而 `wait` 动作：
+
+* 不产生 Task → 不产生 Execution → **不可能有 Suspension**；
+* 在 Harness 之前就抛了 —— **连挂起的机会都没有**。
+
+⇒ 那句注释不是"描述了一个我没找到的实现"，是**描述了一条不存在的连接**。
+
+## 127.5 更要紧的：那条路本来就没接通（AST 扫描）
+
+`probe90.py` 场景 3 用 **AST** 扫描"谁把 `SuspensionReason.X` 真的传给了
+`suspend(...)`"（只认真正传进去的实参 —— **文本 grep 会把注释和错误消息里的
+提及也算成 producer**，这是探针自己踩过的坑，见 127.10）：
+
+    SuspensionReason.HUMAN_APPROVAL  <- loop.py 真的设过
+    SuspensionReason.CHILD_AGENT     <- loop.py 真的设过
+    SuspensionReason.CHILD_SKILL     <- loop.py 真的设过
+    SuspensionReason.TIMER           <- **生产代码里没有任何一处设过它**（只有测试）
+    SuspensionReason.EXTERNAL_EVENT  <- **全仓零引用**
+
+而 `wakeup_controller.py` 里**有人读 `TIMER`**（`if suspension.reason is not
+SuspensionReason.TIMER: ...`）—— **有 consumer，没有 producer。**
+
+`execution.py` 里 `SuspensionReason` 的 docstring **自己写下过这个病**：
+
+> M25 之前，`CHILD_AGENT` 被冻结在这里，但**全仓库没有任何一处设置过它** ——
+> 和 A-3（幂等键接到 Redis）是同一种病：**概念冻结了，实现从没跟上**。
+
+⇒ `WAIT` 执行不了，**不是"少写了一个分支"**，而是**它要等的那件事，
+运行时还没有产生它的能力**（没有 TIMER 的 producer）。一个真能执行 `wait` 的运行时，
+必须先能让某条 Execution 挂起、并被定时唤醒它 —— **那是另一件事**。
+
+## 127.6 I-20 的落地
+
+    I-20：运行时必须在**执行任何动作之前**确认它**执行得了**；
+          执行不了 → 判死 + 点名理由，且不许执行、不许跳过、
+          不许让它崩在一个没有账本记录的异常上、不许 REPLAN 糊过去。
+
+落地位置与 §32 那道计划门（I-18 / I-19）**同一精神**：**在产生任何副作用之前**。
+放在 `ActionResolver` 之后、`FINISH` / `REPLAN` 分支**之前** ——
+那两个分支本身就是"Loop 自己处理"的归宿，所以它们在支持集合里，不会被这道门拦到。
+
+    if action.action_type not in EXECUTABLE_ACTION_TYPES:
+        self._declare_terminal(
+            AgentRunStatus.FAILED,
+            reason=_unexecutable_action_reason(action),
+        )
+        return self._record(StepOutcome.FAILED)
+
+## 127.7 为什么集合要推导，不能手写
+
+三个集合**不在这里手写** —— 它们从 `ACTION_TO_TASK` **推导**：
+
+    TASK_PRODUCING_ACTION_TYPES = frozenset(k for k, v in ACTION_TO_TASK.items() if v is not None)
+    LOOP_HANDLED_ACTION_TYPES   = frozenset({ActionType.FINISH, ActionType.REPLAN})
+    UNEXECUTABLE_ACTION_TYPES   = frozenset(ActionType) - TASK_PRODUCING_ACTION_TYPES - LOOP_HANDLED_ACTION_TYPES
+    EXECUTABLE_ACTION_TYPES     = TASK_PRODUCING_ACTION_TYPES | LOOP_HANDLED_ACTION_TYPES
+
+理由与 M88 的 `SUPPORTED_PLAN_NODE_KINDS` 同一处置：
+**手写的白名单会在 `ActionType` 新增成员时静默漏掉它** —— 而那正是这一族洞的成因。
+推导出来的集合**不可能漏**：新增一个成员，它必然落在 ③ 里，
+`UNEXECUTABLE_ACTION_TYPES` 立刻非空、立刻被那道门拒绝、立刻在理由里点名。
+
+三者互斥且覆盖全集（`partition`）由一条单元测试守着（实测 `True`）。
+
+## 127.8 为什么不 REPLAN，而是判死
+
+与 I-18 / I-19 一样**不 REPLAN**：
+
+**决策本身没错**，错的是**这个运行时做不到**。
+让 DecisionEngine "再选一个"等于告诉它"你选错了" —— **那是一句假话**；
+而且真因会被顶替（D-37：终态理由必须是真正的死因）。
+
+⇒ 处置与 I-12 同一精神（诚实判死 + 点名理由），但**不走换动作那条路**。
+
+## 127.9 两种"没有 Task"必须分得开
+
+`TaskFactory.from_action()` 里那句 `mapping is None` 的报错**拆成两句**：
+
+| 情形 | 错误码 | 意思 | 读的人该做什么 |
+|---|---|---|---|
+| `FINISH` / `REPLAN` 走到这里 | `I-4` | **调用方的 bug** —— 该由 Loop 处理，不该到 TaskFactory | 改调用方 |
+| `WAIT` 走到这里 | `I-20` | **能力的缺口** —— 声明了但没有任何一层执行它 | 补实现（或按 I-20 拒绝） |
+
+混成一句 `produces no Task`，读的人**分不出该改调用方还是该补实现**。
+有一条测试专门守着"两句话不是同一句"。
+
+## 127.10 探针自己踩过的两个坑
+
+这一轮的探针**自己出了两次错**，都值得写下来（与 §126.9 同族）：
+
+1. **读"应该会怎样"而不是"实际怎样"** ——
+   最初版本断言 `status.is_terminal`（**这个属性不存在**，是模块级 `TERMINAL_RUN_STATUSES`），
+   于是永远打印 `终态=False`。判据读什么就决定了它能看见什么（M81）。
+   处置：改读 `status in TERMINAL_RUN_STATUSES`。
+
+2. **文本 grep 冒充 AST** ——
+   场景 3 最初用文本 grep 数 producer，把**注释和错误消息里的提及**也算成了 producer
+   （甚至扫到了我自己刚写下的注释），而且 `"/tests/" not in s` 的过滤**失效**
+   （路径实际是 `tests/...`，没有前导斜杠）。
+   处置：改成 **AST 扫描**（只认真正传给 `suspend(...)` / `Suspension(...)` 的实参），
+   并区分生产 / 测试。
+
+> **探针也是一份要维护的断言。**
+> 一份"数出现次数"的探针，会把"提到它"当成"产生它" —— 那是**看起来对了**的另一种长相。
+
+## 127.11 变红验证：9 条
+
+| 变异 | 改回什么 | 结果 |
+|---|---|---|
+| M1 | 那道门整个拿掉（回到"崩在一个没有账本记录的异常上"） | ★ 红 1 failure + 7 errors |
+| M2 | 拒绝但**不落账本**（判死却不声明终态） | ★ 红 5 |
+| M3 | 拒绝之后**不返回**（判死了还继续往下执行） | ★ 红 1 failure + 7 errors |
+| M4 | 自述的能力集合扩成"全都支持"（能力与声明假装对齐） | ★ 红 3 failures + 7 errors |
+| M5 | "执行不了"的集合手写成**空集**（回到"声明了却没人管"） | ★ 红 3 failures + 1 error |
+| M6 | 把 `wait` 也算进"由 Loop 自己处理"（把没归宿伪装成有归宿） | ★ 红 5 failures + 4 errors |
+| M7 | 理由不点名**运行时支持什么**（运维不知道该改用什么） | ★ 红 **1** |
+| M8 | 理由不说**正确的替代路径**（读的人只知道失败了） | ★ 红 **1** |
+| M9 | 两种"没有 Task"混成同一句话（分不出该改调用方还是该补实现） | ★ 红 3 |
+
+**9/9 全红。** M7 与 M8 各自恰好红 1 条，隔离干净 ——
+说明"点名支持什么"与"给出替代路径"这两条守点**各自都有专属用例**，
+不是被别的判据顺带守住的。
+
+## 127.12 空洞表
+
+| # | 形状 | 处置 |
+|---|---|---|
+| 252 | `SuspensionReason.TIMER` **有 consumer 没有 producer**：`wakeup_controller.py:29` 真的读它（`if suspension.reason is not SuspensionReason.TIMER`），而**生产代码里没有任何一处设过它**（只有 `test_aggregate.py` / `test_background_apps.py` / `test_execution.py` 造过） | **登记不治（有归属：Wake-up Controller）**：这正是 `wait` 执行不了的**真正原因**。一个能执行 `wait` 的运行时必须先有一个 TIMER 的 producer（某处把一条 Execution 挂起、定时唤醒）。M90 只做到"**诚实地说我做不到**"，不假装做了 |
+| 253 | `SuspensionReason.EXTERNAL_EVENT` **全仓零引用** —— 连 consumer 都没有（`wakeup_controller.py` 只读 `TIMER`） | **登记不治**：与 `TIMER` 同一族（"概念冻结了，实现从没跟上"），只是更彻底 —— 它连一个读它的人都没有。`execution.py` 的 docstring 自己写过这个病（M25 的 `CHILD_AGENT` 先例）。要么在 Wake-up Controller 落地时给它 producer，要么承认它是多余的 |
+| 254 | `StepOutcome.PLANNED` 声明了、**零 producer**（`_record(StepOutcome.PLANNED)` 全仓 0 次；规划路径返回的是 `REPLANNED`）。与 `WAIT` **同一族**：声明了却没有任何一层产出它 | **登记不治（是事实不是缺陷）**：它**无害** —— 没有任何一处读它（`WAIT` 会崩是因为它有来路、`PLANNED` 连来路都没有）。留着的唯一代价是"读枚举的人以为有一个'刚规划完'的状态"。若 M12 的 Planner 落地时需要一个显式的"规划完成"步，它自然会有 producer；在那之前它是一枚**没人造的标记** |
+
+## 127.13 冻结的是什么
+
+这一轮是 M87 / M88 / M89 / M90 那条线的**第四段**，也是**最窄的一段**。
+
+* **M87**：判据读**位置**而不是读**意义**；
+* **M88**：**声明与能力之间的差被沉默了**（说了五种，只支持一种，不说）；
+* **M89**：**每一处都在写、没有一处在读的字段**（写了，没人读）；
+* **M90**：**连"写"都没有的声明** —— 它只是被列在枚举里，
+  既没有一层执行它，也没有一层说"我执行不了它"。
+
+四段是同一个动作的四个深度：**从"读错了对象"，到"没人读"，到"没人管"**。
+
+M90 与前三次有一个关键区别：**前三次的洞至少还留了痕**
+（M88 跑完了、M89 照单全收了 —— 都留下了一条可查的记录），
+而 M90 的后果是**整条 Run 消失在一张空账本里**：
+一条跑了几步、花过钱的 Run，崩在一个没有账本记录的异常上，
+trace 一条都没有，Run 停在非终态。**这比说假话更坏 —— 它连假话都没说。**
+
+上一轮冻结的是：
+
+> **一个每一处都在写、没有一处在读的字段，不是"约束"，是"注释"。**
+
+这一轮冻结的是：
+
+> **一个"没有归宿"的声明，比一个"写错了的声明"更危险 ——
+> 前者连一句假话都不用说，它只是让整条 Run 消失在一张空账本里。**
+
+以及落地时浮现的那条：
+
+> **`None` 如果有三种意思，那它一种都不是。**
+> **读代码的人和运行时，都分不出来。**
+

@@ -115,8 +115,8 @@ python -m apps.eval run ds.json [--out base.json] [--against base.json]
 
 ## 版本库状态（2026-09-22）
 
-- **当前冻结基线 v2.1.77**（M89 收尾）。三处落点同源：文档名 / `apps/api/app.py:91` /
-  `deploy/k8s/` **14 处** `agentos:2.1.77-b1`
+- **当前冻结基线 v2.1.78**（M90 收尾）。三处落点同源：文档名 / `apps/api/app.py:91` /
+  `deploy/k8s/` **14 处** `agentos:2.1.78-b1`
 - 目录 `C:\Users\19644\socialbook\agentos`，远端 `git@github.com:todochenxi/Asuka.git`（private，SSH）
 - **目录改名尚未做**：`mv` 报 WinError 32 —— 锁的持有者是**自己的工具链会话**，会话活着就改不了。
   正确做法：退出应用后**在会话之外** `ren agentos Asuka`。⚠️ **只改目录名，不要批量替换内容里的

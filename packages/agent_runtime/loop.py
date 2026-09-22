@@ -133,7 +133,7 @@ from .delegation import (
     child_run_kind_of,
 )
 from .saga import CompensationStore, InMemoryCompensationStore, SagaCoordinator
-from .task_factory import TaskFactory
+from .task_factory import EXECUTABLE_ACTION_TYPES, TaskFactory
 
 
 class StepOutcome(str, Enum):
@@ -368,6 +368,83 @@ def _plan_defects_reason(defects: list[PlanDefect]) -> str:
     return (
         f"plan rejected before execution: {joined} — the plan was neither "
         f"executed nor skipped; fix the plan (I-18/I-19)"
+    )
+
+
+# ============================================================================
+# I-20：`ActionType` 里声明了、运行时却执行不了的那些
+# ============================================================================
+#
+# 与 I-18（`PlanNode.kind`）**同一族的第二例**，只是这次出问题的不是计划里的节点，
+# 而是 DecisionEngine 选出来的动作。
+#
+# `action.py` 声明了 9 个 `ActionType`。`task_factory.py` 的 `ACTION_TO_TASK`
+# 把 6 个映射成真实 Task，另外 3 个映射成 `None`，各配一句注释说归宿：
+#
+#     FINISH: None,   # 终态，不需要执行
+#     WAIT:   None,   # 等待由 Wake-up Controller 管，不是一个 Task
+#     REPLAN: None,   # 触发重新规划，由 Loop 自己处理
+#
+# 探针（`probe90.py` 场景 1）把 9 个**逐个走了一遍**，实测：
+#
+#     llm_call / tool_call / skill_call / agent_delegation  -> 有 Task，有账本
+#     human_approval / ask_user                             -> 挂起等审批，有账本
+#     replan / finish                                       -> Loop 自己处理，有终态
+#     wait                                                  -> ✗ 未捕获的 InvariantViolation
+#                                                              账本**一条都没有**
+#
+# 注释里那句"等待由 Wake-up Controller 管"描述的是一个**不存在的连接**：
+#
+#     WakeupController 的输入是 `Suspension`（一条挂起的 Execution），
+#     而 `wait` 动作**不产生 Task → 不产生 Execution → 不可能有 Suspension**，
+#     而且它在 Harness 之前就抛了，连挂起的机会都没有。
+#
+# 更要紧的是，那条路**本来就没接通**（`probe90.py` 场景 3，AST 扫描）：
+#
+#     SuspensionReason.HUMAN_APPROVAL  <- loop.py:1878 真的设过
+#     SuspensionReason.CHILD_AGENT     <- loop.py:2050 真的设过
+#     SuspensionReason.CHILD_SKILL     <- loop.py:2052 真的设过
+#     SuspensionReason.TIMER           <- **生产代码里没有任何一处设过它**（只有测试）
+#     SuspensionReason.EXTERNAL_EVENT  <- **全仓零引用**
+#
+# `execution.py` 里 `SuspensionReason` 的 docstring **自己写下了这个病**：
+#
+#     "M25 之前，`CHILD_AGENT` 被冻结在这里，但**全仓库没有任何一处设置过它** ——
+#      和 A-3（幂等键接到 Redis）是同一种病：概念冻结了，实现从没跟上。"
+#
+# ⇒ `WAIT` 执行不了，不是"少写了一个分支"，而是**它要等的那件事，运行时还没有
+#   产生它的能力**（没有 TIMER 的 producer）。一个能执行 `wait` 的运行时，
+#   必须先能让某条 Execution 挂起并定时唤醒它 —— 那是另一件事。
+#
+# 处置：**在执行任何动作之前**带着点名理由拒绝。
+# 不许执行它（那是编造"我做到了"），不许跳过它（那是编造"它做过了"），
+# 更不许让它崩在一个**没有账本记录**的异常上 —— 那比说假话还坏：
+# 一条已经跑了几步、花过钱的 Run 会整条崩掉，而账本读起来像什么都没发生。
+#
+# ⚠️ 集合**不在这里手写** —— 它从 `task_factory.ACTION_TO_TASK` 推导
+# （`EXECUTABLE_ACTION_TYPES`）。手写白名单会在 `ActionType` 新增成员时
+# **静默漏掉**它，而那正是这一族洞的成因。
+# ============================================================================
+
+def _unexecutable_action_reason(action: Action) -> str:
+    """把"这个动作运行时做不到"说成一句运维能照着办的话（PR-19）。
+
+    要点齐五样：**哪个动作类型**、**声明了什么**、**支持什么**、
+    **为什么不能凑合**、**正确的替代路径是什么**。
+    少最后一样的话，读的人只知道"失败了"，不知道该往哪走。
+    """
+    supported = sorted(k.value for k in EXECUTABLE_ACTION_TYPES)
+    return (
+        f"action type {action.action_type.value!r} is declared but this runtime "
+        f"cannot execute it: it produces no Task (see ACTION_TO_TASK) and the Loop "
+        f"has no branch for it — so it would crash before writing a single ledger "
+        f"entry. supported action types are {supported}. The task_factory comment "
+        f"points at a 'Wake-up Controller', but that controller consumes "
+        f"Suspension records, and a waiting action never becomes one: nothing in "
+        f"this repo ever sets SuspensionReason.TIMER or EXTERNAL_EVENT, so a "
+        f"waiting action could never be resumed. Refusing it rather than crashing "
+        f"or silently skipping it (I-20); express waiting as an approval gate or a "
+        f"child run until a TIMER producer exists."
     )
 
 
@@ -1049,6 +1126,28 @@ class AgentLoop:
         # 用空 Decision 表达，而是用 `ActionType.FINISH` 表达 —— 否则 I-4 会
         # 开一个"Decision 可以什么都不选"的口子，副作用来源就模糊了。
         action = ActionResolver().resolve(decision)      # I-4：唯一通道
+
+        # ── I-20：这个动作运行时**执行得了**吗？ ──
+        #
+        # 位置与 §32 那道计划门同一精神：**在产生任何副作用之前**。
+        # 放在 `ActionResolver` 之后、`FINISH`/`REPLAN` 分支**之前** ——
+        # 那两个分支本身就是"Loop 自己处理"的归宿，所以它们在支持集合里，
+        # 不会被这道门拦到。
+        #
+        # 此前这里什么都没有：一个 `ActionType.WAIT` 会一路掉到 `_execute()`
+        # → `task_factory.from_action()` → 抛 `InvariantViolation`。
+        # 而 `run()` 里没有 try/except ⇒ **异常直接冲出整条 Run**，
+        # trace 里一条都没有，Run 停在非终态（probe90.py 场景 2/4 实测）。
+        # 一条已经跑了几步、花过钱的 Run 就这么没了，而账本读起来像什么都没发生。
+        #
+        # 与 I-18/I-19 一样**不 REPLAN**：决策本身没错，错的是这个运行时做不到。
+        # 让 DecisionEngine"再选一个"等于告诉它"你选错了" —— 那是一句假话。
+        if action.action_type not in EXECUTABLE_ACTION_TYPES:
+            self._declare_terminal(
+                AgentRunStatus.FAILED,
+                reason=_unexecutable_action_reason(action),
+            )
+            return self._record(StepOutcome.FAILED)
 
         if action.action_type is ActionType.FINISH:
             # I-11：带着**没被处理过的失败**不许宣布完成。
