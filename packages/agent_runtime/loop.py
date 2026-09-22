@@ -66,7 +66,7 @@ from packages.agent_domain.intelligence.action import Action, ActionType, RiskLe
 from packages.agent_domain.intelligence.decision import ActionResolver
 from packages.agent_domain.intelligence.goal import GoalInterpreter, interpret_goal
 from packages.agent_domain.intelligence.observation import Observation
-from packages.agent_domain.intelligence.plan import Plan, PlanNode
+from packages.agent_domain.intelligence.plan import Plan, PlanNode, PlanNodeKind
 from packages.agent_domain.intelligence.state import State
 from packages.agent_harness.approval import ApprovalRequest, ApprovalStatus, HumanLoop
 from packages.agent_harness.harness import Harness
@@ -195,6 +195,63 @@ def _child_verb(outcome: str) -> str:
         "produced no result before its wait deadline"
         if outcome == "unknown"
         else outcome
+    )
+
+
+#: I-18：这个运行时**真的能执行**的 `PlanNode.kind` 集合。
+#:
+#: 现在只有 `TASK`，这不是"还没做完"，而是**事实**：
+#: `_ensure_step()` 把节点变成 Step 之后，"这一步到底做什么"由
+#: `DecisionEngine.decide()` 决定 —— 运行时**没有**任何按 kind 分派的机制。
+#:
+#: 于是 `kind="human"` 的节点不会去要人的签字，`kind="agent"` 的节点
+#: 不会派生子 Run。探针实测（`probe88.py`）：
+#:
+#:     kind='human'   ->  step() 序列 ['executed', 'finished']
+#:                       Run 终态 completed
+#:                       approval.requested 条数 0      ← 没有任何人签过字
+#:
+#:     kind='agent'   ->  Run 终态 completed
+#:                       子 Run 条数 0                  ← 委派从未发生
+#:
+#: 一份**计划声明了一件运行时做不到的事**，而运行时把它当普通 task 跑完、
+#: 报 COMPLETED —— 这不是"少了个功能"，是**系统主动说了假话**
+#: （与 `SkillExecutor` 那条 `SKILL_NOT_WORKER_EXECUTABLE` 同一族病）。
+#:
+#: 处置：**在执行这份计划的第一步之前**就带着点名理由拒绝。
+#: 不许执行它（那是编造"我做到了"），不许跳过它（那是编造"它做过了"）。
+#:
+#: M12 落地真正的按 kind 分派时，这个集合随之扩大 ——
+#: 扩大的那一刻，"声明"与"能力"重新对齐，拒绝自动消失。
+SUPPORTED_PLAN_NODE_KINDS: frozenset[PlanNodeKind] = frozenset({PlanNodeKind.TASK})
+
+
+def _unsupported_plan_nodes(plan: Plan) -> list[PlanNode]:
+    """这份计划里，运行时**执行不了**的节点（按计划顺序）。
+
+    ⚠️ 查的是**整份计划**，不是"下一个要跑的节点"。
+    只查下一个的话，一份 5 个好节点 + 1 个 `kind='human'` 的计划会先跑完
+    前 5 个（**副作用已经发生了**），然后才失败 ——
+    而这份计划从一开始就不可能被完整执行。
+    "宁可拒绝"的意思正是：**在产生任何副作用之前**拒绝。
+    """
+    return [n for n in plan.nodes if n.kind not in SUPPORTED_PLAN_NODE_KINDS]
+
+
+def _unsupported_kinds_reason(offenders: list[PlanNode]) -> str:
+    """把"执行不了"说成一句运维能照着办的话（PR-19：说中真发生了什么）。
+
+    要点齐四样：**哪个节点**、**它声明了什么**、**运行时支持什么**、
+    **为什么不能凑合**。少最后一样的话，读的人会以为"当 task 跑"是个
+    合理的降级 —— 而那恰恰是 M88 要消灭的那条路。
+    """
+    supported = sorted(k.value for k in SUPPORTED_PLAN_NODE_KINDS)
+    declared = ", ".join(f"{n.node_id}={n.kind.value!r}" for n in offenders)
+    return (
+        f"plan declares node kind(s) this runtime cannot execute: {declared}; "
+        f"supported kinds are {supported} — this runtime has no per-kind "
+        f"dispatch, so running such a node as an ordinary task would fabricate "
+        f"the behaviour its kind declares (I-18)"
     )
 
 
@@ -813,6 +870,34 @@ class AgentLoop:
                     AgentRunStatus.FAILED,
                     reason="replan produced a plan with the same shape as the "
                            "invalidated one; no alternative path available",
+                )
+                return self._record(StepOutcome.FAILED)
+
+        # ── I-18：计划声明了运行时做不到的事，就不许开始执行它 ──
+        #
+        # 位置很讲究，三件事同时成立才放这儿：
+        #
+        #   ① 在 `_plan()` **之后** —— 刚落的计划立刻被审，第一步都不会执行；
+        #   ② 在 `_ensure_step()` / `decision_engine.decide()` **之前** ——
+        #      拒绝发生在**任何副作用之前**（"宁可拒绝"的意思就是这一步）；
+        #   ③ 在**每一次 step 都过**的位置，而不是只挂在 `_plan()` 后面 ——
+        #      计划还有第二条来路：**快照恢复**（`state_from_dict` 直接
+        #      `current_plan=plan`，不走 reducer）。只挂在 `_plan()` 后面的话，
+        #      一条从快照恢复回来的、带 `kind='human'` 的 Run 会**绕过**这道判据，
+        #      然后照旧把它当 task 跑掉。
+        #      判据要住在**所有路径的汇合处**，不是某一条路径上（M85）。
+        #
+        # 这与 I-12 的处置同一精神：计划层面的缺陷 → 诚实判死 + 点名理由。
+        # 不 REPLAN 是刻意的：计划本身没错，错的是**这个运行时做不到** ——
+        # 让 Planner "再换一份"等于告诉它"你的计划有问题"，那是一句假话，
+        # 而且换回来十有八九还是同一个 kind（它凭什么知道运行时支持什么）。
+        # 说清楚"我做不到什么"，比反复要一份做不到的计划要诚实。
+        if state.current_plan is not None:
+            offenders = _unsupported_plan_nodes(state.current_plan)
+            if offenders:
+                self._declare_terminal(
+                    AgentRunStatus.FAILED,
+                    reason=_unsupported_kinds_reason(offenders),
                 )
                 return self._record(StepOutcome.FAILED)
 

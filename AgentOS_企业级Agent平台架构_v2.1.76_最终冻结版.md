@@ -1,4 +1,4 @@
-# AgentOS — 企业级 Agent 平台架构（v2.1.75 最终冻结版）
+# AgentOS — 企业级 Agent 平台架构（v2.1.76 最终冻结版）
 
 > 项目定位：Enterprise Agent Harness & Runtime Platform
 > 架构状态：Final / Frozen
@@ -839,6 +839,20 @@ v2.1.65 相对 v2.1.64：**M77（带着没被处理的失败，不许宣布完�
 在此之前没有任何引擎会产出 REPLAN，那条边只是"通了"而已。详见 §114。
 
 ---
+
+v2.1.76 相对 v2.1.75：**M88（`PlanNode.kind` 必须是一份契约，不是写在注释里的愿望）落地后的回写**。
+`plan.py` 里那一行 `kind: str = "task"  # task / tool / agent / human / decision` 是这一轮的起点 ——
+**五个值只活在行尾注释里**：类型是 `str`，`PlanNode.__post_init__` 完全不看它。于是 `kind="banana"` /
+`kind=""` / `kind="TASK"` 全部**静默通过**；更要紧的是 `kind="human"`（计划声明"这一步要人签字"）的节点
+被运行时当**普通 task 跑完**，Run 报 COMPLETED，而 `approval.requested` 一条都没有 —— **没有任何人签过字**。
+`kind="agent"`（声明"这一步要委派给子 Run"）同款：在本地跑完，**一个子 Run 都没有发生过**。
+新增 **I-18**：`kind` 是**闭集**（`PlanNodeKind`，五个值写进类型里，未知值**拒绝**而不是兜底成 `task`）；
+运行时必须**自述**它真的能执行的 kind 集合（`SUPPORTED_PLAN_NODE_KINDS`，现在只有 `task`），
+计划里出现集合外的 kind 就**在产生任何副作用之前**判死并点名理由 ——
+不许执行它（那是编造"我做到了"），不许跳过它（那是编造"它做过了"），不许当普通 task 跑。
+⭐ 补的时候 1334 条既有测试**一条不红**（第三次同款：M85 1287 / M87 1319 / M88 1334）——
+全仓 `PlanNode(` 只有 `snapshot.py` 一个生产构造点，而测试里一个带 `kind=` 的都没有 ⇒ 此前**碰巧成立**。
+19 条单元测试（含三组控制组）；**8 变异全红**；单测 1334 → 1353。详见 §125。
 
 v2.1.75 相对 v2.1.74：**M87（计划必须按「意义」消费，不是按「位置」消费）
 —— 依赖图从「被校验的装饰」变成「被执行的约束」；顺带补上 `run()` 漏掉的半个停止条件。**
@@ -4158,6 +4172,7 @@ AgentOS Scheduler ≠ Kubernetes Scheduler
 | M80 | A Child Run's Cause Must Travel With Its Result | **子 Run 的死因必须跟着结果一起交给父 Run**：B-12 给子 Run 的终态加上了死因，但那个原因只落在子 Run 自己的 trace 上，没跟着事件走 —— 探针实测父 Run 听到的是子 Run **最后一句自言自语**（`summary`），而预算耗尽那条恰恰是反的：`child run failed: execution exec_xxx attempt#1 COMPLETED (completed)`。★ 不是说漏了，是**说反了**。它有真实消费者：`_reason()` 的产物就是父 State 里 `child_run.finished` 的 `content["error"]`，父 Agent 唯一能看到的线索；I-12 要求重规划换一条路，理由错了就换不对路。新增 **D-37**：`reason` 必填关键字参数，死因跟着 `result` 走；死因缺失时必须说"没记录到"，**不许拿 summary 顶替**（那是用过程冒充结论）。（**已在 v2.1.68 落地，见 §117**） |
 | M81 | A Run Whose Delegation Failed Must Not Announce Completion | **委派失败了的父 Run，不许宣布完成**：按 §0.4 回头查"刚落地的 I-11 能不能被绕过"，探针实测一个委派失败的父 Run 照常 FINISH → `completed`，账本写着 `goal reached`。★ 形状是**同一个事实两条路给出两个答案**：那条委派 Execution 真的被判成了 FAILED，但委派路径不经 Worker，没人给它写 `execution.failed` observation —— State 上只有 `child_run.finished`（说的是"子 Run 完事了"），I-11 从 State 读于是读不到。新增 **I-13**：委派失败必须进 State，且绑定真实 Execution（I-6）。只治 `failed`（取消不是失败 S-15；`unknown` 是不知道 D-19）。⭐ 测试设计上踩到一处：不能断言"最终不是 completed" —— I-11 按上次规划划界，换了形状不同的计划之后完成是**设计允许的**；真正的可观测后果是**不能从委派失败直接走到 FINISH**。详见 §118 |
 | M82 | A Voice-Less Delegation Must Not Announce Completion | **委派没有回音的父 Run，不许宣布完成**：M81 只治了 `failed`，回头查 `unknown` 那扇门 —— 探针实测委派等到上限、Kernel 那条 Execution 确实被判死（不判死它永远挂着），但 State 上只有 `child_run.unknown`，I-11 判据 = 0 → 父 Run 宣布 `completed` / `goal reached`。**与 M81 一字不差的同一句话，换了一扇门进来。**★ 难处：写 `execution_failed` 违反 PR-19（那条子 Run 可能正在别的 worker 上跑得好好的，"判死"是**我们不再等**，不是"它做不成"），不写就是上面这一幕 ⇒ 必须要有第三个 kind。新增 **I-14**：`execution_unresolved` 必须进 State 但不许冒充失败；I-11 判据扩成"**这一步没有被证明成功**"（证明不了的与证明失败的同等对待）。`cancelled` 仍不在此列 —— S-15 说取消是父侧主动选择，父 Run 自己知道，不构成"被隐瞒的失败"。⭐ 变红验证第一轮 M4 没红，漏在**测试自己**：reducer 末尾有兜底分支，只断言 `obs.kind` 存在是守不住分支的 —— 要断言"它把这一步当结束了"（从 `active_tasks` 摘掉、进 `completed_tasks`）。详见 §119 |
+| M88 | A Declared Kind Is A Contract, Not A Comment | **`PlanNode.kind` 必须是一份契约，不是写在注释里的愿望**：`plan.py` 的 `kind: str = "task"  # task / tool / agent / human / decision` 把**五个值只放在行尾注释里** —— 类型是 `str`，`PlanNode.__post_init__` 完全不看它，运行时 `_ensure_step()` 也只读 `node.node_id` / `node.name`。同项目的 `ObservationSource` / `ChildRunKind` / `RiskLevel` / `ActionType` 全是 `str, Enum` + `__post_init__` 校验，这是**唯一的例外**。探针实测：`kind='banana'` / `''` / `'TASK'` **全部静默通过**；而 `kind='human'`（计划声明「这一步要人签字」）的节点被**当普通 task 跑完**，Run 报 COMPLETED、`approval.requested` **0 条** —— **没有任何人签过字**；`kind='agent'`（声明要委派）在本地跑完、**0 个子 Run**，照样 COMPLETED。这不是「少了个功能」，是**系统主动说了假话**（与 `SkillExecutor` 的 `SKILL_NOT_WORKER_EXECUTABLE` 同一族病，那份 docstring 自己写着「正确的行为不是假装把技能跑一遍，而是把话说清楚」）。新增 **I-18**：`kind` 是**闭集**（`PlanNodeKind`；未知值**拒绝**，**不做「兜底成 task」** —— 那正是本轮要消灭的行为）；运行时必须**自述**它真的能执行的集合（`SUPPORTED_PLAN_NODE_KINDS`，现只有 `task`），计划里出现集合外的 kind 就**在产生任何副作用之前**判死 + 点名理由 —— 不许执行它、不许跳过它、不许当 task 跑。⭐ 补的时候 1334 条既有测试**一条不红** ⇒ 此前**碰巧成立**（全仓 `PlanNode(` 只有 `snapshot.py` 一个生产构造点，测试里一个带 `kind=` 的都没有）——第三次同款（M85 1287 / M87 1319）。⭐ 判据刻意钉在**每一次 step 都过**的位置而不是 `_plan()` 后面：计划有第二条来路 —— **快照恢复**（`state_from_dict` 直接 `current_plan=plan`，不走 reducer），只挂在规划路径上的话，恢复回来那条会**绕过**它（M85 的「判据要住在所有路径的汇合处」）。⭐ 查的是**整份计划**不是「下一个要跑的节点」：一份 `[好节点, kind='human']` 的计划，第一个节点也**不许跑** —— 否则副作用白发生了，而这份计划从一开始就跑不完。19 条单元测试（含三组控制组）；**8 变异全红**（M5 恰好红 1 条 = 快照恢复那条）；单测 1334 → 1353。详见 §125 |
 | M87 | A Plan Is Consumed By Meaning, Not By Position | **计划必须按「意义」消费，不是按「位置」消费**：`PlanNode.depends_on` 被领域层用一次**完整拓扑排序**守着（拒绝自依赖 / 拒绝未知依赖 / `assert_acyclic()`），也被序列化进快照，而 `plan.py` 的 docstring 写着「Planner 的 Plan Validator 会检查 DAG 环」——**全仓没有 Plan Validator**。更要紧的是运行时**从来没读过依赖**：`_ensure_step()` 取的是 `plan.nodes[len(self.steps_of_run)]`，「下标轮到谁就是谁」。探针实测：一份合法但顺序颠倒的计划（`n2 depends_on n1`，却排在 n1 前面）会被**先跑 n2**。★ 同一个 `len(self.steps_of_run)` 还被当成「这份计划消费到第几个节点了」，而它是「**这条 Run** 跑了多少步」—— 于是重规划换出一份新计划之后，运行时从 `plan.nodes[已跑步数]` 开始取，**新计划的前 N 个节点被静默跳过**（实测 `['a0','a1','b2','ad-hoc-3']`，b0/b1 从未被执行）。新增 **I-16**：节点进 Step 的依据是「**它准备好了**」（依赖都已完成 + 没做过），不是「下标轮到它了」；计划卡住（还有节点没做、但一个就绪的都没有）时**不编造 ad-hoc 步**，走 REPLAN —— 与「计划用完」（那是常态，允许 ad-hoc）必须分得开。⭐ 补的时候 1319 条既有测试**一条不红** ⇒ 此前一直是**碰巧成立**（既有测试的计划要么没依赖、要么依赖恰好与顺序一致）—— 与 M85 同款。⭐ 变红验证**顺手撞出第二个真洞**：`run()` 的停止条件是一张 `StepOutcome` 白名单，**没有 FAILED**；当 `_plan()` 换不出形状不同的计划时 Run 被声明 FAILED，而 `step()` 从此每次都返回 FAILED、`steps` 不再增长 → **`run()` 永远转下去，没有报错也没有尽头**（L-7 自己写过这句话：「一个永远被拒的 Run 会永远空转，且没有任何报错」）。新增 **I-17**：停止条件是「**这条 Run** 到了终态」，不是「这一步的结果属于某张枚举表」—— 两张表说的是两件事，`FAILED` 作为「这一步的结果」不该进白名单（否则弄坏 I-11 的换计划路径），作为「Run 的终态」必须让它停。14 条单元测试（含两组控制组）；**8 变异全红**；单测 1319 → 1334。详见 §124 |
 | M86 | A Recovery Point Must Carry Its Intelligence | **可恢复点必须带走「注入的智能实现」的进度**：`RunSnapshot` 的 docstring 写着它是「一次可恢复点的**全部**数据」，但那份「全部」只覆盖 **Runtime 自己的**内存状态（steps / denials / spent / trace / pending_*）。装配层还注入进来两个 **Intelligence** 实现（Planner / DecisionEngine），它们**可以是有状态的** —— `demo_stack.py` 自己就在注释里承认了：「每个 Run 一个 DecisionEngine：它是**有状态的**（第几步了）」。★ 那句承诺只管住了「跨 Run」，**管不住同一 Run 的一次恢复**。探针（`probe86.py`）实测：正常路径「第 1 次 → LLM_CALL，第 2 次 → FINISH」，而恢复之后新引擎又从第 1 次开始 —— **★ 又调了一次模型**。同一个 Run、同一份 State，两个引擎给出两个答案，而没有任何东西会发现；调模型要花钱、要在外部世界留痕，**静默重来一次不等于没发生**。新增 **R-7**：有状态实现必须能 `progress()` 自述、并能被 `resume(progress)` 接上，恢复时对不上就**点名拒绝**。★ 本轮的转折点是：第一版只做「拒绝」，当场把 `test_a_suspended_run_is_still_suspended_after_a_restart` 打红 —— 那走的是**真的生产流程**（挂起等审批 → Pod 重启 → 恢复）。**判据要挡的是「静默重来」，不是「恢复」本身**：直接拒绝会用一个正确的判据弄坏一条正常的路径。于是改成**先接上、接不上才拒绝**，且 `resume()` 之后**再自述一次、比对一次** —— 否则「实现一个空的 `resume()`」就是后门（M4/M6 两个变异专门守它）。另一处同族漏洞由 **M5 变异**逼出：`progress()` 返回 `None` 与「根本没实现」被混为一谈 → 有状态引擎只要返回 `None` 就能伪装成无状态、绕过 R-7；现在两者分开（没方法=无状态合法；有方法却返回 None=当场拒绝）。落地：018 迁移（`progress` JSONB + `jsonb_typeof='object'` 物理约束）、`ports.ProgressBearing`、Loop 捕获/恢复两段、`DemoDecisionEngine` 的 progress/resume。13 条单元 + 8 条**真 PG** 集成；**6 变异全红**；单测 1299 → 1319。详见 §123 |
 | M85 | A Promise Is Not A Mechanism | **「只能由工厂构造」必须是一条机制，不是一句愿望**：I-6 的唯一入口写着「来自执行的 Observation 只能由这个工厂构造，必须绑定真实 Execution」，而 `Observation` 是 `@dataclass(frozen=True)` —— **`__init__` 是公开的**，`execution_id: str \| None = None` 这个默认值本身就是漏洞的形状。探针（`probe84.py`）实测**四扇门全开**：直构 `EXECUTION_RESULT` 不带 id、`execution_id=""` 空串、非执行来源凭空挂 `execution_id="exec_FAKE"`、`attempt_no=0/-1`（工厂拦得住、直构拦不住）。危害是**账本的可解释性**：声称来自执行的可无 id（问不出「有没有实证」），而 `human_input` 可顺手挂 id —— 于是「**有 execution_id**」不再能推出「**它真的来自执行**」，一个信号失去意义比没有信号更坏。判据搬进 **`__post_init__`**（所有路径的汇合处），**双向**：执行来源必须绑 id+attempt≥1，非执行来源**不许**绑 id；刻意留口：`attempt_no` 对非执行来源仍可选。⭐ 1287 条既有测试**一条不红** ⇒ 保证一直是**碰巧成立**、不是被机制守住，本轮把它变成后者。⭐ 变红验证 **M2 第一版是假绿**（断言被隔壁检查掩盖 —— 与 §119.5 同一族错，栽第二次）→ 立通则：**除被测项外其他字段一律给足**。12 条测试，5 变异全红；单测 1287 → 1299。详见 §122 |
@@ -14558,3 +14573,292 @@ M81 的版本是「数 `execution.failed` 把『什么算失败』外包给了�
 上一轮冻结的是：**一句「这是全部」如果漏了不在自己手里的那一半，那它不是保证，是错觉。**
 
 这一轮冻结的是：**一句「它会停」如果读的是「这一步叫什么」而不是「这条 Run 还在不在」，那它停不停要看运气。**
+
+---
+
+# 125. M88 —— 声明与能力之间的差，必须由系统说出来
+
+## 125.1 起点是一行注释
+
+`packages/agent_domain/intelligence/plan.py` 里那一行：
+
+```python
+kind: str = "task"                      # task / tool / agent / human / decision
+```
+
+五个值，写在**行尾注释**里。类型是 `str`。
+
+这一轮的全部问题都从这一行长出来：**一句话说"只有这五种"，而没有任何一层
+为这句话负责** —— 它不校验、不路由、也不记账。
+
+同项目里同类的字段全都是 `str, Enum` + `__post_init__` 校验：
+`ObservationSource` / `ChildRunKind` / `RiskLevel` / `ActionType`。
+`PlanNode.kind` 是**唯一的例外**。
+
+## 125.2 形状一：领域层不校验
+
+`PlanNode.__post_init__` 只查两件事：`node_id` / `name` 非空，以及
+`node_id not in depends_on`。**完全不看 `kind`**。探针实录（`probe88.py` 场景 1）：
+
+```text
+kind='task'       -> 构造通过
+kind='tool'       -> 构造通过
+kind='agent'      -> 构造通过
+kind='human'      -> 构造通过
+kind='decision'   -> 构造通过
+kind='banana'     -> 构造通过      ← 拼错没人管
+kind=''           -> 构造通过      ← 空串也没人管
+kind='TASK'       -> 构造通过      ← 大小写不符也没人管
+```
+
+**一句"只有这五种"如果写在注释里而不是写在类型里，那它就是一种愿望，
+不是一种约束。**
+
+## 125.3 形状二：运行时不分派
+
+运行时 `_ensure_step()` 只读 `node.node_id` 与 `node.name`：
+
+```python
+node_id, name = node.node_id, node.name
+```
+
+`node.kind` 只被 `_plan_shape()`（I-12 的形状签名）顺带带上 ——
+**读了，但只是为了判断"两份计划是不是同一条路"，没有任何一处拿它决定做什么。**
+
+于是（`probe88.py` 场景 2 / 3）：
+
+```text
+kind='human'   ->  step() 序列 ['executed', 'finished']
+                   Run 终态 completed
+                   approval.requested 条数 0        ← 没有任何人签过字
+
+kind='agent'   ->  Run 终态 completed
+                   子 Run 条数 0                    ← 委派从未发生
+```
+
+一个**声明要人签字**的节点，被当普通 task 跑完，Run 报 COMPLETED。
+
+这不是"少了个功能"，是**系统主动说了假话** —— 账本上这条 Run 是成功的，
+而它成功的前提（有人签过字）从来没有发生过。
+
+这与 `SkillExecutor` 是同一族病，那份 docstring 自己写着：
+
+> 这时候正确的行为不是"假装把技能跑一遍"，而是把话说清楚。
+
+它当时的做法是抛一个**具名错误码**（`SKILL_NOT_WORKER_EXECUTABLE`）+
+一段说中真因的话。这一轮照同一形状办。
+
+## 125.4 「1334 条一条不红」意味着什么
+
+补 I-18 时跑既有测试：**1334 条，一条不红**。
+
+第三次同款了（M85 1287 / M87 1319 / M88 1334）。成因也一样：
+
+```text
+全仓 `PlanNode(` 的构造点：只有 snapshot.py 一个（反序列化）
+测试里带 `kind=` 的：      一个都没有
+```
+
+于是"按 kind 校验"与"不校验"给出**同一个答案** —— 差别被巧合抹平了。
+
+> **一条没人能违反的判据，和没有判据，对系统来说是一样的。**
+
+## 125.5 I-18 的落地：两半，缺一不可
+
+### 第一半：让「五种」成为真约束（领域层）
+
+`kind` 的类型从 `str` 变成 `PlanNodeKind`（`str, Enum`），
+并在 `__post_init__`（**所有构造路径的汇合处**，见 M85）校验：
+
+```python
+if not isinstance(self.kind, PlanNodeKind):
+    try:
+        object.__setattr__(self, "kind", PlanNodeKind(self.kind))
+    except ValueError as exc:
+        known = [k.value for k in PlanNodeKind]
+        raise InvariantViolation(
+            f"PlanNode {self.node_id} has unknown kind {self.kind!r}; "
+            f"expected one of {known}"
+        ) from exc
+```
+
+三个刻意的选择：
+
+* **字符串也收**（`PlanNodeKind` 是 `str, Enum`，收下之后 `node.kind == "task"`
+  依然成立）—— 历史调用点与快照里的值都是字符串，而且这条转换是**唯一的**汇合处，
+  快照恢复（`snapshot.py` 把 `n.get("kind", "task")` 传进来）自动被覆盖。
+* **未知值拒绝，不兜底成 `task`**。兜底正是这一轮要消灭的行为：一个 Planner 把
+  `kind` 拼错（`"tsak"`），运行时却当 task 跑了 —— 那不是宽容，
+  是**系统替一份它没读懂的计划做了主**。
+* **空串与 `None` 同罪**（M85 栽过的那条边界）：`PlanNodeKind("")` 与
+  `PlanNodeKind(None)` 都抛，不做"空串当没传"的宽容。
+
+### 第二半：让「做不到」说出来（运行时）
+
+运行时**自述**它能执行的集合：
+
+```python
+SUPPORTED_PLAN_NODE_KINDS: frozenset[PlanNodeKind] = frozenset({PlanNodeKind.TASK})
+```
+
+然后 `step()` 在**任何执行之前**查一遍：
+
+```python
+if state.current_plan is not None:
+    offenders = _unsupported_plan_nodes(state.current_plan)
+    if offenders:
+        self._declare_terminal(
+            AgentRunStatus.FAILED,
+            reason=_unsupported_kinds_reason(offenders),
+        )
+        return self._record(StepOutcome.FAILED)
+```
+
+理由要点齐四样（`SkillExecutor` 的形状）：
+
+```text
+plan declares node kind(s) this runtime cannot execute: n1='human';
+supported kinds are ['task'] — this runtime has no per-kind dispatch,
+so running such a node as an ordinary task would fabricate the behaviour
+its kind declares (I-18)
+```
+
+**哪个节点 / 声明了什么 / 运行时支持什么 / 为什么不能凑合。**
+最后一样不能省 —— 少了它，读的人会以为"当 task 跑"是个合理的降级选项，
+而那恰恰是本轮要消灭的那条路。
+
+## 125.6 为什么不 REPLAN，而是判死
+
+I-11 / I-12 / I-16 已经建立了"这条路走不通 → 换一条"的机制，
+所以第一反应是把"kind 执行不了"也接进去。**刻意不接**：
+
+* **计划本身没错。** 错的是**这个运行时做不到**。让 Planner "再换一份"，
+  等于告诉它"你的计划有问题" —— 那是一句假话。
+* **换回来十有八九还是同一个 kind。** Planner 凭什么知道运行时支持什么？
+  它不知道；把能力集合塞进 Planner 的上下文，是让 Intelligence 依赖 Runtime
+  的内部（B-7 禁止）。
+* **理由会被冲淡。** 走 REPLAN 的话，最终的 FAILED 理由会是 I-12 那句
+  "same shape as the invalidated one" —— 而**真正的死因**是"运行时执行不了
+  `kind='human'`"。D-37 要求子 Run 交回**真正的死因**，这条同理：
+  终态声明必须点名真因，不能用另一条路径的措辞顶替。
+
+于是：**判死 + 点名 + 说清缺什么**。运维读到一个 FAILED，就知道该去扩哪个能力。
+
+## 125.7 查整份计划，不是查"下一个要跑的节点"
+
+`_unsupported_plan_nodes()` 查的是**整份计划**。这一点值得单独说：
+
+```text
+计划 = [ok (task), gate (human)]
+```
+
+只查"下一个要跑的节点"的话，`ok` 会先被执行 —— **副作用已经发生了** ——
+然后才在 `gate` 上失败。而这份计划**从一开始就不可能被完整执行**。
+
+> "宁可拒绝"的意思正是：**在产生任何副作用之前**拒绝。
+
+所以有一条测试专门守它：`test_an_executable_first_node_is_not_run_when_a_later_node_is_not`
+断言 `steps == 0` 且 `steps_of_run == []` —— 连第一个能跑的节点也不许跑。
+
+变红验证的 M4（把 `plan.nodes` 改成 `plan.nodes[:1]`）**恰好红这两条**，
+证明这条守点是活的。
+
+## 125.8 判据住在所有路径的汇合处
+
+计划有**两条来路**：
+
+```text
+① `_plan()`  ->  `_plan()` 落一条 PLAN_CREATED Observation -> reducer 写 current_plan
+② 快照恢复    ->  `state_from_dict()` **直接** `current_plan=plan`，不走 reducer
+```
+
+把判据挂在 `_plan()` 后面（①那条路上）是最自然的写法，也是**错的**：
+一条从快照恢复回来的、带 `kind='human'` 的 Run 会**绕过**它，
+然后照旧把那个节点当 task 跑掉。
+
+所以判据钉在 `step()` 的顶层 —— **每一次 step 都过**，与 `budget` 检查并列。
+这样两条来路都被覆盖，且不需要在 reducer 与 `state_from_dict` 两处各写一遍。
+
+这正是 M85 那条通则的第二次应用：
+
+> 判据要住在**所有构造路径的汇合处**，不是某一条路径上。
+
+M85 的版本是 `Observation.__post_init__`（工厂 / 直构 / 快照恢复三者汇合），
+这一轮的版本是"每一次 `step()` 的入口"。
+
+变红验证的 M5（把判据的触发条件改成"最后一条 observation 是 `plan.created`"，
+即只在规划路径上生效）**恰好红 1 条** —— 就是快照恢复那条。
+
+## 125.9 `expected_output`：登记不治，不是待办
+
+同一行注释的邻居 `expected_output: str | None` 待遇类似，但**处置不同**：
+
+```text
+能序列化   ✅  `_plain` 是通用序列化器，dataclass 全字段摊平
+能还原     ✅  `snapshot.py` 显式读它
+被读过吗   ❌  没有任何一处拿它做判断
+```
+
+它与 `depends_on` 曾经同族（被定义、被持久化、不被消费），但**不能照 M87 的办法办**：
+`depends_on` 是**可执行**的约束（I-16 之后运行时真的读它），而 `expected_output`
+是自由文本（"一个整数"）。拿它做判据需要一个**裁判模型** —— 那是 Evaluation
+（M8）的活，不是 Runtime 的。
+
+所以它是**登记不治**（空洞 244），并在 `PlanNode` 的 docstring 里把定位写清楚：
+
+> 它的定位就是注释。把定位写清楚，比假装它有约束力要诚实。
+
+这与 M83 那条"不要为不存在的能力写区分"同一精神：**别为一个注释字段
+造一套看起来像约束的机制。**
+
+## 125.10 变红验证：8 条
+
+| 变异 | 改回什么 | 结果 |
+|---|---|---|
+| M1 | 领域层不校验 `kind`（回到"类型是 `str`"） | ★ 红 8 failures + 10 errors |
+| M2 | 未知 kind **兜底成 `task`**（本轮要消灭的那条路本身） | ★ 红 6 |
+| M3 | 运行时那道判据整个拿掉 | ★ 红 10 |
+| M4 | 只查"第一个节点"，不查整份计划 | ★ 红 2 |
+| M5 | 判据只在"刚规划出计划"时生效（快照恢复绕过） | ★ 红 **1** |
+| M6 | 理由不说"不能凑合" | ★ 红 1 |
+| M7 | 理由不点名**哪个节点** | ★ 红 3 |
+| M8 | 声明集合扩成"全都支持" | ★ 红 7 |
+
+**8/8 全红。** M5 与 M6 各自恰好红 1 条，隔离干净 ——
+说明那两条守点各自都有**专属**的用例，不是被别的判据顺带守住的。
+
+## 125.11 空洞表
+
+| # | 形状 | 处置 |
+|---|---|---|
+| 244 | `PlanNode.expected_output` 能序列化、能还原，但**没有任何一处读它做判断** | **登记不治**：它是自由文本，做判据需要裁判模型（Evaluation 的活）。定位已写进 `PlanNode` 的 docstring |
+| 245 | 基线文档"版本变更"段在 v2.1.66 之后是**倒序**（v2.1.75 在 v2.1.74 之前），而 v2.1.1~v2.1.65 是正序 —— 找"最新变更"的人会先读到正序那一段 | **登记不治**：重排要移动 ~10 个大段，是一份 14k 行文档里收益不成比例的动作；本轮按既有惯例（新的插在最前）继续 |
+| 246 | `Plan.root_nodes()` 的调用者**只有测试** —— I-16 之后 `_next_plan_node()` 自己扫节点，没走这个入口 | **登记不治**：它是一条**正确**的图入口（返回所有无依赖节点），只是目前没人用；删掉会损失一个对读代码的人有解释力的 API。等 M12 的 Planner/Validator 落地时自然会用上 |
+| 247 | `SUPPORTED_PLAN_NODE_KINDS` 只有 `task` —— 声明了五种、实际只支持一种 | **登记不治（有归属）**：这是**事实的自述**，不是缺陷。M12（Intelligence 落地真正的按 kind 分派）时扩大它，拒绝自动消失 |
+| 248 | §32 画了一条 `Goal → Planner → Plan → **Plan Validator** → Action Selector → Task` 的流水线，并列出 Validator 要检查的七项（DAG Cycle / Tool Exists / Permission / Dependency / Resource / Budget / Risk）—— 而**这个阶段全仓不存在**。七项里只有两项有人做（DAG Cycle 由 `assert_acyclic()`、Dependency 由 M87/I-16 的 `_next_plan_node()`）；`Tool Exists` **连表达它的字段都没有**（`PlanNode` 无 `tool` 字段）；`Permission` / `Risk` 由 Harness 在**执行时逐步**审；`Budget` 由 Loop 的预算计数在**执行时**拦；`Resource` 没有任何对应机制。`plan.constraints`（自由字符串）只被 `_plan_shape()`（I-12 的形状签名）读到，**从不被执行** | **登记不治（下一轮的入口）**：本轮（M88）与 M87 各自只吃掉了 `kind` 与 `depends_on` 两条。**剩下的是一条独立的架构问题，不是一条缺陷** —— "计划在被执行之前就被审过"与"每一步执行时被审"是**两种不同的保证**，前者今天并不成立。要么在 M12（Intelligence）里落地一个真正的计划期校验阶段，要么把 §32 的图改成**实话**（标明哪些检查发生在执行期）。**在那之前，读 §32 的人会以为存在一道不存在的门。** |
+
+## 125.12 冻结的是什么
+
+这一轮与上一轮（M87）是**同一族问题的两半**。
+
+M87 治的是：**判据读「位置」而不是读「意义」** ——
+`plan.nodes[len(steps_of_run)]` 把"下标轮到谁"当成了"该做哪一步"。
+
+这一轮治的是：**声明与能力之间的差，被沉默了**。
+
+* `kind` 声明了五种，领域层**不校验** → 拼错的声明溜进系统；
+* 运行时**做不到**其中四种，却**不说** → 一个"要人签字"的节点被当普通 task 跑完，
+  Run 报 COMPLETED，而签字从未发生。
+
+上一轮冻结的是：**一句「它会停」如果读的是「这一步叫什么」而不是「这条 Run 还在不在」，
+那它停不停要看运气。**
+
+这一轮冻结的是：
+
+> **一句「只有这五种」如果写在注释里而不是写在类型里，那它就是一种愿望，不是一种约束。**
+
+以及 I-18 落地时浮现的那条：
+
+> **声明与能力之间的差，必须由系统说出来。**
+> **沉默的差，读起来就像没有差** —— 而"看起来没有差"，
+> 正是一份审计账本最不该有的东西。

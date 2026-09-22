@@ -8,17 +8,66 @@ Plan 是**静态**产物（Planner 产出），Step 是它在运行时的实例�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Mapping
 
 from ..errors import InvariantViolation
 from ..ids import new_id
 
 
+class PlanNodeKind(str, Enum):
+    """一个计划节点声明的**工作类型**（I-18）。
+
+    ⚠️ 这五个值此前只活在 `kind: str = "task"` 的**行尾注释**里：
+    类型是 `str`，`PlanNode.__post_init__` 完全不看它。于是（探针实测）：
+
+        kind='banana'  ->  构造通过
+        kind=''        ->  构造通过
+        kind='TASK'    ->  构造通过
+
+    同项目里 `ObservationSource` / `ChildRunKind` / `RiskLevel` / `ActionType`
+    全是 `str, Enum` + `__post_init__` 校验 —— 这是**唯一的例外**。
+
+    **一句「只有这五种」如果写在注释里而不是写在类型里，那它就是一种愿望，
+    不是一种约束。**（M88）
+
+    这五个值不是编出来的：它们各自对应系统里**真实存在**的一条路 ——
+    `task` 由 DecisionEngine 正常决策，`tool` 对应 `ActionType.TOOL_CALL`，
+    `agent` 对应 `ActionType.AGENT_DELEGATION`（派生子 Run），
+    `human` 对应 Harness 的 `REQUIRE_APPROVAL` / `ActionType.HUMAN_APPROVAL`，
+    `decision` 对应一次纯决策步。
+
+    但**声明了**不等于**做得到**：运行时至今没有按 kind 分派的机制
+    （见 `loop.SUPPORTED_PLAN_NODE_KINDS`）。声明与能力之间的差，
+    必须由运行时**说出来**，不能靠静默当 task 跑掉。
+    """
+
+    TASK = "task"
+    TOOL = "tool"
+    AGENT = "agent"
+    HUMAN = "human"
+    DECISION = "decision"
+
+
 @dataclass(frozen=True)
 class PlanNode:
+    """计划里的一个**静态**节点（Step 是它的运行时实例）。
+
+    ⚠️ `expected_output` 是一段**给人看的注释**：它能被序列化（`_plain`
+    是通用序列化器）、能被还原（`snapshot.py` 显式读它），
+    但**没有任何一处读它做判断**（M88 实证，登记为空洞 244）。
+
+    它和 `depends_on` 曾经同族（被定义、被持久化、不被消费），
+    但**处置不同**：`depends_on` 是**可执行**的约束（I-16 之后运行时真的读它），
+    而 `expected_output` 是自由文本（"一个整数"），拿它做判据需要另一个
+    裁判模型 —— 那是 Evaluation 的活，不是 Runtime 的。
+    所以它是**登记不治**，不是"待办"：它的定位就是注释，
+    把定位写清楚，比假装它有约束力要诚实。
+    """
+
     node_id: str
     name: str
-    kind: str = "task"                      # task / tool / agent / human / decision
+    kind: PlanNodeKind = PlanNodeKind.TASK
     depends_on: tuple[str, ...] = ()
     expected_output: str | None = None
 
@@ -27,6 +76,25 @@ class PlanNode:
             raise InvariantViolation("PlanNode.node_id / name are required")
         if self.node_id in self.depends_on:
             raise InvariantViolation(f"PlanNode {self.node_id} depends on itself")
+
+        # I-18：`kind` 是一个**闭集**。
+        #
+        # 字符串能匹配成员就收下（历史调用点与快照里的值都是字符串，
+        # 而 `PlanNodeKind` 是 `str, Enum`，收下之后 `node.kind == "task"`
+        # 依然成立）—— 匹配不上就**拒绝**。
+        #
+        # 刻意**不**做"未知值兜底成 task"：那正是 M88 要消灭的行为。
+        # 一个 Planner 把 `kind` 拼错，运行时却当 task 跑了 ——
+        # 这不是宽容，是**系统替一份它没读懂的计划做了主**。
+        if not isinstance(self.kind, PlanNodeKind):
+            try:
+                object.__setattr__(self, "kind", PlanNodeKind(self.kind))
+            except ValueError as exc:
+                known = [k.value for k in PlanNodeKind]
+                raise InvariantViolation(
+                    f"PlanNode {self.node_id} has unknown kind {self.kind!r}; "
+                    f"expected one of {known}"
+                ) from exc
 
 
 @dataclass(frozen=True)

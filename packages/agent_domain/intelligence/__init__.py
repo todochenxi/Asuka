@@ -7,5 +7,5 @@ from .observation import (  # noqa: F401
     Observation,
     ObservationSource,
 )
-from .plan import Plan, PlanNode  # noqa: F401
+from .plan import Plan, PlanNode, PlanNodeKind  # noqa: F401
 from .state import PassthroughReducer, State, StateReducer  # noqa: F401
