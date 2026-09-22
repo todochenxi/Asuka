@@ -52,7 +52,21 @@ class Plan:
 
     # ------------------------------------------------------------------ 校验
     def assert_acyclic(self) -> None:
-        """Planner 的 Plan Validator 会检查 DAG 环；这里做领域级兜底。"""
+        """拒绝带环的依赖图。
+
+        ⚠️ 这句话此前写着"Planner 的 Plan Validator 会检查 DAG 环；这里做
+        领域级兜底" —— 而**全仓没有 Plan Validator**（M87 实证）。于是那句
+        "兜底"其实把唯一的检查说成了备份，读的人会以为另有一道。
+
+        它也不只是措辞问题：那段时间里 `depends_on` **根本没被执行过** ——
+        运行时按下标取节点（`plan.nodes[已跑步数]`），所以一张合法的依赖图
+        和一个随手排的列表在运行时的差别是零。校验一张没人读的图，
+        和没有校验过它，对系统行为来说是一样的。
+
+        M87 / I-16 之后依赖图才真的可执行：`_ensure_step()` 只挑
+        "依赖都已完成且没做过"的节点。这里仍然是**领域级**的守卫
+        （所有构造路径的汇合处，见 M85），但现在它守的东西有人读了。
+        """
         indegree = {n.node_id: 0 for n in self.nodes}
         adj: dict[str, list[str]] = {n.node_id: [] for n in self.nodes}
         for n in self.nodes:

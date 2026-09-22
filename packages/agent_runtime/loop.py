@@ -36,7 +36,7 @@ from datetime import timedelta
 from enum import Enum
 from typing import Any, Mapping
 
-from packages.agent_domain.business import AgentRun, AgentRunStatus, Step
+from packages.agent_domain.business import AgentRun, AgentRunStatus, Step, StepStatus
 from packages.agent_domain.business.snapshot import (
     RunSnapshot,
     state_from_dict,
@@ -66,7 +66,7 @@ from packages.agent_domain.intelligence.action import Action, ActionType, RiskLe
 from packages.agent_domain.intelligence.decision import ActionResolver
 from packages.agent_domain.intelligence.goal import GoalInterpreter, interpret_goal
 from packages.agent_domain.intelligence.observation import Observation
-from packages.agent_domain.intelligence.plan import Plan
+from packages.agent_domain.intelligence.plan import Plan, PlanNode
 from packages.agent_domain.intelligence.state import State
 from packages.agent_harness.approval import ApprovalRequest, ApprovalStatus, HumanLoop
 from packages.agent_harness.harness import Harness
@@ -388,7 +388,34 @@ class AgentLoop:
         return self.state
 
     def run(self) -> State:
-        """跑到终态为止（FINISHED / BUDGET_EXHAUSTED / 等待审批）。"""
+        """跑到终态为止（FINISHED / BUDGET_EXHAUSTED / 等待审批 / 等待子 Run）。
+
+        ⚠️ 停止条件有两半，缺一不可：
+
+            ① 这一步的结果属于"**现在该停了**"那一类（下面那张表）
+            ② 或者**这条 Run 已经到了终态**（`TERMINAL_RUN_STATUSES`）
+
+        此前只有 ①。漏掉 ② 的后果（probe87 场景 3 实测，**不需要任何变异**）：
+
+            重规划换不出形状不同的计划 -> `_plan()` 返回 False
+            -> `_declare_terminal(FAILED)` -> `step()` 从此每次都返回 FAILED
+            -> `steps` 不再增长（FAILED 那条路不吃预算）
+            -> `steps >= budget` 永远不成立 -> **`run()` 永远转下去**
+
+        没有报错，也没有尽头 —— 而 L-7 自己写下的正是这句话：
+        "一个永远被拒的 Run 会永远空转，且没有任何报错。"
+        L-7 把 `DENY_LOOP` 加进了那张表，却没看见**判据本身选错了对象**。
+
+        两张表说的是两件事，不能互相代替：
+
+            StepOutcome 那张表 = "**这一步**现在干不完 / 不该再干"
+            Run 的终态         = "**这条 Run**结束了"
+
+        它们不重合的地方就是空转。最清楚的一处：`FAILED` 作为**这一步的结果**
+        通常不是终点（失败是事实，Agent 要据此换计划，I-11 就是这么设计的），
+        所以它**不该**进那张表；但作为**这条 Run 的终态**，它必须让 `run()` 停。
+        用前者代替后者，就必然在某个角落转不完。
+        """
         assert self.state is not None, "call start() first"
         while True:
             outcome = self.step()
@@ -407,6 +434,10 @@ class AgentLoop:
                 # 终态之后再推进，B-10 的下半句就没了。
                 StepOutcome.CANCELLED,
             ):
+                return self.state
+            # ② 这条 Run 已经结束了 —— 无论这一步的结果叫什么名字。
+            # （`is_terminal` 是 property，不是方法。）
+            if self.agent_run is not None and self.agent_run.is_terminal:
                 return self.state
 
     # ------------------------------------------------------------ 一步
@@ -785,6 +816,32 @@ class AgentLoop:
                 )
                 return self._record(StepOutcome.FAILED)
 
+        # ── I-16：计划卡住了就不许往下编造 ──
+        #
+        # "计划用完了"（节点都做过）是常态 —— 动态决策图允许 ad-hoc 步。
+        # "计划卡住了"（还有节点没做，但一个就绪的都没有）不是常态：
+        # 它意味着这条路走不通了，多半是某个依赖那一步失败了。
+        #
+        # 两条路必须分开处置。混起来的话，一个卡住的计划会**静默退化成
+        # ad-hoc 步**：Runtime 自己编一个计划没批准过的步，照常往下走，
+        # 而账本上读不出任何区别（M82 的"把存在当成被处理"同族）。
+        #
+        # 处置与 I-11 同一精神：**带着走不通的路不许往下走**。
+        # 换计划而不是判死 —— 失败说明"这条计划行不通"，不等于"目标无解"。
+        # REPLAN 吃预算（I-10），所以一条真的走不通的路会在预算耗尽时
+        # 走到 FAILED：既不谎报成功，也不空转。
+        #
+        # 只在"这一步做完了、该开新步了"的时候判 —— 否则会把一个
+        # 正走到一半的 Step 从脚下抽掉。
+        if (
+            state.current_plan is not None
+            and (self.current_step is None or self._step_is_done())
+            and self._plan_is_stuck(state.current_plan)
+        ):
+            self.steps += 1
+            self._apply_plan_invalidated()
+            return self._record(StepOutcome.REPLANNED)
+
         decision = self.decision_engine.decide(state)
         # 注意：Decision **必须**带 Action（构造时校验），所以"没有下一步"不是
         # 用空 Decision 表达，而是用 `ActionType.FINISH` 表达 —— 否则 I-4 会
@@ -960,11 +1017,84 @@ class AgentLoop:
         return expired
 
     # ------------------------------------------------------------ Business Domain
+    def _consumed_plan_nodes(self) -> set[str]:
+        """这份 Run 已经实例化成 Step 过的 plan node（按 node_id）。
+
+        **从 `steps_of_run` 现算，不另存一份。** 理由有两条：
+        ① 它是派生值（B-2 的同一精神），另存一份就有两个地方会不同步；
+        ② `steps_of_run` 本来就进快照（`snapshot.steps`），
+           现算等于**恢复之后它自动是对的** —— 不需要再补一条 R-7 式的进度。
+        """
+        return {s.plan_node_id for s in self.steps_of_run}
+
+    def _satisfied_plan_nodes(self) -> set[str]:
+        """依赖已经**被满足**的 plan node。
+
+        判据是"那个节点对应的 Step **完成了**"，不是"它开始过"。
+
+        刻意**只认 COMPLETED**：`FAILED` / `CANCELLED` 都不算满足 ——
+        "B 依赖 A" 的意思是 B 要用 A 的**产物**，而一个失败掉的 A
+        没有产物。把失败也算成"满足"，依赖图就又变回注释了。
+        """
+        return {
+            s.plan_node_id
+            for s in self.steps_of_run
+            if s.status is StepStatus.COMPLETED
+        }
+
+    def _next_plan_node(self, plan: Plan) -> PlanNode | None:
+        """I-16：挑出**下一个该做的**节点 —— 按**意义**挑，不按**位置**挑。
+
+        在此之前这里是 `plan.nodes[len(self.steps_of_run)]`，也就是"下标轮到谁
+        就是谁"。两个后果（probe87.py 实测，不是推演）：
+
+            ① 计划说 `n2 depends_on n1`，而 n2 排在 n1 前面
+               → 运行时**先跑了 n2**。`depends_on` 只被校验过，从没被执行过。
+            ② `len(self.steps_of_run)` 是**这条 Run 已经跑了多少步**，
+               不是**这份计划消费到第几个节点**。重规划换出一份新计划之后，
+               它从 `plan.nodes[已跑步数]` 开始取 —— 新计划的前 N 个节点
+               **被静默跳过**，然后计划就用完了。
+
+        ⭐ 两张脸是同一个根因：**计划是按位置消费的，不是按意义消费的。**
+
+        现在改成：按计划自己的顺序，取第一个
+        「**没被实例化过** 且 **依赖都已完成**」的节点。
+
+        计划自己的顺序仍然决定"同时就绪时先做哪个" —— 那是有意义的
+        （它是 Planner 表达偏好的唯一方式），只是不再是**唯一**依据。
+        """
+        consumed = self._consumed_plan_nodes()
+        satisfied = self._satisfied_plan_nodes()
+        for node in plan.nodes:
+            if node.node_id in consumed:
+                continue
+            if all(dep in satisfied for dep in node.depends_on):
+                return node
+        return None
+
+    def _plan_has_unconsumed_nodes(self, plan: Plan) -> bool:
+        consumed = self._consumed_plan_nodes()
+        return any(n.node_id not in consumed for n in plan.nodes)
+
+    def _plan_is_stuck(self, plan: Plan) -> bool:
+        """计划里还有节点没做，但**一个就绪的都没有**。
+
+        这不是"计划用完了"（那是常态，动态决策图允许 ad-hoc 步），
+        而是"这条路走不通了" —— 多半是某个依赖那一步失败了。
+
+        ⚠️ 两者必须分得开：混起来的话，一个卡住的计划会**静默退化成
+        ad-hoc 步**，账本上读不出任何区别（M82 的"把存在当成被处理"同族）。
+        """
+        return self._plan_has_unconsumed_nodes(plan) and self._next_plan_node(plan) is None
+
     def _ensure_step(self) -> Step:
         """取出当前 Step，没有就开一个（基线 §3.1：Step 由 Runtime 动态产生）。
 
         Step 是 **Plan Node 的运行时实例**，不是静态图节点 ——
         所以它在这里被"造出来"，而不是从某张预定义的表里读出来。
+
+        I-16：取哪个节点由 `_next_plan_node()` 决定（依赖已满足 + 没做过），
+        **不是**由下标决定。
         """
         if self.current_step is not None and not self._step_is_done():
             return self.current_step
@@ -973,12 +1103,16 @@ class AgentLoop:
         assert state is not None
         assert self.agent_run is not None
         plan = state.current_plan
-        index = len(self.steps_of_run)
-        if plan is not None and index < len(plan.nodes):
-            node = plan.nodes[index]
+        node = self._next_plan_node(plan) if plan is not None else None
+        if node is not None:
             node_id, name = node.node_id, node.name
         else:
-            # 没有 Plan（或节点已用完）也要能开 Step —— 动态决策图里这是常态
+            # 没有 Plan（或节点已用完）也要能开 Step —— 动态决策图里这是常态。
+            #
+            # ⚠️ "节点已用完"与"计划卡住"在这里长得一样，但**不**一样：
+            # 卡住那条路在 `step()` 里就被 REPLAN 接走了，到不了这儿。
+            # 让它到这儿，就等于用一个 ad-hoc 步把"计划卡住了"盖掉。
+            index = len(self.steps_of_run)
             node_id, name = f"ad-hoc-{index}", f"step-{index}"
 
         step = Step(run_id=self.agent_run.run_id, plan_node_id=node_id, name=name)
