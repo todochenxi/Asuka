@@ -226,6 +226,60 @@ def _child_verb(outcome: str) -> str:
 SUPPORTED_PLAN_NODE_KINDS: frozenset[PlanNodeKind] = frozenset({PlanNodeKind.TASK})
 
 
+# ============================================================================
+# §32 的「Plan Validator」—— 计划在被执行之前必须过的一道门
+# ============================================================================
+#
+# 基线 §32 画的是：
+#
+#     Goal -> Planner -> Plan -> **Plan Validator** -> Action Selector -> Task
+#
+# 并列出 Validator 要检查的七项。M87 实证「全仓没有 Plan Validator」
+# （`plan.py` 的 docstring 曾把它说成"这里做领域级兜底"，把唯一的检查
+# 说成了备份）。M89 把这道门**建了起来 —— 只建它真的做得到的那部分**。
+#
+# 七项逐项的真实归属（写在这里，是为了让读代码的人不必再去 grep 一遍）：
+#
+# | §32 的检查项 | 状态 | 实际住在哪 / 为什么不在 |
+# |---|---|---|
+# | DAG Cycle   | ✅ 有人做   | `Plan.assert_acyclic()` —— 领域层，构造时 |
+# | Dependency  | ✅ 有人做   | `_next_plan_node()`（I-16）—— 运行时取节点时 |
+# | Permission  | ⚠️ 换了时机 | Harness `before_action()` —— **每个动作执行前**，不是计划期 |
+# | Risk        | ⚠️ 换了时机 | Harness 的 `RiskLevel` 策略 —— 同上，逐步 |
+# | Budget      | ⚠️ 换了时机 | Loop 的 `steps >= budget` —— **执行时**拦，不是计划期 |
+# | Tool Exists | ❌ 无机制   | `PlanNode` **没有** `tool` 字段 —— 这项连表达都表达不了 |
+# | Resource    | ❌ 无机制   | 全仓没有任何 Resource 概念 |
+#
+# ⇒ 差的不是"七项里少做了几项"，是**一道门的位置**：
+#   §32 说计划**在执行之前**被审过一遍；实际是**每一步执行时**被审。
+#   后者允许"先跑了三个节点才发现这条路走不通" —— 而副作用已经发生了。
+#
+# 下面 `plan_defects()` 就是那道门，它只做"**计划期一次性就能判死**的
+# 结构性问题"。它**不假装**做了另外五项：上面表里的"换了时机"与"无机制"
+# 都是**事实**，不是待办 —— 把事实写清楚，比造一个看起来像门的空壳诚实。
+# ============================================================================
+
+#: 这份计划不是给这条 Run 的（I-19）。
+PLAN_BELONGS_TO_ANOTHER_RUN = "PLAN_BELONGS_TO_ANOTHER_RUN"
+
+#: 计划里有运行时执行不了的 `PlanNode.kind`（I-18）。
+PLAN_NODE_KIND_NOT_EXECUTABLE = "PLAN_NODE_KIND_NOT_EXECUTABLE"
+
+
+@dataclass(frozen=True)
+class PlanDefect:
+    """一个**计划期就能判死**的缺陷。
+
+    刻意分成 `code` + `detail` 两半（PR-19：错误码要说中真发生了什么）：
+    `code` 是机器可读的类别（调用方按它分支），`detail` 是人读的点名
+    （哪个节点 / 声明了什么 / 为什么不能凑合）。合成一句话的话，
+    两者都会被稀释。
+    """
+
+    code: str
+    detail: str
+
+
 def _unsupported_plan_nodes(plan: Plan) -> list[PlanNode]:
     """这份计划里，运行时**执行不了**的节点（按计划顺序）。
 
@@ -252,6 +306,68 @@ def _unsupported_kinds_reason(offenders: list[PlanNode]) -> str:
         f"supported kinds are {supported} — this runtime has no per-kind "
         f"dispatch, so running such a node as an ordinary task would fabricate "
         f"the behaviour its kind declares (I-18)"
+    )
+
+
+def plan_defects(plan: Plan, *, run_id: str) -> list[PlanDefect]:
+    """**计划期**能判死的缺陷（§32 的「Plan Validator」，M89 落地）。
+
+    调用点只有一个：`AgentLoop._step()` 的入口，**在 `decision_engine.decide()`
+    与任何 Task 之前**。所以这里的每一条判据都自动获得两条性质：
+
+        * 拒绝发生在**任何副作用之前**；
+        * 计划的**两条来路**都被覆盖 —— `_plan()` 落的，与**快照恢复**
+          带回来的（`state_from_dict()` 直接写 `current_plan`，不走 reducer）。
+          判据住在所有路径的汇合处（M85 的通则）。
+
+    参数里的 `run_id` 是**这条 Run** 的 id，由调用方给 —— 领域层不该知道
+    "现在跑的是谁"（B-7），所以归属判据只能住在这里，不能住进 `Plan`。
+    """
+    defects: list[PlanDefect] = []
+
+    # ① I-19：这份计划是不是**给这条 Run** 的？
+    #
+    # `Plan.run_id` 不是装饰：`Plan.__post_init__` 要求它非空，快照序列化它，
+    # 而恢复路径（`snapshot.py`）写着
+    #     run_id=plan_raw.get("run_id") or data.get("run_id", "")
+    # —— 缺失时**回填这条 Run 的 id**。也就是说代码**认为**两者应当相等。
+    # 但规划路径（`_plan()`）**从不比对**：一份属于别的 Run 的计划会被照单
+    # 全收，成为这条 Run 的 `current_plan`，节点被实例化成 Step 照常往下走，
+    # 而账本上没有任何一处说"这不是这条 Run 的计划"（probe89.py 实测）。
+    #
+    # 一个按目标文本做缓存的 Planner、一个把计划建一次就复用的实现，
+    # 都会正好长成这样 —— 而"这条 Run 走的是别人的计划"是审计账本
+    # 最不该沉默的那类事实。
+    if plan.run_id != run_id:
+        defects.append(
+            PlanDefect(
+                PLAN_BELONGS_TO_ANOTHER_RUN,
+                f"plan says it belongs to run {plan.run_id!r}, "
+                f"but this run is {run_id!r}",
+            )
+        )
+
+    # ② I-18：计划里有没有运行时执行不了的 kind？
+    offenders = _unsupported_plan_nodes(plan)
+    if offenders:
+        defects.append(
+            PlanDefect(PLAN_NODE_KIND_NOT_EXECUTABLE, _unsupported_kinds_reason(offenders))
+        )
+
+    return defects
+
+
+def _plan_defects_reason(defects: list[PlanDefect]) -> str:
+    """把缺陷列表说成一条**能进账本**的理由。
+
+    B-12：终态声明必须带原因。D-37：必须是**真正的死因**。
+    所以理由里要同时有**机器可读的码**与**点名的细节** ——
+    运维照着 `code` 分支，照着 `detail` 去改。
+    """
+    joined = "; ".join(f"{d.code} ({d.detail})" for d in defects)
+    return (
+        f"plan rejected before execution: {joined} — the plan was neither "
+        f"executed nor skipped; fix the plan (I-18/I-19)"
     )
 
 
@@ -873,7 +989,7 @@ class AgentLoop:
                 )
                 return self._record(StepOutcome.FAILED)
 
-        # ── I-18：计划声明了运行时做不到的事，就不许开始执行它 ──
+        # ── §32 的「Plan Validator」：计划在执行之前必须过的一道门 ──
         #
         # 位置很讲究，三件事同时成立才放这儿：
         #
@@ -883,21 +999,22 @@ class AgentLoop:
         #   ③ 在**每一次 step 都过**的位置，而不是只挂在 `_plan()` 后面 ——
         #      计划还有第二条来路：**快照恢复**（`state_from_dict` 直接
         #      `current_plan=plan`，不走 reducer）。只挂在 `_plan()` 后面的话，
-        #      一条从快照恢复回来的、带 `kind='human'` 的 Run 会**绕过**这道判据，
-        #      然后照旧把它当 task 跑掉。
+        #      一条从快照恢复回来的坏计划会**绕过**这道判据，
+        #      然后照旧被执行。
         #      判据要住在**所有路径的汇合处**，不是某一条路径上（M85）。
         #
         # 这与 I-12 的处置同一精神：计划层面的缺陷 → 诚实判死 + 点名理由。
-        # 不 REPLAN 是刻意的：计划本身没错，错的是**这个运行时做不到** ——
-        # 让 Planner "再换一份"等于告诉它"你的计划有问题"，那是一句假话，
-        # 而且换回来十有八九还是同一个 kind（它凭什么知道运行时支持什么）。
-        # 说清楚"我做不到什么"，比反复要一份做不到的计划要诚实。
+        # 不 REPLAN 是刻意的：计划本身没错，错的是**这个运行时做不到**
+        # （I-18），或者**这份计划根本不是这条 Run 的**（I-19）——
+        # 让 Planner "再换一份"等于告诉它"你的计划有问题"，那是一句假话；
+        # 而且最终 FAILED 的理由会被 I-12 那句 "same shape" 冲淡 ——
+        # **真正的死因被顶替了**（D-37 同理：终态理由必须是真正的死因）。
         if state.current_plan is not None:
-            offenders = _unsupported_plan_nodes(state.current_plan)
-            if offenders:
+            defects = plan_defects(state.current_plan, run_id=state.run_id)
+            if defects:
                 self._declare_terminal(
                     AgentRunStatus.FAILED,
-                    reason=_unsupported_kinds_reason(offenders),
+                    reason=_plan_defects_reason(defects),
                 )
                 return self._record(StepOutcome.FAILED)
 

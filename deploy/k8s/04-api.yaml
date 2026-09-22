@@ -25,7 +25,7 @@ spec:
         # 于是"忘记先跑迁移 Job"不会变成一次上线事故，
         # 只会变成多跑几次空操作。
         - name: migrate
-          image: agentos:2.1.76-b1
+          image: agentos:2.1.77-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.migrate", "apply"]
           env:
@@ -42,7 +42,7 @@ spec:
               readOnly: true
       containers:
         - name: api
-          image: agentos:2.1.76-b1
+          image: agentos:2.1.77-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.api"]
           env:

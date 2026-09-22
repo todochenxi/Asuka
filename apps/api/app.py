@@ -88,7 +88,7 @@ def build_app(
     fastapi = _fastapi()
     from fastapi.responses import JSONResponse
 
-    app = fastapi.FastAPI(title="AgentOS Control Plane", version="2.1.76")
+    app = fastapi.FastAPI(title="AgentOS Control Plane", version="2.1.77")
 
     if uow is not None:
         _add_transaction_middleware(app, uow)
