@@ -45,7 +45,7 @@ spec:
     spec:
       initContainers:
         - name: migrate
-          image: agentos:2.1.72-b1
+          image: agentos:2.1.73-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.migrate", "apply"]
           env:
@@ -55,7 +55,7 @@ spec:
           volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
       containers:
         - name: worker
-          image: agentos:2.1.72-b1
+          image: agentos:2.1.73-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.worker"]
           env:
@@ -96,7 +96,7 @@ spec:
     spec:
       initContainers:
         - name: migrate
-          image: agentos:2.1.72-b1
+          image: agentos:2.1.73-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.migrate", "apply"]
           env:
@@ -106,7 +106,7 @@ spec:
           volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
       containers:
         - name: cancellation-sweeper
-          image: agentos:2.1.72-b1
+          image: agentos:2.1.73-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.cancellation_sweeper"]
           env:
@@ -146,7 +146,7 @@ spec:
     spec:
       initContainers:
         - name: migrate
-          image: agentos:2.1.72-b1
+          image: agentos:2.1.73-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.migrate", "apply"]
           env:
@@ -156,7 +156,7 @@ spec:
           volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
       containers:
         - name: run-cancellation-sweeper
-          image: agentos:2.1.72-b1
+          image: agentos:2.1.73-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.run_cancellation_sweeper"]
           env:
@@ -196,7 +196,7 @@ spec:
     spec:
       initContainers:
         - name: migrate
-          image: agentos:2.1.72-b1
+          image: agentos:2.1.73-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.migrate", "apply"]
           env:
@@ -206,7 +206,7 @@ spec:
           volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
       containers:
         - name: wakeup-controller
-          image: agentos:2.1.72-b1
+          image: agentos:2.1.73-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.wakeup_controller"]
           env:
@@ -246,7 +246,7 @@ spec:
     spec:
       initContainers:
         - name: migrate
-          image: agentos:2.1.72-b1
+          image: agentos:2.1.73-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.migrate", "apply"]
           env:
@@ -256,7 +256,7 @@ spec:
           volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
       containers:
         - name: recovery-controller
-          image: agentos:2.1.72-b1
+          image: agentos:2.1.73-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.recovery_controller"]
           env:

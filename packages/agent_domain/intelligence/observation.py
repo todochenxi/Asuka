@@ -76,12 +76,79 @@ class Observation:
             raise InvariantViolation("I-6: Observation.source must be an ObservationSource")
         object.__setattr__(self, "content", dict(self.content))
 
+        self._assert_source_matches_binding()
+
         # I-7：大对象必须走 Artifact，不允许内联
         if _estimate_size(self.content) > MAX_INLINE_BYTES and not self.artifact_refs:
             raise InvariantViolation(
                 "I-7: observation content exceeds "
                 f"{MAX_INLINE_BYTES} bytes and has no artifact_refs; "
                 "large payloads must be stored as Artifact (S3) and referenced"
+            )
+
+    # ------------------------------------------------- I-6 的绑定关系（M85）
+    def _assert_source_matches_binding(self) -> None:
+        """I-6：**来源**与**绑定**必须互相印证，且这个方向是双向的。
+
+        ------------------------------------------------------------------
+        为什么这条判据不能只写在 `from_execution_result` 里
+
+        I-6 原来只有一句 docstring（"只能由这个工厂构造"）加一个工厂方法，
+        但 `Observation` 是 `@dataclass(frozen=True)` —— `__init__` 是**公开**的，
+        而 `execution_id: str | None = None` 这个默认值本身就是漏洞的形状。
+        探针（`probe84.py`）实测四扇门全开：
+
+            直接构造 EXECUTION_RESULT 且不带 execution_id   → ★ 成功
+            execution_id=""（空串，同样没绑定）              → ★ 成功
+            非执行来源凭空挂一个 execution_id="exec_FAKE"    → ★ 成功
+            attempt_no=0 / -1（工厂拦得住，__init__ 拦不住）  → ★ 成功
+
+        也就是说：**"只能由工厂构造"是一句愿望，不是机制。**
+        这与 M81/M82 是同族病 —— 一个横跨两层的保证，只在其中一层实施。
+        而它破坏的是账本的**可解释性**：一条声称"我来自某次执行"的
+        Observation 可以完全没有 execution_id，于是"这条结论有没有实证"
+        在账本上**问不出答案**（判据是"宁可拒绝，不许编造"）。
+
+        ------------------------------------------------------------------
+        判据（双向，缺一不可）
+
+            来源是 EXECUTION_RESULT  ⟹  必须绑定 execution_id + attempt_no >= 1
+            来源不是 EXECUTION_RESULT ⟹  不许绑定 execution_id
+
+        第二句看着严，其实正是它让第一句有意义：
+        如果非执行来源也能挂 execution_id，那么"有 execution_id"就不再能
+        推出"它真的来自执行" —— 一条 `human_input` 顺手挂个 id，
+        和一条真正的执行产出在账本上**长得一模一样**。
+
+        ------------------------------------------------------------------
+        为什么允许 Non-EXECUTION_RESULT 仍然带 attempt_no
+
+        `attempt_no` 是"这是第几次尝试"这种过程性注记（如超时重试的提示），
+        单独出现不冒充实证。而 `execution_id` 是**指向实证的指针** ——
+        不能空着，也不能乱指。
+        """
+        source_is_execution = self.source is ObservationSource.EXECUTION_RESULT
+
+        if source_is_execution:
+            # 空串与 None 同罪：都表示"没有指向任何一次真实执行"。
+            # 只判 `is None` 会被 `execution_id=""` 绕过（探针 case 2 实测）。
+            if not self.execution_id:
+                raise InvariantViolation(
+                    "I-6: source=EXECUTION_RESULT requires a non-empty execution_id; "
+                    "an observation claiming to come from an execution must point at one "
+                    "(use Observation.from_execution_result to build it)"
+                )
+            if self.attempt_no is None or self.attempt_no < 1:
+                raise InvariantViolation(
+                    "I-6: source=EXECUTION_RESULT requires attempt_no >= 1, "
+                    f"got {self.attempt_no!r}"
+                )
+        elif self.execution_id is not None:
+            raise InvariantViolation(
+                "I-6: only source=EXECUTION_RESULT may carry an execution_id; "
+                f"got source={self.source.value!r} with execution_id={self.execution_id!r}. "
+                "Letting a non-execution observation point at an execution would make "
+                "'has an execution_id' stop meaning 'came from an execution'"
             )
 
     # ------------------------------------------------------- I-6 唯一入口
