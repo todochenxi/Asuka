@@ -1,0 +1,93 @@
+# M70 · PostgreSQL
+#
+# 为什么用 StatefulSet 而不是 Deployment：
+# 数据库 Pod 有身份（它的数据卷只属于它）。Deployment 重建出来的 Pod
+# 挂到另一个卷上，等于"一个全新的空库" —— 而外面看着还是那个 Service，
+# 于是"数据不见了"会以"服务正常、数据空了"的形态出现。
+#
+# 为什么只有一个副本：
+# 高可用 PostgreSQL 需要真的复制与真的切换（Patroni / 云托管 RDS），
+# 不是把 replicas 改成 2 就能得到的 ——
+# 两个各自持有一份卷的 postgres 进程是**两个库**，不是主备。
+# 宁可明写"单副本"，也不提供一个看起来高可用的错答案。
+#
+# 生产请换托管实例，并把 `agentos.toml` 里的 pg_dsn 指过去 ——
+# 那是这份 manifest 里唯一需要改的一行。
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentos-postgres
+  namespace: agentos
+  labels:
+    app: agentos-postgres
+spec:
+  # 刻意不是无头服务（不写 `clusterIP: None`）：
+  # 客户端只有一个连接串，它要的是"一个稳定的地址"。
+  # 无头服务解析到 **Pod IP**，Pod 重建后要等 DNS 缓存过期，
+  # 于是"重启一下数据库"会让八个进程各自在不同的时刻开始报连不上 ——
+  # 一批同时发生、又各自随机恢复的红灯，是最难排查的那一种。
+  selector:
+    app: agentos-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: agentos-postgres
+  namespace: agentos
+spec:
+  serviceName: agentos-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agentos-postgres
+  template:
+    metadata:
+      labels:
+        app: agentos-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRES_USER
+              value: agentos
+            - name: POSTGRES_DB
+              value: agentos
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agentos-pg
+                  key: password
+            # 放在子目录里：`/var/lib/postgresql/data` 在容器里
+            # 还会被塞进 `lost+found` 之类的东西，而 `initdb` 要求
+            # 数据目录为空 —— 于是第二次启动会死在"目录非空"上，
+            # 一条跟数据完全无关的报错。
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "agentos", "-d", "agentos"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            requests: {cpu: "100m", memory: "256Mi"}
+            limits: {cpu: "1", memory: "1Gi"}
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

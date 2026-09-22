@@ -1,0 +1,46 @@
+{
+  "name": "cluster-smoke",
+  "agent_id": "agent-demo",
+  "cases": [
+    {
+      "id": "happy-path",
+      "request": "compute 6*7",
+      "expect": {
+        "status": "completed",
+        "approval_required": true,
+        "actions": [
+          "llm_call",
+          "tool_call"
+        ],
+        "tools": [
+          "note.write"
+        ],
+        "not_degraded": true,
+        "max_steps": 8
+      }
+    },
+    {
+      "id": "gated-by-policy",
+      "request": "compute 3*4",
+      "expect": {
+        "status": "completed",
+        "approval_required": true,
+        "not_degraded": true,
+        "max_steps": 8
+      }
+    },
+    {
+      "id": "second-opinion",
+      "request": "compute 12*12",
+      "expect": {
+        "status": "completed",
+        "approval_required": true,
+        "actions": [
+          "llm_call"
+        ],
+        "not_degraded": true,
+        "max_steps": 8
+      }
+    }
+  ]
+}

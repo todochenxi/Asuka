@@ -1,0 +1,12981 @@
+# AgentOS — 企业级 Agent 平台架构（v2.1.67 最终冻结版）
+
+> 项目定位：Enterprise Agent Harness & Runtime Platform
+> 架构状态：Final / Frozen
+> 文档地位：**唯一架构基线（Single Source of Truth）**
+> 本版本目标：统一 Intelligence、Harness、Runtime、Execution Kernel 四个核心边界，消除 Execution / Task / Step / Observation / State 等概念歧义。
+> 冻结后不再继续堆叠新概念，进入 Kernel Implementation。
+
+**基线声明**
+
+工作区内另有 `AgentOS架构总览.md` 与 `M15-核心领域模型.md`：
+
+| 文档 | 定位 |
+|---|---|
+| 本文 | **唯一架构基线**。概念、边界、状态、契约以此为准 |
+| `AgentOS架构总览.md` | 评审纪要 + 版本变更记录（不再作为事实源） |
+| `M15-核心领域模型.md` | M15 阶段 1 的代码级领域模型与不变量（必须与本文一致） |
+
+三者冲突时，**以本文为准**，其余两份同步修订。
+
+v2.1.1 相对 v2.1 只补定义、不改架构：闭合 Task:Execution 基数、Lease 归属、Harness 拦截点、Step 归属，以及状态集合 / Retry 判定 / Idempotency 作用域 / Checkpoint 分层 / Fallback 与 Retry 的关系（详见 §49）。
+
+v2.1.2 相对 v2.1.1：**M15 阶段 1~8 落地后的回写**。仍然只补定义、不改架构。
+本轮修补的不是"文档写错了"，而是**写代码时才暴露出来的空洞**——这些项在纸面上看不出问题，一旦实现就必然撞墙：
+Action 缺 LLM_CALL（导致模型调用绕过 Harness）、Kernel 缺 Attempt 持久化（导致重载后拒绝成功）、
+取消意图缺收敛者（导致取消永久悬空）、Recovery 缺与 Redis 无关的安全网（导致 Redis 全丢时 stale 永久漏扫）、
+消费端去重记录未指定归属（放 Redis 会变成"丢一次就错一次"）。详见 §49 v2.1.2 变更表。
+
+v2.1.3 相对 v2.1.2：**Business Domain（AgentRun / Step）落地后的回写**。
+这一轮补的是整条基数链最上面的一环 —— 在此之前 `AgentRun` 与 `Step` 在代码里**没有任何落点**，
+Loop 只握着一个 `run_id` 字符串，于是"这个 Run 现在怎么样了"这个问题在运行时无处回答。
+本轮新增不变量 **B-1 ~ B-7**，其中最关键的是 **B-7：Run 的终态只能由 Runtime 声明，不能从 Step 派生**，
+以及 §10 生命周期图上漏画的一条边 `CREATED → SUSPENDED`。详见 §52。
+
+v2.1.4 相对 v2.1.3：**§44 第一条 End-to-End 闭环接通后的回写**。
+本轮不是新增能力，而是把阶段 9（Model Gateway）、阶段 10（Tool Runtime）真正接进 Loop，
+并按 §44 的要求把六要素 `Event / Trace / Attempt / Checkpoint / Cost / Token Usage` 补齐。
+新增不变量 **L-1 ~ L-7**，其中三条改变了既有认知：
+**L-3**（token 不回流 = 预算那条线根本没通电）、
+**L-7**（被 DENY 不计入任何预算 → 一个永远被拒的 Run 会永远空转，且没有任何报错）、
+**G-8**（缺省模型由 Gateway 决定，Executor 不拥有模型知识）。详见 §53。
+
+v2.1.5 相对 v2.1.4：**M17（Context / Memory）落地后的回写**。
+§44 那条链接通之后，链上还剩一个空洞：**模型到底看到了什么** —— 在此之前
+`LLM_CALL` 的 payload 里只有一个 `prompt`，Context 的组装过程在运行时没有任何记录。
+本轮把 §21 的 `Memory ≠ Knowledge ≠ Context ≠ Artifact` 从一句话落成**类型**，
+并新增不变量 **C-1 ~ C-12**。其中 **C-11** 是对 §23 的一处归属裁决：
+**组装归 Runtime，准入归 Harness**（§23 的 `ContextManager` 指后者，不是让 Harness 拼字符串）。详见 §54。
+
+v2.1.6 相对 v2.1.5：**M18（Control Plane 契约层 + HITL 审批回调）落地后的回写**。
+链通了、模型也看得见东西了，但还有一条更尴尬的断链：**§44 的第一行 `POST /agents/{agent_id}/runs` 在代码里没有落点，
+而且 HITL 的人根本没法批准** —— 在此之前 `loop.approve()` 只是一个进程内方法，
+高风险动作被闸门挡住之后，Run 就永远挂在 `waiting_approval`，没有任何入口能让它继续。
+本轮新增不变量 **A-1 ~ A-10**。其中 **A-9** 是对"非 PENDING 审批"的一次语义切分：
+**过期 ≠ 已决定**（EXPIRED → 410，不是 409 `APPROVAL_ALREADY_DECIDED` —— 后者会告诉调用方"有人批过了，
+去等结果吧"，而那个结果永远不会来）。详见 §55。
+
+v2.1.7 相对 v2.1.6：**M19（审批存储持久化）落地后的回写。**
+M18 新增的 **A-10** 声称"审批必须活过进程重启"—— 但当时它是**一条断言，不是一个事实**：
+`ApprovalStore` 虽然是 Port，唯一实现却是 `InMemoryApprovalStore`。
+本轮补上 PG 实现（表结构见 `infrastructure/postgres/003_approvals.sql`），
+并在补的过程中撞出一个真实的并发洞：
+**A-5 在并发下不成立** —— 两个审批请求同时到达时，两边读到的都是 PENDING，
+于是后写的覆盖先写的，"谁批的"变成后到的那个人。
+新增不变量 **A-11**（判定与写入必须原子）、**A-12**（存储选型的判据是"丢了变慢还是变错"）、
+**A-13**（审计约束必须下推到 DB）。详见 §56。
+
+v2.1.8 相对 v2.1.7：**M20（Run Recovery）落地后的回写。**
+M19 让审批"活过重启"，但只解决了**看得见**，没解决**点得动**：
+服务重启后待批列表还在，`decide()` 却因为 Run 不在内存里而 404。
+本轮补上从快照重建 `RuntimeStack` 的路径（`RunSnapshot` + `004_run_snapshots.sql` + `RunRecovery`），
+新增不变量 **R-1 ~ R-5**。
+过程中撞出两个真实缺陷，都不属于恢复这个话题，而是更底层的：
+**X-13**（跨 Port 拿到的是副本，不是同一个对象 —— 内存版"碰巧正确"，换成 PG 版静默失效）、
+**E-25**（乐观锁比的是"上次**存储边界**的版本"，不是"上次内存自增前"——
+`resume()` 内含两次状态跃迁却只落一次库，于是在**根本没有并发**的情况下自己报 E-13）。详见 §57。
+
+v2.1.9 相对 v2.1.8：**M10（Saga / Compensation）落地后的回写** —— §42 明写的 Kernel 主线下一站。
+在这之前，AgentOS 能在外部世界**制造**状态（下单、开工单、发消息），
+却没有一个地方记录"制造过什么"，更没有一条路径能撤销它：
+一个 Run 失败之后，已经发生的副作用就那么留着，而且**没有任何报错**。
+本轮新增 `CompensationSpec`（随正向动作一起声明的逆操作）与补偿账本
+（`005_compensations.sql`），新增不变量 **S-1 ~ S-16**。
+其中 **S-9**（批准一个动作 = 同时批准它的撤销）是把 A-10 那条教训重演了一次：
+它一开始只是注释里的一句断言，因为撤销阶段是绕过 Harness 的 ——
+所以本轮把它落成了"正向动作过策略时**连同逆操作一起审**"。详见 §58。
+
+v2.1.10 相对 v2.1.9：**M21（`apps/` 进程层）落地后的回写。**
+在此之前，`packages/` 里躺着四个**没有进程驱动的后台控制器**：
+`OutboxPublisher` / `RecoveryController` / `WakeupController` / `CancellationService.sweep`。
+它们逻辑完整、测试通过，但没有任何东西去跑它们 ——
+于是 Outbox 里的数据只增不减，Kafka 是一封死信，
+而 M18~M20 许诺过的"审批活过重启""STALE 会被救回""补偿会被重扫"
+全都只是**断言，不是事实**。
+本轮新建 `apps/` 层：`_runtime.py`（进程骨架）+ 四个进程，
+新增 `006_outbox_delivery.sql`（投递领地），新增不变量 **PR-1 ~ PR-13**。
+其中 **PR-13**（唤醒谓词必须每轮现取审批结果）是 A-10 第三次以同一副面孔出现，
+**PR-12**（收敛型进程不需要领地）则给出了"要不要领地"的判据，
+而不是沿用"后台进程就该认领"的直觉。详见 §59。
+
+v2.1.11 相对 v2.1.10：**M22（组合根 + `apps/worker` + 进程入口）落地后的回写**。
+M21 建好了四个进程，但它们只是**类** —— 构造函数要的是 Port，
+谁去 new 那些 PG / Redis / Kafka 客户端没人回答，`python -m apps.*` 直接
+`ModuleNotFoundError`。更严重的是 **`apps/worker` 根本不存在**：
+`Worker.run_once()` 是唯一真正执行 Task 的东西，而没有任何进程驱动它 ——
+于是没有任何 Task 会被执行，M21 那四个后台进程只是在打扫一间从来不会脏的房间。
+本轮补 `apps/_bootstrap.py`（唯一允许 import 真实客户端的地方）、
+`apps/worker`、五个 `__main__.py` 入口，
+新增不变量 **PR-14 ~ PR-18**，并修掉 **PR-7 的一处实现缺陷**
+（退避上限截在指数之后 → 长跑进程在最闲的时候因 `OverflowError` 崩溃）。详见 §60。
+
+v2.1.12 相对 v2.1.11：**M23（真执行器接进组合根）落地后的回写。**
+M22 让 `python -m apps.worker` 能启动，但它仍然**干不了活**：
+`AGENTOS_EXECUTOR_PROVIDER` 是一个 `module:function` 指针，
+而仓库里没有任何一个模块实现它 —— 指针指向空气。
+更深的洞在路由上：执行器表按 `executor_type`（**传输**）分派，
+表里填的却是 `ToolCallExecutor` / `LLMCallExecutor`（**语义**），
+两个维度能对上全靠 `ACTION_TO_TASK` 的巧合。于是 `ACTION_TO_TASK` 能产生的
+5 个组合里有 3 个是坏的，而它们的报错全是 `BAD_PAYLOAD` ——
+**路由错误被伪装成载荷错误**，且都是 PERMANENT 不重试，排障方向从一开始就错了。
+本轮新增 `TaskTypeRouter`（两级分派）、`ApprovalGateExecutor`、
+`apps/executor_provider.py`、`examples/demo_stack.py`，
+给 `WorkerCapability` 补上 `task_types` 维度，新增不变量 **PR-19 ~ PR-21**，
+并修掉 **默认 `AGENTOS_EXECUTORS={"native"}` 把一半能力砍掉**的问题。详见 §61。
+
+v2.1.13 相对 v2.1.12：**M24（`apps/api` + 幂等键落 PG）落地后的回写。**
+M23 让第一个 Task 真的被一个进程跑完，但请求仍然进不来 —— `apps/api` 不存在。
+本轮补上 HTTP 进程（`apps/api/app.py`），并把 `IdempotencyStore` 从 Redis 换到 PG。
+换的原因是 A-3 **一直是被违反的**："幂等键不能放 Redis"在 §55 就冻结了，
+此后六轮没有一轮查过组合根实际接的是谁 —— 因为**测试一直是绿的**，
+而绿的原因是内存替身替掉的恰好是"存在哪儿"这一层，那一层正是 A-3 唯一在说的东西。
+本轮新增 `007_idempotency.sql`、`PostgresIdempotencyStore`、`build_control_plane()`，
+新增不变量 **PR-22 ~ PR-24**，顺手抓住一次版本号漂移，
+并堵掉第三处同类破法：幂等键命中后只在内存里找 Run，
+找不到就当没执行过 —— **重启后同一个键会开出第二个 Run**。详见 §62。
+
+v2.1.14 相对 v2.1.13：**M25（子 Run 派生）落地后的回写。**
+M23 点名的两个未覆盖组合 `native:skill` 与 `agent_runtime:agent_delegation`
+其实是**同一个洞**：两者都意味着"开一条子 Run"，而 `Executor.execute()`
+的契约里没有"进行中"这个状态。本轮把派生交给 Loop（在派发**之前**接走，
+照抄审批闸门的先例），补 `CHILD_SKILL` 挂起原因，并第一次真的设置了
+`CHILD_AGENT` —— 它从 M15 冻结至今，六个版本里没有任何一行代码用过它。
+新增不变量 **D-1 ~ D-4** 与 **PR-25**（覆盖度三档）。详见 §63。
+
+v2.1.15 相对 v2.1.14：**M26（子 Run 活过重启）落地后的回写。**
+M25 收尾时留了一句"D-1 靠内存 registry，重启即失效"。动手前先写探针去量，
+量出来是**四个洞**，而且前三个让第四个根本修不好：`step()` / `run()` 不认识
+`WAITING_CHILD`（父 Run 在子 Run 还在跑时就宣布 COMPLETED）；快照的 `status`
+落后一步；R-1 只认审批，于是为子 Run 挂起的 Run **连一份快照都落不下来**。
+本轮补 **D-5 / D-6 / R-6**，落 `008_child_runs.sql` 与 `009_snapshot_pending_child.sql`，
+并翻出一件更旧的事：`CompensationSpec.to_dict` / `from_dict` 是**死代码**
+（缩进写在了模块级 `_dig` 的 `return` 之后），S-8 的撤销声明从来**没有**序列化通道。
+详见 §64。
+
+v2.1.16 相对 v2.1.15：**M27（真 PostgreSQL 集成测试层）落地后的回写。**
+起因是一句提问——「什么时候可以测试呢」。答案盘下来有三档，而此前只有第一档：
+
+    单元测试      629 条，跑在 sqlite 替身上，从第一天就能跑
+    真 PG 集成     此前为**零**：9 份迁移与全部 PG 适配器从未被 PostgreSQL 认可过
+    事件链端到端  仍缺 Kafka 消费者
+
+本轮补上第二档：`tests/integration/` 在真 PostgreSQL 上跑 18 条，
+第一次验到 `::jsonb`、`ON CONFLICT DO NOTHING` 的 rowcount、
+`CHECK (action <> '{}'::jsonb)`、`TIMESTAMPTZ` 往返与 15 列快照往返。
+没有 PG 时这一层**跳过**而不是报红 —— 否则它会绑架那 629 条。
+新增判据 **PR-28**（替身能过≠被认可）与 **IT-1 ~ IT-3**。详见 §65。
+
+v2.1.17 相对 v2.1.16：**M28（推进契约 + 单页控制台 + 第一次真起服务）落地后的回写。**
+起因仍是一句提问——「还缺什么能做一个整个流程的测试，有页面的那种」。
+一探才发现四个断点，其中两个是 P0：
+
+    A（P0）  契约层**没有推进能力**：`start_run` 只初始化，开出来的 Run 永远停在 created
+    B（P0）  示例栈的 `default_model_id` 没设（G-8），于是它**从来没跑通过一次模型调用**
+    C（P1）  没有页面
+    D（P1）  Kafka `child_run.completed` 消费者仍缺
+
+本轮按 **A → B → C → D** 的顺序做（C 依赖 A：单进程都跑不通时做跨进程唤醒，
+等于给一台没通电的机器装天线）。A/B/C 落地，D 仍是缺口。
+新增不变量 **F-1 ~ F-4**、判据 **PR-29**，登记空洞 208（X-3 事务边界）。详见 §66。
+
+v2.1.18 相对 v2.1.17：**M29（X-3 事务边界 + 存储接线）落地后的回写。**
+这一轮做的不是加能力，而是回答 M28 之后剩下的那个问题：
+「流程跑完了，但它**留下了什么**？」
+
+答案一度很不体面。`UnitOfWork` 这个端口从 M15 起写在基线里、使用次数为 **0**，
+`packages/` 里**没有任何一处 `commit()`** —— 于是 X-3（状态与事件同一事务）
+只有两种假成立方式：靠 `autocommit=True`（各自生效），或靠内存 Outbox（原子在没人看得到的地方）。
+
+本轮补上真正的边界：**PR-30（一个 tick = 一个事务）**、**PR-31（一个 HTTP 请求 = 一个事务）**，
+并把 `autocommit` 翻到 `False`。边界一有物理对应物，立刻量出三个新的 P0：
+栈里的 **Kernel / snapshots / compensations** 三样存储全是内存版 ——
+`executions` 与 `run_snapshots` 恒为 **0**，而界面上每一步都显示得清清楚楚。
+三者的形状完全一样：`assemble_runtime_stack` 给它们都留了 `or InMemory...()` 兜底，
+**漏掉不报错**。其中 `snapshots` 最讽刺：组合根一直都装配了 PG 版，只是从没递到栈里去。
+
+新增判据 **PR-30 / PR-31 / PR-32**，闭合空洞 208 / 212 / 213 / 214，登记空洞 215（`tasks` 表无人写）。详见 §67。
+
+v2.1.19 相对 v2.1.18：**M30（子 Run 结果回传）落地后的回写。**
+这一轮回答的是 M29 之后剩下的那个问题：「派得出去，那**认得回来**吗？」
+
+答案一度是"认不回来，而且没人看得出来"。`AgentLoop.child_completed()` 从 M25 起就在那里，
+但生产路径上**没有任何人**调用它 —— 只有测试直接调过。于是委派的结果永远回不来，
+父 Execution 一直 SUSPENDED，界面上显示"在等子 Agent"，一切正常。
+
+补这一段时又翻出一件更根本的事：**结果根本没落在 PG 里**（空洞 216）。
+它跟着事件走，而事件在 Kafka 里，Kafka 有 retention。
+X-5 说 PG 是唯一 Truth —— 可那条 Truth 当时只活在 Event Log 里。
+
+本轮补上 `010_child_run_result.sql`（结果 + 交付时刻）与 `apps/child_run_consumer`，
+并让唤醒路径**不依赖 Kafka**：每 N 轮扫一次 PG，于是事件丢了只是变慢，不是变错。
+新增不变量 **D-6 / D-7 / D-8**、判据 **PR-33**，闭合空洞 209 / 216，
+登记空洞 217（谁来驱动父 Run）/ 218（子 Run 取消后可能原地打转）。详见 §68。
+
+v2.1.20 相对 v2.1.19：**M31（委派失败与取消的重试语义）落地后的回写。**
+这一轮回答的是 §68 末尾自己登记的那个问题：「子 Run 被取消之后，父 Run 会怎样？」
+
+答案不是"原地打转"，而是更糟的一件事 —— **真因被抹掉**。
+探针跑出来的完整链条是：
+
+    子 Run 终态 → 父 Execution 回到 PENDING（attempt=2）→ Worker 领走
+      → `AgentDelegationExecutor` 拒绝 → FAILED（attempt=3）
+      → 终态 error = `DELEGATION_NOT_WORKER_EXECUTABLE`
+
+排障第一入口读到的是"拥有你的 Loop 不在了"，而真相只是"子 Run 没做成"。
+这与 PR-19 是同一类错（当年 `HUMAN_APPROVAL` 被 `ToolCallExecutor`
+以 `BAD_PAYLOAD: payload.tool is required` 拒掉）—— 一句既不对又误导的话。
+
+而那个重试**必然失败**：委派 Execution 在 Worker 侧只有一种归宿
+（`DeferringExecutor` 拒绝），所以 TRANSIENT 那一次 100% 以 PERMANENT 收场。
+
+新增不变量 **D-9 / D-10 / D-11**，闭合空洞 218，登记空洞 219 / 220。详见 §69。
+
+v2.1.21 相对 v2.1.20：**M32（委派没收成时的账本）落地后的回写。**
+上一轮把"回来说'没做成'"这件事说得准确了，但说完之后什么都没变 ——
+账本上，那次委派**像从未发生过**。
+
+根子在 `SagaCoordinator.record()` 里一句对单次工具调用成立、
+对委派却完全不成立的判断：
+
+> 失败 ⟹ 没产生副作用 ⟹ 不登记。
+
+一次 `ToolCall` 失败，这句话基本对。但委派派出的是**一条完整的 Run**：
+它可以跑了七步、建了三张工单、改了两个系统，然后在第八步失败。
+失败只说明它没做完，**不说明它什么都没做**。
+
+于是 S-1（"子 Run 动作是 compensable 的，撤销方案必须随派生一起落库"）
+留了一扇门：方案落库了，可它只在"成功"那一侧被记进账本；
+真正需要撤销的那一侧 —— 失败与取消 —— 一笔都没记。
+
+这一轮补上 **D-12**（失败/取消也要登记 UNRESOLVED）与
+**D-13**（父 Run 已终态时，子 Run 的副作用不得被静默丢弃）。
+新增不变量 **D-12 / D-13**，闭合空洞 219 / 220，登记空洞 221。详见 §70。
+
+v2.1.22 相对 v2.1.21：**M33（Run 级取消入口）落地后的回写。**
+上一轮在 §70 登记空洞 221 时写下这么一句：
+
+> AgentOS 目前没有 Run 级取消入口 —— `AgentLoop` 里没有 `cancel()`，
+> 于是"父 Run 已终态"这个状态在测试里只能直接改快照造出来。
+
+这不是"测试写不出来"，是**产品形状上缺一块**。
+一个能派生子 Run（M25）、能挂起等人审批（M18）的平台，
+唯独没有"算了，别跑了" —— 于是取消只能从外部发生
+（kill -9、手工改库、把策略改成 REQUIRE_APPROVAL 再驳回），
+**"停"这个动作的实现者是运维，不是系统**。
+
+而 D-13 处理的那种局面 —— 父已终态、子在跑 ——
+恰恰是取消缺位时**唯一**会发生的局面。
+
+这一轮补上三层落点：`AgentLoop.cancel()`（Runtime）、
+`ChildRunSpawner.cancel_child()`（派生器）、
+`POST /runs/{id}/cancel`（契约层），外加控制台上的一个按钮。
+新增不变量 **B-8 / B-9 / B-10**，闭合空洞 221，登记空洞 222 / 223。详见 §71。
+
+v2.1.23 相对 v2.1.22：**M34（跨进程取消的通道）落地后的回写。**
+上一轮在 §71 登记空洞 222 时写下这么一句：
+
+> 跨进程那条路只走了一半：登记处被判死了，
+> 可**跑在另一个进程里的那条 Run 并没有人告诉它**。
+> 它还会继续跑完，只是结果没人要了。
+
+把它翻译成中文就是：**两件事实同时成立，而它们说的是相反的东西**。
+
+    父侧事实：这条子 Run 的结果我不要了（登记处写着 cancelled）
+    子侧事实：我还活着，我还在跑
+
+用户按的是"停止"，得到的是**停止了一半**。
+而"停一半"比"不停"更难发现 —— 页面上显示已取消，
+账单上却还在花钱，两边都不报错。
+
+这一轮补的是那件"新东西"：**Run 级取消意图**（`run_cancellations`），
+加上子 Run 侧的安全点与一个常驻的 Sweeper，与 Kernel 的 Execution 级取消同构。
+新增不变量 **R-7 / R-8 / R-9 / R-10**，闭合空洞 222，登记空洞 224 / 225。详见 §72。
+
+v2.1.24 相对 v2.1.23：**M35（取消与完成赛跑）落地后的回写。**
+上一轮在 §72 登记空洞 224 时写下这么一句：
+
+> 父 Run 把跨进程的子 Run 在登记处判成 `cancelled` 之后，
+> 那条子 Run 可能在读到意图之前先跑完了 ——
+> 它写 `completed` 时会撞 B-3 的 `InvariantViolation`（响，但是个真 bug）。
+
+把它做完才发现**这句话只说了一半**。同一个洞有两张脸，而另一张**不响**：
+
+    脸 A（取消赢）  父替它写了 cancelled → 它跑完时撞 B-3 抛异常，
+                    真实结果（含 S-1 的撤销参数）丢失。响，但是个真 bug。
+    脸 B（完成赢）  它先跑完 → 父照样 `mark_delivered()` 结掉那条
+                    "已经产生、却从未被任何人看过"的结果
+                    → 唤醒路径再见它时是 ALREADY_DELIVERED
+                    → D-13 孤儿永不登记 → 副作用**静默消失**。
+
+按 A-12（丢了之后是变慢还是变错），脸 B 比脸 A 严重：
+脸 A 至少会喊，脸 B 什么都不喊。
+
+两张脸是**同一个错误**的两次发作：父 Run 替一条它看不见的 Run 宣告了终态。
+所以这一轮不是"给 B-3 打个补丁"，而是把"叫停"从**宣告**降级成**请求** ——
+终态只有一个作者，就是那条子 Run 自己。
+新增不变量 **D-14 / D-15 / D-16 / D-17**，闭合空洞 224。详见 §73。
+
+---
+
+v2.1.25 相对 v2.1.24：**M36（Task 落库）落地后的回写。**
+
+`001_kernel.sql` 从 M15 起就建好了 `tasks` 表：13 个列、2 个索引，
+注释里还写着"Scheduler 只认识它（E-12）"。
+但直到 M35 结束，**没有任何一行代码写这张表** ——
+Task 只活在 `ExecutionKernel._tasks` 这个进程内字典里，键是 `execution_id`。
+
+于是"进程重启后把活捡起来"这条能力在真 PostgreSQL 上其实是断的：
+
+    PENDING 的 Execution 好端端躺在库里
+    Scheduler 选中它 → kernel.task_of() → KeyError: 'exe_xxx'
+
+而 `apps/_runtime.py` 的 `ProcessRuntime` 会把这个异常吞掉、计一次
+consecutive_failure、按 `error_sleep` 退避，到上限之后**整个 worker 进程退出**。
+日志里只有一行 KeyError，指着一个症状而不是原因（PR-19）。
+
+而这里最危险的**不是**那个 KeyError，是"修掉它的那种修法"：给个默认 Task。
+那样 `priority` / `tenant_id` / `resource_requirement` / `payload` 全部变成编造值 ——
+而那四样**不是加速信息，是正确性输入**（A-12：丢了之后是变错，不是变慢）：
+
+    priority              决定谁先跑
+    tenant_id             决定配额 —— 多租户隔离边界，不是性能旋钮
+    resource_requirement  决定能不能派给这个 worker
+    payload               决定到底要干什么
+
+编造之后的失败形态是：需要 GPU 的活被派给只有 CPU 的 worker，
+然后以 `EXECUTOR_NOT_FOUND`（PERMANENT，不重试）终态 ——
+**一个调度错误伪装成一个载荷错误**（PR-20 那次修过的病，在持久层复发）；
+以及一条永远不生效的租户配额。两者都不报错。
+
+E-19 只说了半句话：`UNIQUE (task_id)` 约束的是"一个 Task 最多开一个 Execution"，
+没约束"一个 Execution 必须真的有一个 Task"。
+`013_task_persistence.sql` 用一根外键把另一半补上 ——
+"Task 存不存在"不在 executions 这一行里，跨行的事实只能由外键钉（PR-23）。
+新增不变量 **E-26 / E-27 / E-28** 与判据 **PR-34**，闭合空洞 215。详见 §74。
+
+---
+
+v2.1.26 相对 v2.1.25：**M37（取消意图的等待上限）落地后的回写。**
+
+M34 立下 R-10 的时候算过一笔账：
+
+> 一条永远没人认领的意图会一直留在 pending 里 ——
+> 那是"变慢且看得见"，比"变错且没人知道"好（A-12）。
+
+这个判断**没错，但只算了一半**。它算的是"一条"僵尸意图的代价，
+没算它对**别人**的影响。而 `pending()` 是
+
+    WHERE settled_at IS NULL ORDER BY requested_at LIMIT %s
+
+—— 它有 `ORDER BY`，也有 `LIMIT`。
+
+一条僵尸意图的 `requested_at` 最老，于是它**永久占据队首**：
+每一轮都被捞出来、撞 R-10、`continue`、下一轮再被捞出来。
+攒够 `LIMIT`（默认 64）条之后，新提交的取消请求**一条都进不了扫描窗口**，
+而 `sweep()` 每轮返回 0 —— 运维看到的是"没有待处理的取消"。
+
+那不是变慢，是**跨进程取消通道停止服务**。而且它什么都不喊，
+按 012 里那张脸谱它是**脸 B**：脸 A 至少会响。
+
+于是这一轮给等待加一个**上限**（R-11），并且——这才是关键——
+把上限到期后的动作记成"**我们不知道**"，而不是"它停了"。
+新增不变量 **R-11 / R-12 / R-13 / R-14**，闭合空洞 226。详见 §75。
+
+---
+
+v2.1.27 相对 v2.1.26：**M38（一次派生的等待上限）落地后的回写。**
+
+M35 立下 R-7 那一段写过一句：
+
+> 一条停在 `WAITING_CHILD` 的 Run 不会调 `step()` —— 它在等别人。
+> 它这一辈子可能再没有第二个安全点。
+
+那句话当时是在论证"**取消**必须有 Run 级通道"。但它同时暴露了另一件事，
+而那件事比它要论证的那件更难看：
+
+    派得出去，认得回来 —— 前提是它**会回来**。
+
+子 Run 的进程没了（机器掉了、Pod 被驱逐、OOM 被杀），它既没有终态，
+也没有人替它写终态（D-14）。于是：
+
+    · 父 Run 自己救不了自己 —— D-5 让它一见 `pending_child` 就返回
+      `WAITING_CHILD`，它连算"我等了多久"的机会都没有
+    · 唤醒器看不见它 —— `ChildRunWaker.sweep()` 扫 `completed_at IS NOT NULL`
+    · `undelivered()` 也看不见它 —— 同一个谓词
+
+三个都不管，于是那条父 Run **永远挂着**：界面显示"在等子 Agent"，
+没有报错，没有任何计数器会动。空洞 226 那一侧至少还有一条每 tick
+被捞起又被 `continue` 掉的请求（看得见的空转）；这一侧连空转都没有。
+
+修法是把"等多久"这件事从**被等的那个人**身上挪走：
+派生自带一个等待上限（**D-18**），由一个**旁观者**定期扫队首，
+把父 Run 装载回来，交回它自己走完这一步。而交回去的是
+"**等不到**"，不是"**它失败了**"（**D-19**）—— 后者会让排障的人
+去查一个可能压根没发生的失败（PR-19）。
+
+新增不变量 **D-18 / D-19 / D-20 / D-21**，闭合空洞 229。详见 §76。
+
+---
+
+v2.1.28 相对 v2.1.27：**M39（迟到的结果）落地后的回写。**
+
+M38 立 D-20 的时候写过一句：
+
+> 到期不是终态 —— 它路回来了照样认。
+
+那句话的前半段有实现（`undelivered()` 的谓词里就没有 `wait_expired_at`
+这一列），**后半段没有**："照样认"认完之后要干什么，当时没有人回答。
+
+跑一遍就看见了（探针实录，真跑起来的父子世界）：
+
+    wake outcome: ChildWakeOutcome.ALREADY_DELIVERED
+    ledger rows: 1
+      status: CompensationStatus.UNRESOLVED
+      reason: ... WE DO NOT KNOW whether it is still running ...
+
+两件事同时发生：
+
+    · 返回值说 `ALREADY_DELIVERED` —— "已经交过了"。
+      而事实上**从来没有人接过它**。
+
+    · 账本上那行仍然写着 "WE DO NOT KNOW"。真相到了，账本没动。
+      它从"**缺一格**"变成了"**错一格**"（PR-19）——
+      缺一格会让运维去看一眼，错一格会让运维**不去看**。
+
+于是这一轮给迟到结果一条真正的路径：不交付（等它的人已经不等了，D-22），
+但必须**把那句"不知道"收回**（D-23），并且**看得见**（D-24）。
+新增不变量 **D-22 / D-23 / D-24**，闭合空洞 231 与 227。详见 §77。
+
+---
+
+v2.1.29 相对 v2.1.28：**M40（账本的每一次变化都要有事件）落地后的回写。**
+
+M39 收尾时登记过一条：
+
+> **232** D-23 的更正**没有事件**：PG 改了，Kafka 下游
+> （Read Model / 审计）永远看不到这次改口（X-3 同族）
+
+查一遍就发现那条登记**说窄了**。不是"改口那一处没有事件"——
+`compensations` 表上**任何一次写入都没有事件**：
+
+    · 一条副作用被记下来（PENDING / UNRESOLVED）   没有事件
+    · 某个 Coordinator 抢到了认领（RUNNING）       没有事件
+    · 撤销成功 / 撤销不掉（COMPENSATED / UNRESOLVED）没有事件
+    · Run 成功了，这笔账结案（NOT_NEEDED）         没有事件
+    · 人工把它拉回待办（UNRESOLVED → PENDING）     没有事件
+    · D-23 那一次改口                              没有事件
+
+按 X-3 的判据，这是"**两件事实不同事务**"的同一族错误：
+PG 里的事实改了，而事件流这条事实**没有改**。下游那一本的账
+永远停在"这个 Run 没有副作用"那一格 —— 而"这个 Run 到底留下了
+几笔没人管的副作用"恰恰是看板第一个要问的数。
+
+只补 D-23 那一处是不够的：一条 `compensation.amended`（"那句不知道
+被收回了"）独自出现在流里，下游根本无从判断被收回的是哪句话。
+所以这一轮的发射点是账本的**全部**写路径（新增不变量 **X-15**，
+七个事件类型），并把发射逻辑收进一个模块让两个 `CompensationStore`
+实现共用（B-7）。详见 §78。
+
+v2.1.30 相对 v2.1.29：**M41（迟到的结果让账本变得可撤销）落地后的回写。**
+
+M39 立 D-23 的时候，收回的是一句话：
+
+> 真相到了，账本上那句"不知道"必须被收回。
+
+它做到了一半。跑一遍就看见另外一半**没人管**（探针实录，真跑起来的父子世界）：
+
+    --- 迟到的 completed 结果到达之后 ---
+    status : unresolved          ← 仍然说"撤销不了"
+    args   : {}                  ← 撤销参数还空着
+
+    --- 人工点"重试"之后 ---
+    payload: {'tool': 'cancel_ticket', 'args': {}}
+    outcome: compensated=1       ← **报成功**
+
+三句谎话叠在一起：
+
+    · 行上说"撤销不了" —— 其实撤销得掉（子 Run 真的跑完了 ⟹ 副作用确实发生了）
+    · 撤销工具被用**空参数**调用 —— S-8 早就写明这个后果：
+      "带着空 id 去调撤销接口，最可能的后果是撤销了别的东西，或者**静默成功**"
+    · 静默成功之后记成 `compensated`（"已经撤销完了"）
+
+第二句是会**真的动到外部世界**的那一条 —— 它不是显示问题，也不是"少了一个功能"。
+
+这一轮补的是 D-25 与 D-26：
+
+    D-25  可信结果证明了副作用确实发生 ⟹ 账本必须**升级**成"待撤销"，
+          撤销参数由 S-8 自己的 `materialize(result)` 补（不手搓）
+    D-26  升级不了时留在 UNRESOLVED，但理由必须说清**是哪一样**挡着
+          （没做完 / 被叫停 / 撤销参数取不到），不许停在"不知道"那句话上
+
+判据钉在**真正执行它的那一处**（PR-23）：PG 一侧在 SQL 的
+`WHERE ... AND args = '{}'::jsonb` 里，内存一侧在
+`CompensationRecord.become_compensable` 里 —— 两边各有一份，
+两边各有一组测试（变红验证里这两侧是**分开砍**的）。
+详见 §79。
+
+v2.1.31 相对 v2.1.30：**M42（解开阻塞的人必须把 Run 推下去）落地后的回写。**
+
+M30 接通了"派得出去、认得回来"，M38 接通了"等不到的时候谁来解开"。
+两条路径都在**解开**的地方停住了：
+
+    ChildRunWaker.wake()          交付结果 → 落快照 → 标记交付 → return
+    ChildRunWaitExpirer.expire()  关闸门   → 落快照 → 标记到期 → return
+
+父 Run 从"在等那条子 Run"变成"**可以被推一步**"。然后就没有然后了。
+`child_wait.py` 自己那句注释把这件事写得毫不含糊：
+
+    父 Run 从此可以被推一步 … 把下一步留给 step()
+
+"留给 step()"就是**留给调用方**。而在跨进程部署里那个调用方不存在：
+没有任何一个进程的 tick 会去问"有哪些 Run 刚刚被解开"。
+于是真实世界里发生的是：
+
+    子 Run 跑完 → 事件来了 → 唤醒器重建父 Run → 交付 → 落快照 → **扔掉**
+                                                              ↑
+                                          这个 stack 从此没人再碰
+
+界面上仍然显示"运行中"（快照里 status 还是 running），
+而它再也不会前进一步 —— 与空洞 229（父 Run 永远挂着）是**同一个现象**，
+只是那一次的病因是"没人解开"，这一次是"**解开了没人推**"。
+
+这一轮补的是 D-27 ~ D-30：
+
+    D-27  谁解开一条 Run 的阻塞，谁就得把它推到下一个阻塞点或终态。
+          "现在可以被推一步"不是一种状态 —— 它是把一件必须做的事
+          推给了一个**不存在的调用方**
+    D-28  推进之后必须落一个新的可恢复点。终态那条路径（`_declare_terminal`）
+          自己**不落**快照，少了它"这个 Run 跑完了"在存储里根本不存在，
+          而 R-3 会被绕开（一条已结束的 Run 被重新装载出来继续走）
+    D-29  推进排在"标记处置完成"**之前**。推进是这条链路上最容易崩的一步
+          （它在调模型、调工具、动外部世界），排反了崩溃就等于
+          兜底扫再也不会碰它 —— 又是那个"永远走不下去"的形状
+    D-30  父 Run COMPLETED ≠ "没人接过"。S-16 已经在那一刻把账本结案成
+          NOT_NEEDED；此时再记一条 D-13 孤儿，账本会同时写着
+          "不需要撤销"与"没人负责这笔副作用" —— 两句互相矛盾的话
+
+推进这件事只有一个定义（`RunDriver` 端口 + `InProcessRunDriver`），
+唤醒路径、到期路径、以及将来任何一条"解开某个阻塞"的路径共用它（B-7）。
+详见 §80。
+
+v2.1.32 相对 v2.1.31：**M43（这次派生可以自己说等多久）落地后的回写。**
+
+M38 给了 `wait_until`，M42 给了"解开了就得推下去"。两者合起来，
+一次派生的等待终于能自己结束 —— 但**结束在什么时候**只有一个来源：
+
+    child_runs.wait_until                 1:1 —— 每一行都有自己那个时刻
+            ↑ 唯一的来源
+    ChildRunRegistry(wait_timeout=...)    1:N —— 一个进程一个值，所有派生共用
+
+这是一次**基数错配** —— 与 A-3 那个"第二个 Run"同族：不是"少了一个参数"，
+是"一个 1:1 的事实被挤进了一个 1:N 的格子里"。代价是双向的：
+
+    · 调大全局 → 所有派生都跟着变长 → 一条真死掉的子 Run 让它的父 Run
+      多挂两小时 —— 015 / M38 刚买到的"等不到就自己结束"被稀释掉
+    · 不调   → 那条两小时的深度研究在第 30 分钟被判"等不到"，
+      而它其实马上就要回来了 —— 平台**编了一个结论**（PR-34 / PR-19）
+
+这一轮补的是 D-31 ~ D-34：
+
+    D-31  这次派生可以自己说等多久：`ChildRunRequest` / `ChildRunHandle`
+          带 `wait_timeout`；没说才听登记处的全局默认
+    D-32  说出来的数必须落在 `(0, 6h]` 内 —— 越界是**点名拒绝**，
+          不是静默截断、不是静默回退默认
+    D-33  裁决发生在**写库之前**（抛会说话的 `InvariantViolation`，不是
+          `IntegrityError`）；部署上限只能比平台更严格，不能更宽松
+    D-34  冻结之后 handle 上的 `wait_timeout` 被清掉 ——
+          一个 handle 上不许同时挂着"要了多久"和"约定到什么时候"
+
+上限是**物理的**（016 的一条 CHECK），与 D-1 用 `UNIQUE` 是同款理由：
+裸 INSERT、psql 手工修数、没升级的服务都不经过 Python。
+裁决与冻结只有一个定义 `freeze_wait_deadline()`（B-7），
+内存登记处与 PG 登记处共用它 —— 替身与真库不许给出两个答案。
+详见 §81。
+
+v2.1.33 相对 v2.1.32：**M44（叫停也要幂等键）落地后的回写。**
+
+A-3 写着"`POST /runs` 幂等"，M36 把它做成了真的（`run:<key>` 落 PG）。
+可 `POST /runs/{id}/cancel` 是**同一条规矩下的另一个写操作**，它没有键：
+
+    t1  200 ···· 真的停了
+    t2  （网络抖了一下，客户端没收到）
+    t3  409 RUN_TERMINAL ···· 重试拿到的是这个
+
+409 说得没错（它确实是终态），错在**它是个错误码** ——
+UI 只能显示"停止失败"，一次成功的叫停被报成了失败。
+更糟的是 409 分不出"被你叫停的"和"它自己跑完了"，
+客户端要么骗人（写"已停止"，其实它不知道），要么猜。
+
+A-3 要的正是"重试拿到第一次的答案"。这一轮补的是 D-35 ~ D-36：
+
+    D-35  取消是写操作，所以它也吃幂等键 —— 重试拿到**第一次的答案**，
+          不是拿到一个 409 去猜
+    D-36  幂等记录里存的是**答案**，不是一个指向活对象的指针
+
+D-36 与 `start_run` 方向相反。这不是矛盾，是保护的东西不同：
+
+    start_run   存指针 —— 装载不回来 ⟹ 宁可喊 RUN_NOT_RELOADABLE
+                保护的是"不许凭空多出第二个 Run"
+    cancel_run  存答案 —— 装载不回来 ⟹ 照样给
+                保护的是"不许把已经发生的叫停报成失败"
+
+而取消的答案里最要紧的那一半（`cancel_requested=True` /
+`status="unknown"`）恰恰**装载不回来** —— 跨进程那一次叫停只写进了一张
+意图表，Run 自己还在别人手里。存指针等于把"我停过它"这件事
+记成一个读不出来的记号。
+
+两个命名空间（`run:` / `cancel:`）必须分开：共用会让取消**静默撞上**
+建 Run 留下的那条记录，于是这次叫停根本没发生，而客户端拿到 200。
+指纹用 sha256 —— 内置 `hash()` 对 str 带随机盐（`PYTHONHASHSEED`），
+重启之后同一个请求的指纹不一样，产物是一个**只在重启后才出现**的假 422，
+而单测跑在同一个进程里全绿（这一条专门开了两个种子不同的子进程来守）。
+失败不占键。详见 §82。
+
+v2.1.34 相对 v2.1.33：**M45（把 HTTP 这一层真的跑一遍）落地后的回写。**
+
+v2.1.55 相对 v2.1.54：**M66（取消事件的真库验证，并修掉一个 PG/内存行为不一致）落地后的回写。**
+`reject()` 和 `expire_approvals()` 在关掉闸门后漏调 `_sync_after_execution()`，
+导致 Run 停在 SUSPENDED 而 `pending_approval` 已清空（B-4 违反），
+且快照在"假挂起"窗口里会撞 R-1/R-6。新增 B-11。详见 §84。
+
+M44 结尾那句"路由有没有把 `Idempotency-Key` 传下去，目前只能扫源码，
+它挡得住删漏、挡不住传错了" —— 这一轮把它换成了真的：
+
+    扫源码  证明的是"这句参数声明在文件里"
+    真跑    证明的是"FastAPI 真的把它从 HTTP 头上取下来了"
+
+中间隔着一层框架绑定。M29 已经在 `pg_connection` 上踩过同一个形状：
+`row_factory=dict_row` 缺了会让生产路径 500，而**单测一直是绿的** ——
+因为替身（`sqlite_shim` 设了 `sqlite3.Row`）、集成层（`real_pg()` 自己设了
+`dict_row`）都比生产好用。那次的结论原话是：
+
+    **替身比生产更好用，而生产那条路径从来没有被跑过一次。**
+
+这一轮照着同一条判据，把连接也换成了生产那一款：`build_api` 不注入
+`real_pg()` 的 autocommit 连接，而是走 `pg_connection(config)` 的
+`autocommit=False`。否则**事务中间件就算整个不存在，这一层也全绿** ——
+那是把 X-3 / PR-31 在替身里判成通过。
+
+新增 `tests/integration/test_api_real_http.py`（13 条）：真 FastAPI +
+TestClient + 真 PG，再加一条**真的起 uvicorn 子进程走 TCP** 的冒烟
+（`python -m apps.api`，走的是 `__main__` 那条装载路径与环境变量解析）。
+
+同时**退役**了 M44 那段 AST 源码扫描（同一件事不许有两个定义，
+而两个里面能挡住"传错了"的只有后者）。详见 §83。
+
+---
+
+v2.1.56 相对 v2.1.55：**M67（生产迁移器）落地后的回写。**
+`infrastructure/postgres/` 下那 17 份迁移此前**只有一个消费者**：集成测试。
+而它的用法是 `DROP SCHEMA public CASCADE` 之后把全部文件重放一遍 ——
+那是"每次从零来一遍"，**不是迁移**。于是生产环境没有能安全执行的入口：
+第一次上线靠手工 psql 粘贴，第二次上线再粘贴一遍，而 `017` 是一句裸的
+`ALTER TABLE ADD COLUMN`，重放第二遍就是 `column already exists`。
+
+三条里最要命的是第三条：**"线上 schema 现在跑到哪一版"没有答案**。
+它一旦没有答案，"代码比 schema 新"（报列不存在）与"schema 比代码新"
+（静默多出几列）这两类事故就都只能靠人肉回忆来排除。
+
+本轮新增 `apps/migrate`（`plan` / `check` / `apply`）与账本表
+`agentos_schema_migrations`，新增不变量 **O-1 ~ O-4**。
+其中 O-1 是一条取舍：**记下"哪些已应用"，而不是把 17 份 SQL 改写成
+`IF NOT EXISTS` 的幂等形式** —— 后者会篡改历史（一份已上线的迁移是
+不可变的事实，改写它等于宣称"它一直都是这样"，线上库与文件首次分叉），
+而且它治不了"部分失败"。详见 §105。
+
+v2.1.57 相对 v2.1.56：**M68（进程探针）落地后的回写。**
+M67 让"库在哪一版"有了答案，但一个更基本的问题仍然没有答案：
+**这个进程现在还活着吗、它能干活吗**。在此之前部署清单里没有任何探针，
+于是 K8s 只能看"容器在不在" —— 一个卡死的进程和一个健康的进程，
+在编排层眼里是同一种状态。
+
+本轮新增 `apps/probe`（`live` / `ready`）与 `/readyz` 端点，
+新增不变量 **O-5 ~ O-9**。要害只有一条：**两种红必须分得开** ——
+库挂了是 `ready` 红而 `live` 绿（摘流量，**别杀**，杀了也连不上）；
+进程卡了才是 `live` 红（重启，新进程能重新连库）。合成一个结果，
+这两种情况就被迫得到同一种处置，而"一律重启"在库挂掉时会让
+八个进程一起 CrashLoopBackOff。
+
+O-9 那条阈值约束是被一次真实的 CrashLoop 打出来的：阈值一度与 sweeper
+的 30 秒空闲退避**相等**，于是空闲中的进程被判死 → 重启 → 又空闲 → 又判死，
+而日志里每条都是 `signal ticks=N work=0`（一副正常退出的样子），
+没有任何一行提到探活。详见 §106。
+
+---
+
+v2.1.58 相对 v2.1.57：**M69（运行时镜像）落地后的回写。**
+在此之前"怎么把 AgentOS 跑成一个容器"没有答案 —— 八个进程各有一份入口，
+于是最省事的写法是八个 Dockerfile。本轮改为**一个镜像、八个入口**：
+
+    八个镜像 = 八个构建、八份版本号，以及
+    "这八个镜像是不是同一份代码"这个每次上线都要重新回答的问题
+    一个镜像 = "跑的是哪份代码"只有一个答案
+
+另外两条都是"看起来更专业、实际更容易失败"的反例：
+用 slim 不用 alpine（`psycopg[binary]` 只有 manylinux wheel，
+alpine 上会退化成源码编译，需要 gcc + libpq-dev，换来的是
+**一个更容易失败的构建**）；用非 root（八个进程都拿着数据库串，
+root 意味着被注入后能改镜像里的代码 —— 这不是合规表演）。详见 §107。
+
+v2.1.59 相对 v2.1.58：**M70（集群部署清单）落地后的回写。**
+`deploy/k8s/` 下八份清单把八个进程都摆出来了，其中**两个是 `replicas: 0`** ——
+那两个依赖 Kafka（`outbox_publisher` / `child_run_consumer`），本次部署不启用。
+
+刻意**不**删掉那两份：删了的话 `kubectl get deploy` 里只剩六个进程，
+而架构文档写的是八个 —— 于是"另外两个去哪了"变成一个
+需要靠口头传承才能回答的问题。**0 副本是一个能被看见的答案**：
+它就在那里，它写着它为什么不跑，而且 `kubectl get deploy` 会列出它（0/0）。
+
+两份 TOML 内嵌在 ConfigMap 里而不是打进镜像：改配置不该需要重新构建 ——
+重新构建会把"线上跑的是哪份代码"和"线上跑的是哪份配置"耦合在一起。详见 §108。
+
+v2.1.60 相对 v2.1.59：**M71（DSN 只有一处）落地后的回写 —— 它是被一次真实部署逼出来的。**
+`python -m apps.migrate apply` 在集群里报的是：
+
+    NO_DSN: empty dsn; set AGENTOS_PG_DSN or pass --dsn
+
+而那份 Pod 里清清楚楚挂着 `AGENTOS_MANIFEST=/etc/agentos/agentos.toml`，
+清单里写着 `storage.pg_dsn`。原因是迁移器自己去找了 `AGENTOS_PG_DSN` 环境变量 ——
+于是"这一次部署的配置"有了**两个来源**：清单和环境变量。
+
+后果正是对"两个来源"的经典后果，而且它**不报错**：
+
+    清单里改了 DSN，迁移器读的是环境变量 → 它连到旧的那个库上，
+    把迁移应用到**另一个**库，然后报 "up to date"。
+    一次看不出任何问题的成功。
+
+新增 `apps/_dsn.py`，优先级 `--dsn` > 清单 > `$AGENTOS_PG_DSN`，
+与 `RuntimeConfig.from_env()` **完全一致** —— 否则"同一个进程里
+bootstrap 连 A 库、迁移器连 B 库"没有任何机制能阻止它发生。详见 §109。
+
+v2.1.61 相对 v2.1.60：**M73（推进之后必须落快照）落地后的回写。**
+真实部署里看到的现象：一条 Run 通过 **API** 推进到 `completed`，
+api Pod 重启之后再查它 —— 状态是 `created`，还挂着一个已经 approved 的审批。
+
+原因：`InProcessControlPlane.step_run / drive_run / cancel_run` 只在**内存**里推进，
+从不落快照；而后台进程走的 `RunDriver.drive()` 每次推进都落。
+于是持久化只在后台那条路径上成立 —— 而线上绝大多数 Run 恰恰是通过 API 推进的。
+
+这个洞在"进程不会死"的环境里永远不会被发现，
+它只在进程真的会死的地方出现：**Kubernetes**。详见 §110。
+
+v2.1.62 相对 v2.1.61：**M74（终态 Run 查得到，只是推不动）落地后的回写。**
+`_recover()` 让 R-3（终态不可恢复）一路抛上来 —— 那对**推进 / 取消**是对的：
+它们要 409，意思是"这条已经结束了，别再动它"。但对 `GET` 不是：
+
+    查一条已经完成的 Run 得到 409，表达的是"这个操作不被允许"，
+    而调用方问的只是"它现在是什么状态" ——
+    于是人以为这条 Run 出了事，去查一个根本没问题的地方。
+
+尤其在 Kubernetes 里：Pod 重启之后内存里没有这条 Run，
+每一次"查我昨天跑完的那条"都会撞上这条分支。
+现在从快照读出终态 Run 的样子，但刻意**不**编造 `waiting_for` / `pending_approval`
+—— 终态 Run 什么都没在等，说它在等谁就是谎报。详见 §111。
+
+v2.1.63 相对 v2.1.62：**M75（部署清单也要有人检查）落地后的回写。**
+M69 / M70 把镜像与八份 K8s 清单都摆出来了，但它们**零测试** ——
+它们引用的东西没有一条断言要求它们成立：
+
+    python -m apps.migrate        改个名就失效，而失效的方式是
+                                  initContainer 起不来 → Pod 卡在 Init:0/1，
+                                  日志里说的是别的
+    examples.demo_stack:build_... 函数改名同样静默
+    ConfigMap 内嵌的 TOML         与 deploy/config/*.toml 是同一份声明的两处（B-7），
+                                  改一处漏一处就对不上，没有任何机制会发现
+
+最后一条最要紧：M59 给 TOML 做了 `manifest check`，M60 让它能启动服务，
+**但 `deploy/config/agentos.toml` 从来没有被执行过那个 check** ——
+"集群里那份声明是不是合法的"此前没人问过。
+
+新增 `tests/unit/test_deploy_manifest.py`（14 条），
+把"入口存在 / provider 可装载 / ConfigMap 与源文件一致 / 运行的进程都挂了 liveness /
+心跳路径只声明一处 / COPY 的源路径存在"全部钉住。详见 §112。
+
+---
+
+v2.1.64 相对 v2.1.63：**M76（REPLAN 是一条真的边）落地后的回写。**
+`ActionType.REPLAN` 这一整套**机制齐全**：
+
+    action.py        REPLAN = "replan"
+    reducer.py       PLAN_INVALIDATED → current_plan = None
+    loop.py          REPLAN → 失效 → StepOutcome.REPLANNED
+    task_factory.py  REPLAN: None（不产生 Task）
+
+但**没有任何 DecisionEngine 产出它，也没有任何测试走过它**。
+全仓唯一提到 REPLAN 的用例只是把它当"普通活不是派生"的一个控制组枚举值。
+
+而 `derive.py` 里写着「Agent 下一步可能还要 REPLAN（Step 全绿但目标没达成）」——
+这句话是 **B-7** 的一条论据。也就是说：
+**一条不变量的论据，依赖一个从未被触发的机制。**
+
+补的过程中抓到一个真 bug：**重规划不吃预算** ——
+`self.steps += 1` 只在执行完成那条路径上，于是 `steps >= budget` 永远不成立，
+一个一直返回 REPLAN 的引擎会让 Run **永远跑下去**，既不终止也不报错。
+新增不变量 **I-10：重规划必须吃预算**。详见 §113。
+
+---
+
+v2.1.65 相对 v2.1.64：**M77（带着没被处理的失败，不许宣布完成）落地后的回写。**
+探针实录：
+
+    step 1  工具不存在 → StepOutcome.FAILED   agent_run running
+    step 2  脚本用完 → FINISH                 agent_run **completed**
+
+而失败的证据就在 `state.variables["result:exec_…"]` 里
+（`{'kind': 'execution_failed', …}`）—— 只是没人看。
+
+**一个关键步骤失败了的 Run，被宣布 COMPLETED。**
+
+引擎看不见失败（它按脚本走），而**宣布终态的是 Runtime**（B-7）——
+于是"这条 Run 成功了"这句话是 Runtime 说的，
+而 Runtime 手上明明握着 `execution_failed` 这条事实。
+按"宁可拒绝，不许编造"判：这不是"少了个功能"，是系统主动说了假话。
+
+新增不变量 **I-11**：Run 在完成之前，必须没有"自上次规划以来未被处理的失败"。
+有 → REPLAN（不是 FINISH）；重规划吃预算（I-10），
+救不回来的最终走到 FAILED —— 既不谎报成功，也不空转。
+
+顺带它给 M76 修好的那条 REPLAN 边带来了**第一个真正的触发条件**：
+在此之前没有任何引擎会产出 REPLAN，那条边只是"通了"而已。详见 §114。
+
+---
+
+v2.1.67 相对 v2.1.66：**M79（终态必须带上原因）落地后的回写。**
+
+M78 冻完之后去问了一句"一个 FAILED 的 Run，账本说得出它是怎么死的吗"，
+探针实测：
+
+    === A budget exhausted ===
+      status : failed
+      history: ['failed', 'failed', 'budget_exhausted']
+      run.finished | {'status': 'failed'}
+
+    === B replan produced nothing new ===
+      status : failed
+      history: ['replanned', 'failed']
+      run.finished | {'status': 'failed'}
+
+    两份 payload 一样吗： True
+
+难堪的地方在于这是**自己打自己脸**：那段 docstring 原话是
+"Trace 里的这条 `run.finished` 是"谁宣布了这个 Run 结束"的**唯一证据**" ——
+而那条唯一证据里恰恰没有最关键的那个字：**为什么**。
+
+把 FAILED 收成一个出口是对的（S-7：补偿挂在这里才不会漏），
+代价是**四种不同的死法从这里出去之后长得一模一样**。
+运维手上有的只是账本：`loop.history` 与 `last_outcome` 只在内存里，
+`RunSnapshot` 不带它们，进程一死就蒸发。
+
+新增 **B-12：终态声明必须带上原因**，原因落在 `run.finished` 的 payload 上。
+实现的关键不是"加个字段"，而是 `reason` 是**必填关键字参数** ——
+新增一个出口时，不写原因就构造不出这次调用。详见 §116。
+
+---
+
+v2.1.66 相对 v2.1.65：**M78（重规划必须真的换一份计划）落地后的回写 ——
+它补的是 M77 自己留下的一个洞。**
+
+M77 之后去问了一句"重规划换来的那份计划长什么样"，探针实测：
+
+    #0: plan_id=plan_53a5…  shape=(('n0','step-0','task'), ('n1','step-1','task'))
+    #1: plan_id=plan_7bd2…  shape=(('n0','step-0','task'), ('n1','step-1','task'))
+    两份计划的形状一样吗： True
+
+`plan_id` 每次都是新的（`new_id()`），所以**从对象上看每次都"换了计划"** ——
+但节点一个没变，那条路还是那条路。
+
+**更要命的是它把上一轮的 I-11 洗白了：**
+
+    step 1  坏工具 → FAILED
+    step 2  I-11 拦下 FINISH → REPLANNED
+    step 3  重新规划（拿到形状相同的计划）→ FINISH → **completed**
+
+I-11 判据是"自上次规划以来有没有失败"，而重规划之后那个计数归零 ——
+于是**一个失败过的 Run，多花一轮重规划就又"成功"了**。
+
+新增不变量 **I-12**：重规划必须产出一份**形状不同**的计划；
+换不出来 → 判 FAILED，而不是拿同一份计划再撞一次墙。详见 §115。
+
+---
+
+# 0. 架构总纲
+
+AgentOS 的核心不是某一个 LLM，而是一个统一的 **Execution Kernel**。
+
+核心职责：
+
+- **Intelligence**：决定 Agent 下一步应该做什么。
+- **Harness**：控制 Agent 如何运行、受到什么约束。
+- **Runtime**：驱动 Agent 的决策—行动—观察循环。
+- **Execution Kernel**：可靠地把 Task 执行完成。
+
+一句话：
+
+> **Intelligence 决定做什么，Harness 决定能不能做，Runtime 驱动 Agent，Kernel 负责把事情可靠地做完。**
+
+---
+
+# 1. 顶层架构
+
+```text
+                                  AgentOS
+                                     │
+             ┌───────────────────────┼───────────────────────┐
+             ↓                       ↓                       ↓
+       Intelligence              Harness                Governance
+             │                       │                       │
+      Goal / State              Context                  Policy
+      Decision                  Memory                   IAM
+      Action                    Cost                     OPA
+      Plan                      Guardrail                Vault
+      Observation               HITL
+             │                       │
+             └───────────────┬───────┘
+                             ↓
+                       Agent Runtime
+                             │
+                 ┌───────────┴───────────┐
+                 ↓                       ↓
+             Agent Loop               Planner
+                 │                       │
+                 └───────────┬───────────┘
+                             ↓
+                       Decision Engine
+                             ↓
+                       Action Resolver
+                             ↓
+                          Task Factory
+                             ↓
+                           Task
+                             ↓
+                   ┌─────────────────────┐
+                   │  Execution Kernel   │
+                   │                     │
+                   │ State Machine       │
+                   │ Scheduler           │
+                   │ Lease               │
+                   │ Attempt             │
+                   │ Checkpoint           │
+                   │ Retry                │
+                   │ Recovery            │
+                   │ Cancellation         │
+                   │ Idempotency          │
+                   └──────────┬──────────┘
+                              ↓
+                       Execution Result
+                              ↓
+                    Observation Processor
+                              ↓
+                         Observation
+                              ↓
+                         State Update
+                              ↓
+                            State
+                              ↓
+                     Decision / Replan
+```
+
+Governance 的定位（此前只在图中出现，未定义）：
+
+> **Governance 不是第五个核心边界，而是横切能力。**
+>
+> - 运行时的 Policy / Guardrail **决策执行点**在 Harness（PolicyEngine / GuardrailEngine）
+> - 身份、权限模型、密钥、组织级策略由 Governance 提供，Harness 通过接口调用
+>
+> 因此 §2 的边界表只有四层。
+
+---
+
+# 2. 四层职责边界
+
+| 层 | 核心动词 | 负责 | 不负责 |
+|---|---|---|---|
+| Intelligence | 决定 | Goal / Decision / Plan / Action | 不直接执行外部副作用 |
+| Harness | 控制 | Context / Memory / Policy / Guardrail / Cost / HITL | 不负责调度 Task |
+| Runtime | 驱动 | Agent Loop / Planner / Decision / Action / Observation | 不负责 Lease / Retry / Scheduler |
+| Execution Kernel | 执行 | Task / StateMachine / Scheduler / Lease / Attempt / Recovery | 不负责 Agent 如何思考 |
+
+核心边界：
+
+```text
+Intelligence
+    ↓
+Action
+
+Harness
+    ↓
+允许 / 拒绝 / 审批 / 限制
+
+Runtime
+    ↓
+Action → Task
+
+Kernel
+    ↓
+Task → Execution → Attempt → Result
+```
+
+运行时拦截点（hook point，必须钉死）：
+
+```text
+Agent Loop
+    ↓
+Action
+    ↓
+Harness.Policy / Guardrail        ← 唯一拦截点，由 Runtime 主动调用
+    ↓
+ALLOW             → Runtime.TaskFactory → Task → Kernel
+REQUIRE_APPROVAL  → 请求挂起 → Kernel 写 SUSPENDED
+DENY              → 不产生 Task，直接回 Observation
+```
+
+> **Harness 永远是被调用方，不反向调用 Kernel，也不在 Kernel 内部埋钩子。**
+> 这是“Harness 不侵入 Execution Kernel”的唯一实现方式。
+
+---
+
+# 3. Execution Domain：Business 与 Kernel 分离
+
+这是整个系统最重要的对象边界。
+
+## 3.1 Business Domain
+
+```text
+AgentRun
+WorkflowRun
+SkillRun
+EvaluationRun
+
+Step          ← 属于 Business Domain，不属于 Kernel
+```
+
+这些对象表达：
+
+> “谁正在执行什么业务。”
+
+它们拥有业务语义。
+
+Step 的归属此前未声明，现钉死：
+
+> **Step 属于 Business Domain。**
+> Step 不是预定义的执行图节点，而是 **Plan Node 的运行实例**。
+> Agent 是动态决策图，Step 由 Runtime 在执行过程中动态产生，不是启动时就存在的静态图。
+
+例如：
+
+```text
+AgentRun
+- agent_id
+- agent_version_id
+- goal
+- state
+- parent_run_id
+- created_at
+```
+
+```text
+Step
+- step_id
+- run_id
+- plan_node_id     ← 来源：Planner 产出 / Workflow 定义
+- name
+- status           ← 由所属 Task 的状态派生，不由 Step 自己维护
+- created_at
+```
+
+Step 不拥有调度语义，它只是逻辑分组。
+
+---
+
+## 3.2 Kernel Domain
+
+```text
+Task
+Execution
+Attempt
+Checkpoint
+Lease
+Cancellation
+```
+
+这些对象表达：
+
+> “系统如何可靠地执行一个工作单元。”
+
+---
+
+# 4. 核心执行关系
+
+最终关系：
+
+```text
+AgentRun
+    │
+    └── Step
+          │
+          ├── Task
+          ├── Task
+          └── Task
+                 │
+                 ↓
+              Execution
+                 │
+                 ├── Attempt #1
+                 ├── Attempt #2
+                 └── Attempt #3
+```
+
+基数（必须钉死）：
+
+```text
+AgentRun  : Step      = 1 : N
+Step      : Task      = 1 : N
+Task      : Execution = 1 : 1
+Execution : Attempt   = 1 : N
+```
+
+> **Task → Execution 是 1:1，不是 1:N。**
+> Task 被取消或终止后需要重跑，必须创建**新的 Task**，不能在同一个 Task 上开第二个 Execution。
+> 这样 Lease / Attempt / Checkpoint / Idempotency Key 的作用域才唯一。
+
+注意：
+
+> **Step 可以产生一个或多个 Task。**
+
+这是为了支持：
+
+- Parallel
+- Fan-out
+- Multi-Agent
+- Research
+- Batch
+- DAG Execution
+
+---
+
+# 5. Step / Task / Execution / Attempt
+
+## 5.1 Step
+
+Step 是：
+
+> **Plan Node 的运行实例，是业务执行的逻辑分组。**
+
+它不是 Agent 启动时就存在的静态图节点。
+
+```text
+Planner / Workflow 定义
+        ↓
+    Plan Node（静态）
+        ↓ 实例化
+      Step（运行时）
+        ↓ 1:N
+      Task
+```
+
+例如：
+
+```text
+Step: collect_financial_data
+```
+
+它描述“我要完成哪一个逻辑阶段”。
+
+> Agent 是动态决策图，Step 由 Runtime 在执行中动态产生；
+> Workflow 是静态图，其 Node 在执行时同样实例化为 Step。
+> 两者在 Kernel 视角下统一：Kernel 只看到 Step 产生的 Task。
+
+Step 不负责：
+
+- 调度
+- Lease
+- Retry
+- Worker
+- Cancellation
+
+---
+
+## 5.2 Task
+
+Task 是：
+
+> **可调度的最小工作单元。**
+
+例如：
+
+```text
+Task A: query_revenue
+Task B: query_cashflow
+Task C: search_news
+```
+
+Scheduler 只认识 Task。
+
+Task 可以具有类型：
+
+```text
+LLM_CALL
+TOOL_CALL
+RETRIEVAL
+SKILL
+AGENT_DELEGATION
+HUMAN_APPROVAL
+WORKFLOW_NODE
+CODE_EXECUTION
+...
+```
+
+因此不再单独设计：
+
+```text
+ToolExecution
+TaskExecution
+LLMExecution
+```
+
+而是：
+
+> 不同类型的 Task 使用统一 Execution Kernel。
+
+Task 有两个**正交**维度，不能合并：
+
+```text
+TaskType         做什么（语义）
+  LLM_CALL / TOOL_CALL / RETRIEVAL / SKILL
+  AGENT_DELEGATION / HUMAN_APPROVAL / WORKFLOW_NODE / CODE_EXECUTION
+
+ExecutorType     谁去做（执行器形态）
+  NATIVE / MCP / HTTP / AGENT_RUNTIME / WORKFLOW
+```
+
+> 同一个 `TOOL_CALL`，走 MCP 与走 HTTP 是同一个 TaskType、不同 ExecutorType。
+> 没有 ExecutorType 就无法表达"换个执行通道"，也无法在 Worker 侧做 Executor 路由。
+
+例如：
+
+```text
+Tool Call
+   ↓
+Task(type=TOOL_CALL)
+   ↓
+Execution
+   ↓
+Attempt
+```
+
+---
+
+## 5.3 Execution
+
+Execution 是：
+
+> **Task 在 Kernel 中的生命周期实体。**
+
+负责：
+
+- 状态
+- Lease
+- Attempt
+- Checkpoint
+- Cancellation
+- Recovery
+- Idempotency
+
+Execution 不负责 Agent 思考。
+
+Lease 归属（钉死）：
+
+> **Lease 挂在 Execution，不挂在 Task。**
+
+Scheduler 的视角是：
+
+```text
+Task（调度视图：被选中）
+    ↓ 1:1
+Execution（执行所有权实体）
+    ↓
+Lease（worker_id / lease_until / fencing_token）
+```
+
+Scheduler 选择 Task，但 Claim 的是该 Task 对应的 Execution。
+
+---
+
+## 5.4 Attempt
+
+Attempt 是：
+
+> **Execution 的一次实际执行尝试。**
+
+例如：
+
+```text
+Execution #100
+├── Attempt #1 → Timeout
+├── Attempt #2 → Provider 500
+└── Attempt #3 → Success
+```
+
+重要原则：
+
+> Retry 不等于把状态直接改回 RUNNING。
+
+每次新的尝试都创建新的 Attempt，从而保留完整失败证据。
+
+---
+
+# 6. Agent Runtime
+
+Agent Runtime 负责驱动：
+
+```text
+Observation
+    ↓
+State
+    ↓
+Decision
+    ↓
+Action
+    ↓
+Task
+```
+
+Runtime 包含：
+
+```text
+Agent Runtime
+├── Agent Loop
+├── Goal Interpreter
+├── Planner
+├── Decision Engine
+├── Action Resolver
+├── Task Factory
+├── Observation Processor
+└── Replanning / Failure Handling
+```
+
+Runtime 不包含：
+
+```text
+Scheduler
+Lease
+Attempt
+Retry
+Cancellation
+Execution State Machine
+```
+
+这些全部属于 Execution Kernel。
+
+---
+
+# 7. Intelligence Core Contracts
+
+## 7.1 Goal
+
+Goal 是：
+
+> 系统真正可执行的任务定义。
+
+它不等同于原始 User Request。
+
+```text
+Goal
+├── objective
+├── constraints
+├── success_criteria
+├── priority
+├── deadline
+└── budget
+```
+
+---
+
+## 7.2 State
+
+Agent State 表示：
+
+> Agent 当前认为世界是什么样，以及任务当前的认知状态。
+
+建议包含：
+
+```text
+AgentState
+├── goal
+├── current_plan
+├── beliefs / facts
+├── variables
+├── relevant_observations
+└── cognitive_context
+```
+
+不要把 Kernel 的执行状态全部塞进 AgentState。
+
+并发写入策略（并行 Task 时必须定义）：
+
+> **同一 run_id 的 `State.apply()` 必须串行化。**
+
+- State 带 `version`；Reducer 在 `version = N` 上计算，写入时校验仍为 N
+- 并行 Task 产生的 Observation 进入 **per-run 有序队列**，由 State Reducer 顺序 apply
+- 校验失败（version 已变）时：重读最新 State 并重放 Reducer，**不允许覆盖**
+
+```text
+Kernel 的 OCC      → 解决“数据库并发写”
+State 的 version   → 解决“语义并发写”
+```
+
+两者都要有，不能只做一层。
+
+State 的写入窗口（M15 回写，实现时才发现）：
+
+> **State 默认不可写，Reducer 只能在显式的 `reducing()` 窗口内写。**
+
+原因：`Observation 不直接修改 State` 这条原则落到代码上，是把 State 做成 sealed
+（只允许 append observation / version 递增）。但这带来一个直接冲突——
+**Reducer 又必须写 `current_plan` / `facts` / `variables`**，否则 Observation 永远进不了 State。
+
+解法不是放开约束，而是把"谁能写"变成显式的：
+
+```text
+State.apply(observation)
+  ├── observations.append(observation)     ← 永远允许
+  ├── with state.reducing():               ← 开启写窗口
+  │     reducer.reduce(state, observation) ← 窗口内允许写业务字段
+  └── version += 1                         ← 退出窗口后重新封印
+```
+
+> 窗口外任何对业务字段的写入一律拒绝。
+> 这样"Reducer 是唯一的状态推导者"从一句约定变成了**可执行的约束**。
+
+另外：
+
+> Plan 不直接写进 State，只能作为 `Observation(PLAN_CREATED)` 进入，由 Reducer 推导。
+> 否则 State 就同时存在"被 Plan 覆盖"和"被 Observation 推导"两条写入路径，重放会失真。
+
+---
+
+## 7.3 Decision
+
+Decision 表示：
+
+> Agent 对下一步行动的判断。
+
+Decision 不直接执行。
+
+```text
+Decision
+├── selected_action
+├── evidence
+└── confidence_signal
+```
+
+注意：
+
+> confidence_signal 不是经过校准的概率。
+
+---
+
+## 7.4 Action
+
+Action 是：
+
+> 一个具体的行动意图。
+
+例如：
+
+Action 全集合（M15 回写补齐）：
+
+```text
+LLM_CALL           调模型
+TOOL_CALL          调工具
+SKILL_CALL         调技能
+AGENT_DELEGATION   委派子 Agent
+HUMAN_APPROVAL     请求人工审批
+ASK_USER           向用户追问
+WAIT               等待外部事件 / Timer
+REPLAN             主动重规划
+FINISH             结束（唯一合法的"没有下一步"表达）
+```
+
+> **原 v2.1.1 的 Action 枚举里没有 `LLM_CALL`，这是一个 P0 级漏洞。**
+> `Task(type=LLM_CALL)` 在 §5.2 里是存在的，但 Action 里没有对应项，
+> 于是"再调一次模型"这个 Agent 最高频的决策，在 §7.4 里**找不到合法出口**，
+> 只能被塞进 Agent Loop 里隐式完成 —— 这等于**绕过了 Harness 拦截点**（§2 的 P0-3）。
+>
+> 后果是：模型调用不受 Policy / Guardrail / 预算约束，也不产生可审计的 Decision。
+> 因此 `LLM_CALL` 必须是 Action，必须走 `Action → Harness → Task` 这条唯一合法路径。
+
+> **"没有下一步"必须表达为 `Action(FINISH)`，不允许用空 Decision 表示。**
+> 空 Decision 会让 Loop 无法区分"结束"与"出错了"，也无法触发终止态写入。
+> `Decision.selected_action` 是必填项。
+
+Action → Task 的映射由 Task Factory 完成：
+
+```text
+LLM_CALL          → (TaskType.LLM_CALL,          ExecutorType.HTTP)
+TOOL_CALL         → (TaskType.TOOL_CALL,         ExecutorType.NATIVE / MCP)
+HUMAN_APPROVAL    → (TaskType.HUMAN_APPROVAL,    ExecutorType.HTTP)
+AGENT_DELEGATION  → (TaskType.AGENT_DELEGATION,  ExecutorType.AGENT_RUNTIME)
+```
+
+Action ≠ Task。
+
+Action 是“我要做什么”。
+
+Task 是“把这个行动变成可调度工作”。
+
+---
+
+## 7.5 Observation
+
+Observation 是：
+
+> Agent 对执行结果 / 外部世界的感知。
+
+例如：
+
+```text
+ToolResult
+→ Observation
+```
+
+但 Observation 不直接修改 State。
+
+正确链路：
+
+```text
+Execution Result
+       ↓
+Observation Processor
+       ↓
+Observation
+       ↓
+State Reducer / State Transition
+       ↓
+Agent State
+```
+
+这样可以保证：
+
+> Observation 是事实输入，State 是经过系统处理后的当前认知状态。
+
+---
+
+# 8. Agent 核心循环
+
+```text
+Goal
+ ↓
+Observe
+ ↓
+Build State
+ ↓
+Decision
+ ↓
+Action
+ ↓
+Task
+ ↓
+Execution
+ ↓
+Execution Result
+ ↓
+Observation
+ ↓
+State Update
+ ↓
+Decision
+```
+
+最终：
+
+```text
+Decision
+ ├── Finish
+ ├── ToolCall
+ ├── SkillCall
+ ├── AgentDelegation
+ ├── HumanApproval
+ ├── AskUser
+ ├── Wait
+ └── Replan
+```
+
+---
+
+# 9. Execution Kernel
+
+Execution Kernel 是整个 AgentOS 的可靠执行基础设施。
+
+## 9.1 Kernel 能力
+
+```text
+Execution Kernel
+├── State Machine
+├── Scheduler
+├── Lease
+├── Attempt
+├── Checkpoint
+├── Retry
+├── Recovery
+├── Cancellation
+└── Idempotency
+```
+
+Kernel 的持久化端口（M15 回写，Ports & Adapters）：
+
+> Kernel 不依赖任何具体存储。Time / Randomness / ID 也是端口。
+
+```text
+Clock                  时间（可注入，用来测超时与 Lease 过期）
+ExecutionRepository    Execution 当前态（OCC：WHERE version = ?）
+AttemptRepository      Attempt 历史   ← M15 新增
+OutboxStore            事务性发件箱
+LeaseIndex             Lease 到期索引 ← M15 新增
+CancelSignalStore      取消快信号
+IdempotencyStore       幂等结果
+EventPublisher         事件发布
+UnitOfWork             事务边界
+```
+
+**为什么 `AttemptRepository` 必须单独存在（M15 实战记录）：**
+
+> Execution 重载时若只恢复 Execution 自身、不恢复 Attempt 历史，
+> Kernel 会认为"当前没有 running attempt"，从而在 Worker 回写成功时抛出
+> `E-5 no running attempt to succeed` —— 一个成功的结果被判为非法。
+
+```text
+Attempt 必须与 Execution 在同一事务内持久化
+Kernel.aggregate() 必须 list_by_execution() 恢复完整 Attempt 历史
+```
+
+**为什么 `LeaseIndex` 必须单独存在：**
+
+> Lease 的真身在 PG 的 `executions` 表上；Redis 里只留一份"谁快到期"的 ZSET 索引
+> （member = execution_id，score = expires_at），用于避免全表扫 PG。
+
+同步方向是**单向**的，必须钉死：
+
+```text
+PG（真身） ──→ Redis（索引）      ✅ rebuild_lease_index()
+Redis（索引） ──→ PG（真身）      ❌ 永远禁止
+```
+
+> 索引可以重建，真身不可推导。这条单向性是"Redis 不是事实来源"的最小可执行表达。
+
+**Scheduler 的候选集必须排除已标记取消意图的 Execution（M15 实战记录）：**
+
+> 不排除会把带 `cancellation_requested = true` 的 Execution 再调度一遍，
+> 直接撞 `E-17 execution has a pending cancellation request`。
+> 取消意图一旦写入 PG，Scheduler 就必须停止为其分配新的执行权。
+
+```text
+candidates() = pending/runnable
+             − cancellation_requested = true     ← 硬过滤，不是优化
+```
+
+---
+
+## 9.2 State Machine
+
+State Machine 是 Kernel 的通用能力。
+
+不要只设计 AgentRunStateMachine。
+
+机制与策略分离（必须钉死）：
+
+```text
+机制（Mechanism） → Kernel：状态定义 / 转换合法性 / 原子写入 / 版本号
+策略（Policy）   → Runtime / Harness：什么时候发起转换、转换到哪个状态
+```
+
+> Kernel 回答“能不能转”，Runtime / Harness 决定“要不要转”。
+> AgentRun 是 Business 对象，Kernel 只为它提供状态机机制，不替它做业务决策。
+
+应该抽象为：
+
+```text
+StateMachine
+├── AgentRunStateMachine
+├── TaskStateMachine
+├── ExecutionStateMachine
+└── AttemptStateMachine
+```
+
+状态转换必须：
+
+- 显式
+- 原子
+- 可验证
+- 带版本
+- 防止非法状态跳转
+
+数据库层使用 Optimistic Concurrency Control。
+
+第一版只实现：
+
+```text
+ExecutionStateMachine
+AttemptStateMachine
+```
+
+AgentRun / Task 的状态由下层状态派生。
+
+#### 派生链与 B-7
+
+```text
+Execution.status ──► Step.status ──► AgentRun.status
+  （Kernel）          （Business）      （Business）
+```
+
+Step 是**聚合**（所属 Task 全做完 = 这一步做完），所以它可以派生出 `COMPLETED` / `FAILED` / `CANCELLED`。
+AgentRun 不是——它派生的是"这个 Run 现在在做什么"，而"这个 Run 有没有做完"是业务判断。
+
+| 层 | 能派生出终态吗 | 为什么 |
+|---|---|---|
+| Step | ✅ 能 | 它只是 Task 的逻辑分组，"都做完了"就是做完了 |
+| AgentRun | ❌ **不能（B-7）** | Step 全绿不代表目标达成；Agent 可能还要 REPLAN，也可能**正在思考**（思考不产生 Task，在派生里根本看不见） |
+
+> **B-7：AgentRun 的 `COMPLETED` / `FAILED` / `CANCELLED` 只能由 Runtime 显式声明，不能从 Step 派生。**
+> 派生只产出活跃态：`CREATED` / `QUEUED` / `RUNNING` / `SUSPENDED`。
+> "所有 Step 已终态但没有 Runtime 声明"时，Run 是 `RUNNING` —— 它确实还活着，Loop 正握着它。
+>
+> 反过来说：**"手上的活干完了" ≠ "这个 Run 结束了"。**
+> 前者是 Kernel 的事实，后者是 Runtime（乃至人）的判断。
+> 把判断降格成聚合，就等于让 Kernel 替 Runtime 决定什么时候收工。
+
+`AgentRunStateMachine` 因此**不是转换器**，它只有 `can_transition()`，没有 `transition()`：
+它只回答"这个投影结果合不合法"。投影出一个非法跳转说明下层语义出了问题，必须炸掉而不是默默接受。
+
+### Execution 状态集合
+
+```text
+PENDING     已创建，未调度
+RUNNING     已 Claim，Lease 有效
+STALE       Lease 过期 / Worker 失联（中间态，必进 Recovery）
+SUSPENDED   挂起等待（带 suspension_reason）
+COMPLETED
+FAILED
+CANCELLED
+```
+
+合法转换：
+
+```text
+PENDING                    → RUNNING / CANCELLED
+RUNNING                    → PENDING（可重试失败，回到可调度）
+                             / SUSPENDED / STALE / COMPLETED / FAILED / CANCELLED
+STALE                      → FAILED / CANCELLED        ← RUNNING 只能经 recover()
+SUSPENDED                  → PENDING（Wake up：先变成 Runnable Task，再被 Claim）
+                             / CANCELLED / FAILED
+COMPLETED / FAILED / CANCELLED → 终态，不可变
+```
+
+> STALE 与 SUSPENDED 都**不允许一步回到 RUNNING**：
+> STALE 必须先 `recover()`（新 Attempt + 新 fencing_token），
+> SUSPENDED 必须先 Wake-up 成 Runnable Task 再被 Claim。
+> 这样"执行权"始终由 Scheduler / Worker 的 Claim 决定，Kernel 从不代劳。
+
+> STALE 是 **Execution** 的状态，不是 AgentRun 的状态。
+> CANCEL_REQUESTED 是**取消意图字段**（PG 持久化），不是 Execution 的第七个状态。
+
+### Attempt 状态集合
+
+```text
+RUNNING
+ ↓
+SUCCEEDED / FAILED / TIMEOUT / CANCELLED
+```
+
+Attempt 是终态对象，不做二次转换。
+
+---
+
+# 10. AgentRun 生命周期
+
+最终采用：
+
+```text
+CREATED
+   ↓
+QUEUED
+   ↓
+RUNNING
+   ↕
+SUSPENDED
+   ↓
+COMPLETED
+
+RUNNING → FAILED
+RUNNING → CANCELLED
+```
+
+**补两条 v2.1.3 的边**（M15 阶段 10 实现时被测试逼出来的，不是看图能想到的）：
+
+```text
+CREATED → SUSPENDED     ← Run 的第一个动作就被闸门挡住，Run 从未 RUNNING 过
+任何活跃态 → COMPLETED/FAILED/CANCELLED 只能由 Runtime 声明（B-7）
+```
+
+`CREATED → SUSPENDED` 为什么必须合法：Run 创建出来后第一个 Action 就被 Policy 判成
+`REQUIRE_APPROVAL`，于是第一个 Step 直接 SUSPENDED。不能靠"先采样一次 RUNNING 再 SUSPENDED"
+来绕开——**投影必须是顺序无关的纯函数**，从 Checkpoint 恢复时采不到中间那一帧，
+同一份下层状态会投影出两种结果。
+
+**B-7：`COMPLETED` / `FAILED` / `CANCELLED` 不能从 Step 派生，只能由 Runtime 声明。**
+理由见 §9.2；违反它的直接症状是"Step 全绿 → Run 被派生成 COMPLETED → Runtime 想标 FAILED
+（放弃 / 预算耗尽）时被终态不可变约束顶回来"——等于让 Kernel 替 Runtime 决定什么时候收工。
+
+## SuspensionReason
+
+不把等待原因做成顶层状态。
+
+```text
+HUMAN_APPROVAL
+CHILD_AGENT
+TIMER
+EXTERNAL_EVENT
+```
+
+例如：
+
+```json
+{
+  "status": "SUSPENDED",
+  "suspension_reason": "HUMAN_APPROVAL"
+}
+```
+
+Suspension 所有权（与 Cancellation 同构，必须钉死）：
+
+| 角色 | 职责 |
+|---|---|
+| Harness / Runtime | **发起请求**：REQUIRE_APPROVAL / Wait / Delegate |
+| Kernel | **拥有生命周期**：写 SUSPENDED + suspension_reason + wait condition |
+| Wake-up Controller | **检测条件**：Event / Timer / Approval |
+| Scheduler | **重新调度**：Runnable Task → Worker |
+
+> Harness 只能“请求挂起”，不能自己把 Execution 改成 SUSPENDED。
+> 挂起前必须先落 Checkpoint；唤醒后从 Checkpoint 继续，不重新执行整个 Run。
+
+唤醒链路：
+
+```text
+SUSPENDED
+   ↓
+Wait Condition
+   ↓
+Event / Timer / Approval
+   ↓
+Wake Up
+   ↓
+Runnable Task
+   ↓
+Scheduler
+   ↓
+Worker
+   ↓
+RUNNING
+```
+
+---
+
+# 11. Scheduler
+
+Scheduler 只负责：
+
+> **决定哪个 Task 现在应该执行。**
+
+Scheduler 不负责 Agent 决策。
+
+调度考虑：
+
+```text
+Priority
+Tenant Fairness
+Aging
+Resource Requirement
+Concurrency
+Quota
+Deadline
+Worker Capability
+```
+
+例如：
+
+```text
+Runnable Tasks
+      ↓
+Candidate Selection
+      ↓
+Policy
+      ↓
+Resource Matching
+      ↓
+Task Claim
+      ↓
+Worker
+```
+
+---
+
+# 12. Lease
+
+Worker 拿到执行权后不是永久拥有。
+
+Claim 的对象是 **Execution**，不是 Task。
+
+```text
+Task（被 Scheduler 选中）
+ ↓
+Execution（1:1）
+ ↓
+Claim
+ ↓
+Lease
+ ↓
+Heartbeat
+```
+
+Lease 包含：
+
+```text
+worker_id
+lease_until
+heartbeat_at
+fencing_token
+```
+
+fencing_token 在 Claim 时单调递增分配。
+
+> **写回校验：任何状态写回都必须携带 fencing_token，token 落后于当前值则拒绝写入。**
+
+否则旧 Worker 复活后会污染已经被新 Worker 接管的 Execution。
+
+Lease / Lock / Fencing Token 三者的区别：
+
+```text
+Lease            谁在一段时间内拥有执行权（会过期）
+Lock             短临界区互斥（不跨进程生命周期）
+Fencing Token    防止过期持有者回写（单调递增，不可伪造）
+```
+
+如果：
+
+```text
+lease_until < now
+```
+
+说明 Worker 可能已经失联。
+
+Recovery Controller 可以发现 stale execution。
+
+注意：
+
+> Lease 过期不是简单把状态改成 QUEUED。
+
+正确流程：
+
+```text
+Lease Expired
+ ↓
+Execution = STALE
+ ↓
+Recovery
+ ↓
+新 Attempt（重新 Claim，分配新 fencing_token）
+ ↓
+重新调度
+```
+
+### Recovery 的两条发现路径（M15 回写）
+
+```text
+快路径   Redis LeaseIndex.due(now)   →  O(log N)，常态走这条
+安全网   PG list_with_expired_lease  →  全表扫，低频（默认每 N tick 一次）
+```
+
+**为什么必须保留 PG 安全网——不能写成"index 空就回退 PG"：**
+
+> Redis 全丢时 index 为空，但**系统空闲时 index 本来就是空的**。
+> 两者无法区分，所以"index 为空"这个信号本身不携带信息。
+> 若据此回退 PG，等于把一次低频全表扫变成了常态全表扫。
+
+正确做法：安全网与 Redis 状态**无关**，按固定频率无条件执行。
+
+> **Redis 全丢的正确后果是"变慢"，不是"变错"。**
+> 判据：任何依赖 Redis 的逻辑，在 Redis 不可用时只能退化为更慢的等价路径，
+> 绝不能退化为不同结果。Lease 索引符合这条；**事件去重不符合**（见 §20）。
+
+---
+
+# 13. Retry / Recovery 必须区分
+
+## Retry
+
+回答：
+
+> “失败以后，要不要再试一次？”
+
+例如：
+
+```text
+Timeout
+RateLimit
+Provider 5xx
+NetworkError
+```
+
+RetryPolicy 必须显式定义（否则无法实现）：
+
+```text
+RetryPolicy
+├── max_attempts          ← Execution 级，默认 3
+├── backoff               ← exponential + jitter
+├── retryable_errors      ← 由 Kernel Failure Class 判定
+├── timeout_per_attempt
+└── retry_budget          ← Run 级总重试上限，防止重试风暴
+```
+
+> RetryPolicy **定义在 Task**，**执行在 Execution**，**计数在 Attempt**。
+
+### Kernel Failure Class
+
+Retry 的判定依据是 Kernel 级失败分类，不是 §30 的 Evolution Failure Taxonomy。
+
+| Failure Class | 语义 | Retryable |
+|---|---|---|
+| TRANSIENT | Timeout / RateLimit / 5xx / Network | ✅ |
+| RESOURCE | Worker OOM / 配额耗尽 | ✅（换 Worker） |
+| LEASE_EXPIRED | Lease 过期 / Worker 失联 | ✅（走 Recovery） |
+| PERMANENT | 参数非法 / 权限拒绝 / Tool 不存在 | ❌ |
+| EXTERNAL_UNKNOWN | 外部副作用结果未知 | ❌ |
+| POLICY_DENIED | Guardrail / Policy 拒绝 | ❌ |
+
+> EXTERNAL_UNKNOWN 是最危险的一类：**不能靠 Retry 解决**，
+> 只能靠 Idempotency Key 回查外部系统的真实状态，再决定继续还是补偿。
+
+### Worker 的持有权丧失必须单列（M15 回写）
+
+Failure Class 是**事后分类**（失败已经发生，判断要不要重试）。
+但 Worker 写回时会撞到一类**当下**情况：它已经不再是持有者。
+
+```text
+StaleWriteError   版本号落后 → 别人已经接管
+LeaseRequired     Lease 已过期 → 我不再拥有执行权
+```
+
+这既不是 FAILED（会误记失败、污染失败证据），也不是 RETRYING（会造成重试放大与双写）。
+
+因此 Worker 的 outcome 必须单列第五种：
+
+```text
+WorkerOutcome
+├── COMPLETED     成功
+├── FAILED        不可重试失败 → 终态
+├── RETRYING      可重试失败   → 回 PENDING 等重新调度
+├── CANCELLED     协作式取消生效
+└── LOST_LEASE    我不再是持有者 → 不重试、不记失败、直接放弃，交给 Recovery
+```
+
+> `LOST_LEASE` 的语义是**沉默退出**：不做任何状态写入尝试。
+> 执行权已经不属于我，任何写入都是污染。
+
+### Worker 心跳的硬约束（M15 回写）
+
+```text
+heartbeat_interval < lease_ttl          ← 必须在构造期校验，不能靠约定
+```
+
+> 不校验的话，心跳周期大于租约时长时，Worker 会在**两个心跳之间**合法失去租约而自己不知道，
+> 表现为"活着但已经被别人接管"，是最难排查的一类并发 bug。
+
+Worker 的五件事（顺序不可颠倒）：
+
+```text
+1  claim       拿 Lease + fencing_token
+2  heartbeat   周期性续约（间隔 < lease_ttl）
+3  execute     调用 Executor，带 CancellationToken
+4  writeback   携带 fencing_token 写回（token 落后则拒绝 → LOST_LEASE）
+5  outbox      同一事务内写事件
+```
+
+---
+
+## Recovery
+
+回答：
+
+> “出了故障以后，如何恢复执行？”
+
+例如：
+
+```text
+Worker Crash
+Lease Expired
+Stale Execution
+Checkpoint Resume
+```
+
+---
+
+## Agent Replanning
+
+回答：
+
+> “当前策略失败以后，Agent 下一步应该怎么办？”
+
+例如：
+
+```text
+Tool A 失败
+ ↓
+Agent 判断
+ ↓
+换 Tool B
+```
+
+Replanning 必须有边界（否则会无限重规划）：
+
+```text
+ReplanPolicy
+├── max_replan_count        ← Run 级，默认 3
+├── replan_budget           ← Token / 成本上限
+├── no_progress_detection   ← 连续 N 次无实质进展则停止
+└── escalation              ← 超界后 → HITL / FAILED
+```
+
+> 超过 max_replan_count 后不再 Replan，直接进入 HITL 或 FAILED。
+
+所以：
+
+```text
+Kernel Recovery
+≠
+Retry
+≠
+Agent Replanning
+```
+
+三者必须保持边界。
+
+---
+
+# 14. Checkpoint
+
+Checkpoint 记录：
+
+> **系统应该从哪里继续执行。**
+
+Checkpoint 必须分两层，否则 Kernel 会被业务语义污染：
+
+```text
+Kernel Checkpoint（Execution 级，Kernel 拥有）
+├── execution_state
+├── attempt_no
+├── idempotency_key
+├── fencing_token
+├── artifact_refs
+└── recovery_metadata
+
+Run Checkpoint（Run 级，Runtime / Harness 拥有）
+├── current_step
+├── completed_tasks
+├── variables
+└── context_snapshot_id      ← 引用，不内嵌
+```
+
+> **Kernel 不知道什么是 Step。**
+> `current_step` / `completed_tasks` 属于 **Run Checkpoint**，不属于 Kernel Checkpoint。
+
+写入时机（必须定义，否则实现会随机化）：
+
+| 时机 | 写什么 |
+|---|---|
+| Attempt 成功 | Kernel Checkpoint |
+| Step 完成 | Run Checkpoint |
+| 挂起前（SUSPENDED） | 两者都写，强制 |
+| 每次 LLM 调用后 | ❌ 不写 Checkpoint，只写 ContextSnapshot |
+
+Checkpoint ≠ ContextSnapshot。
+
+---
+
+## ContextSnapshot
+
+记录：
+
+> **某一次模型调用实际看到的 Context。**
+
+所以：
+
+```text
+Checkpoint
+= 从哪里恢复
+
+ContextSnapshot
+= 模型当时看到了什么
+```
+
+---
+
+# 15. Cancellation
+
+Cancellation 必须分成：
+
+### Durable Intent
+
+PostgreSQL：
+
+```text
+CANCEL_REQUESTED
+```
+
+### Fast Signal
+
+Redis：
+
+```text
+run:{run_id}:cancel = 1
+```
+
+### Runtime Propagation
+
+```text
+CancellationToken
+```
+
+完整流程：
+
+```text
+User / Policy / System
+        ↓
+PostgreSQL
+        ↓
+CANCEL_REQUESTED
+        ↓
+Redis Cancel Signal
+        ↓
+Worker
+        ↓
+CancellationToken
+        ↓
+Execution Kernel
+        ↓
+CANCELLED
+```
+
+Redis 是低延迟通知，不是取消事实来源。
+
+### 第四段：Sweeper（M15 回写，原 v2.1.1 缺这一环）
+
+上面三段在纸面上是闭合的，实现时会发现**链条断在最后**：
+`CancellationToken` 只有"正在 RUNNING 且愿意检查 Token 的 Worker"才会读。
+以下三类永远不会有人来读 Token：
+
+```text
+PENDING     还没被 Claim，没有 Worker
+SUSPENDED   在等审批 / Timer / 子 Agent，Worker 已退出
+STALE       Worker 已失联
+```
+
+> **取消意图会永久悬空**：PG 里 `cancellation_requested = true`，状态却永远停在中间态。
+
+因此必须有第四段——系统级收敛者：
+
+```text
+CancellationService.sweep()
+
+  PENDING / SUSPENDED / STALE        → 直接 CANCELLED
+  RUNNING + Lease 已过期             → 直接 CANCELLED
+  RUNNING + Lease 仍有效             → 跳过，等 Worker 协作式收尾
+```
+
+> 最后一条是关键：**不与活着的 Worker 抢**。
+> 直接把 RUNNING 改成 CANCELLED 会让 Worker 的写回变成非法状态转换，
+> 也会丢掉"取消发生在哪一步"的可观测性。协作式取消优先，Sweeper 只兜底。
+
+所以取消是四段，不是三段：
+
+```text
+Durable Intent（PG）        ← 事实
+Fast Signal（Redis）        ← 加速，非事实
+Runtime Propagation（Token）← 协作式，只对活着的 Worker 有效
+Sweeper（系统级）           ← 兜住以上三段都够不到的情况
+```
+
+> Sweeper 是常驻部署单元，与 `recovery_controller` / `wakeup_controller` 同级。
+
+---
+
+# 16. Idempotency
+
+AgentOS 默认采用：
+
+> **At-Least-Once + Idempotency**
+
+而不是试图实现端到端 Exactly Once。
+
+因为外部副作用无法靠数据库事务完全回滚。
+
+例如：
+
+```text
+send_email
+charge_payment
+create_order
+```
+
+Worker 可能：
+
+```text
+External Side Effect 成功
+        ↓
+Worker Crash
+        ↓
+没有写回 Success
+        ↓
+Retry
+```
+
+所以需要：
+
+```text
+Idempotency Key
+```
+
+Key 的作用域（必须钉死）：
+
+```text
+idempotency_key = {execution_id}
+```
+
+> Idempotency Key 是 **Execution 级**，跨 Attempt 保持稳定。
+> 如果每个 Attempt 生成新 key，重试就完全失去防重复的意义。
+
+责任划分：
+
+| 角色 | 职责 |
+|---|---|
+| Kernel | 生成并持久化 idempotency_key |
+| Tool Runtime | 调用外部系统时透传该 key |
+| 外部系统 | 按 key 去重（best effort；能力不足时 Kernel 记录 EXTERNAL_UNKNOWN） |
+
+核心原则：
+
+```text
+Lease / Lock        防止并发
+Idempotency Key     防止重复副作用
+Fencing Token       防止过期持有者回写
+```
+
+三者不是同一件事。
+
+---
+
+# 17. Recovery 的最终模型
+
+```text
+Task
+ ↓
+Execution
+ ↓
+Attempt #1
+ ↓
+Worker Crash
+ ↓
+Lease Expired
+ ↓
+Recovery
+ ↓
+Checkpoint
+ ↓
+Attempt #2
+ ↓
+Worker
+ ↓
+Success
+```
+
+---
+
+# 18. Observation / Event / State / Trace
+
+四者严格区分。
+
+| 概念 | 定义 |
+|---|---|
+| Observation | Agent 感知到的结果 |
+| Event | 系统发生过的事情 |
+| State | 系统 / Agent 当前状态 |
+| Trace | 执行链路的观测视图 |
+
+例如：
+
+```text
+ToolExecutionStarted
+        ↓
+ToolExecutionCompleted
+        ↓
+ExecutionResult
+        ↓
+Observation
+        ↓
+State Transition
+        ↓
+AgentState
+```
+
+同时：
+
+```text
+Event
+ ↓
+Kafka
+ ↓
+Audit / Evaluation / Read Model
+```
+
+而：
+
+```text
+Trace
+ ↓
+OpenTelemetry
+ ↓
+Observability
+```
+
+Event ≠ Observation ≠ State ≠ Trace。
+
+> 事件名沿用历史命名（`ToolExecutionStarted` / `ToolExecutionCompleted`），
+> **不代表存在 `ToolExecution` 领域对象** —— 它们描述的是 `Task(task_type=TOOL)` 对应 Execution 的生命周期。
+
+---
+
+# 19. Event 与 Kafka
+
+PostgreSQL：
+
+> Current Durable State / Business Source of Truth
+
+Kafka：
+
+> Durable Event Log / Event Backbone
+
+Redis：
+
+> Low-latency Runtime State
+
+Qdrant：
+
+> Retrieval Index
+
+S3 / MinIO：
+
+> Large Object Storage
+
+---
+
+# 20. PostgreSQL + Kafka 一致性
+
+不采用纯 Event Sourcing。
+
+采用：
+
+```text
+PostgreSQL
+   +
+Transactional Outbox
+   ↓
+Kafka
+   ↓
+Idempotent Consumer
+```
+
+事务：
+
+```text
+BEGIN
+
+UPDATE business_state
+
+INSERT outbox_event
+
+COMMIT
+```
+
+Outbox Publisher：
+
+```text
+Outbox
+ ↓
+Kafka
+ ↓
+mark published
+```
+
+如果 Kafka 已成功而 Publisher 崩溃，允许重复发送。
+
+因此消费者必须：
+
+```text
+event_id
++
+deduplication
+```
+
+系统语义：
+
+> **最终一致 + At-Least-Once + Idempotency**
+
+而不是 Exactly Once。
+
+### 去重记录必须落在 PostgreSQL（M15 回写）
+
+上面只说了"要按 event_id 去重"，没说**去重记录存在哪**。这是个真实的决策点：
+
+| 存放位置 | 结论 | 理由 |
+|---|---|---|
+| Redis | ❌ 禁止 | 去重是**正确性**，不是性能。Redis 可丢；去重记录丢了 = 重复处理 = 出错 |
+| PostgreSQL | ✅ 必须 | 与 Outbox 同一事务边界，可随业务状态一起提交 |
+
+```text
+processed_events
+├── event_id      PRIMARY KEY    ← 去重键，来自 Event.event_id
+├── event_type
+└── processed_at                 ← 保留窗口 ≥ Replay 周期（默认 30 天）
+```
+
+消费者语义：
+
+```text
+1  读事件
+2  执行 handler
+3  同一事务内 INSERT processed_events（ON CONFLICT DO NOTHING）
+   —— 先 handler 后 mark；mark 返回 false 说明已处理过，跳过
+```
+
+> **判据（可复用到其他组件）：**
+> 把一份数据放 Redis 之前，先问——它丢了以后，系统是**变慢**还是**变错**？
+> 变慢 → 可以放（Lease 索引）；变错 → 必须放 PG（事件去重、幂等结果）。
+
+另外，Outbox 的发布顺序也必须钉死：
+
+```text
+publish → mark_published      先发后标
+```
+
+> 反过来（先标后发）会在"标记成功、发布崩溃"时**永久丢事件**；
+> 先发后标只会重复，而重复可以被去重消化。这就是 At-Least-Once 的来源。
+
+Kafka 侧两条硬约束：
+
+```text
+key = {aggregate_type}:{aggregate_id}   同一聚合进同一分区 → 保序
+event_id 必须在 body 里，不能只在 header  否则消费者拿不到去重键
+```
+
+---
+
+# 21. Memory / Knowledge / Context / Artifact
+
+## Memory
+
+Agent / User 的经验与长期事实。
+
+```text
+PostgreSQL
+    ↓
+Metadata / Lifecycle
+
+Redis
+    ↓
+Hot / Working Memory
+
+Qdrant
+    ↓
+Semantic Retrieval Index
+```
+
+Qdrant 不是 Memory 的最终事实来源。
+
+---
+
+## Knowledge
+
+外部资料。
+
+```text
+Original Document
+       ↓
+S3 / Object Storage
+       ↓
+PostgreSQL Metadata / Version
+       ↓
+Qdrant Retrieval Index
+```
+
+RAG：
+
+```text
+Query
+ ↓
+Query Rewrite
+ ↓
+Permission Filter
+ ↓
+Vector Search + BM25
+ ↓
+Fusion
+ ↓
+Rerank
+ ↓
+Top-K
+ ↓
+Citation
+ ↓
+Context
+```
+
+---
+
+## Context
+
+一次模型调用的工作台。
+
+```text
+Context
+├── System Instructions
+├── Conversation
+├── Memory
+├── Knowledge
+├── Tools
+├── Skills
+└── Runtime State
+```
+
+Context 必须经过：
+
+```text
+Assembly
+ ↓
+Ranking
+ ↓
+Optimization
+ ↓
+Token Budget
+```
+
+---
+
+## Artifact
+
+Agent 产生的大对象。
+
+例如：
+
+```text
+PDF
+Excel
+Image
+Video
+Dataset
+Report
+Code
+Model Output
+```
+
+统一：
+
+```text
+Execution
+ ↓
+Artifact
+ ↓
+Object Storage
+```
+
+Observation 只保存 Artifact Reference。
+
+---
+
+# 22. Context Engineering
+
+```text
+ContextEngine
+├── SystemAssembler
+├── ConversationAssembler
+├── MemoryAssembler
+├── RetrievalAssembler
+├── ToolAssembler
+├── SkillAssembler
+├── RuntimeStateAssembler
+└── MetadataAssembler
+```
+
+然后：
+
+```text
+ContextAssembler
+ ↓
+ContextOptimizer
+ ↓
+TokenBudget
+ ↓
+Model
+```
+
+原则：
+
+> Context 不是简单字符串拼接，而是受优先级、相关性和 Token Budget 约束的资源分配问题。
+
+---
+
+# 23. Harness
+
+Harness 负责控制 Agent。
+
+```text
+AgentHarness
+├── ContextManager
+├── MemoryManager
+├── PolicyEngine
+├── GuardrailEngine
+├── CostManager
+└── HumanLoop
+```
+
+---
+
+## Policy
+
+回答：
+
+> **“这个 Agent / User 是否有权执行这个 Action？”**
+
+```text
+ALLOW
+DENY
+REQUIRE_APPROVAL
+```
+
+---
+
+## Guardrail
+
+回答：
+
+> **“这个输入 / Action / 输出是否满足安全约束？”**
+
+包括：
+
+```text
+Input Guardrail
+Action Guardrail
+Tool Guardrail
+Output Guardrail
+```
+
+---
+
+## HITL
+
+高风险 Action：
+
+```text
+Agent
+ ↓
+Action
+ ↓
+Policy
+ ↓
+REQUIRE_APPROVAL
+ ↓
+Checkpoint
+ ↓
+SUSPENDED(HUMAN_APPROVAL)
+ ↓
+Human
+ ↓
+Approved
+ ↓
+Wake Up
+ ↓
+Execution
+```
+
+不重新执行整个 Agent。
+
+### M16 落地回写：HITL 的机械细节
+
+上面这条链在纸面上是闭合的，实现时撞到三个必须有、但容易漏的点。
+
+**1）审批闸门必须先被 Claim，才能被挂起**
+
+> `SUSPENDED` 只能从 `RUNNING` 转（§9.2）。`PENDING → SUSPENDED` 是非法转换。
+
+这不是实现的别扭，而是 `SUSPENDED` 的**语义**：
+
+```text
+SUSPENDED = 执行权已经授出去过，又被主动挂起了
+PENDING   = 还没开始
+```
+
+"还没开始就挂起"在语义上不成立 —— 那叫没调度，不叫挂起。
+所以审批闸门 Execution 必须走：
+
+```text
+submit → PENDING
+   ↓
+claim（RUNNING，Attempt #1 = 发出询问）
+   ↓
+suspend（SUSPENDED(HUMAN_APPROVAL)，E-9 顺带释放 Lease）
+   ↓
+Human
+   ↓
+resume（SUSPENDED → PENDING → Claim，Attempt #2 = 人的答复，新 fencing_token）
+   ↓
+complete
+```
+
+于是闸门 Execution 的 Attempt 序列天然可解释：
+**Attempt #1 是"问"，Attempt #2 是"答"**，而且每一步都在状态机里，不是旁路。
+
+**2）审批截止时间只有一个事实源**
+
+```text
+ApprovalRequest.expires_at      ← 唯一事实源
+        ↓ 推出
+闸门 Action 的 I-8 timeout
+```
+
+> 不能让 `AgentLoopConfig.approval_timeout` 与 `HumanLoop.default_ttl` 各管一个。
+> 两处不一致时会出现"审批还没过期，闸门 Execution 已经超时"这种自相矛盾，
+> 而且没有任何一方能发现。
+
+> **没有截止时间的审批 = 允许一个人把 Run 永久挂住**（H-5）。
+
+**3）审批需要自己的 sweep —— 意图不会自己变成终态**
+
+与 §15 的取消同源：一条审批停在 `PENDING` 不会自己变成 `EXPIRED`。
+没人扫的话，Run 会**永远挂着且不报错**。
+
+```text
+HumanLoop.expire_due()   PENDING 且 now >= expires_at → EXPIRED
+```
+
+> 过期审批**不能被批准**（H-8）：必须先判定 EXPIRED，让 Run 走超时分支。
+> 否则"超时之后又补一个批准"会让审计自相矛盾。
+
+### Guardrail 的三档严重程度（M16 补齐）
+
+基线原本只说了四类 Guardrail（Input / Action / Tool / Output），没说**命中之后怎么办**。
+只有"阻断 / 放行"两档的话，灰度护栏（疑似敏感词、超长输出、越权但可能合理）
+要么形同虚设、要么把业务卡死。所以必须有三档：
+
+| 档位 | 语义 | 落到 Verdict |
+|---|---|---|
+| BLOCK | 硬性违反 | **DENY** |
+| REVIEW | 拿不准，需要人确认 | **REQUIRE_APPROVAL** |
+| WARN | 记录但不阻断 | ALLOW |
+
+> **BLOCK 不能靠人工审批绕过（H-7）**：
+> 安全约束的底线不是权限问题。审批放行的是"人"，不是"规则"。
+> 同一阶段里既有 REVIEW 又有 BLOCK 时，BLOCK 说了算。
+
+### Harness 不持有 Kernel（可执行边界）
+
+> **Harness 的字段里没有 kernel** —— 这不是约定，是断言：
+> `assert "kernel" not in Harness.__dataclass_fields__`
+
+想挂起一个 Action 时，Harness 只能交出 `ApprovalRequest`，
+真正去 `kernel.suspend()` 的是 AgentLoop —— **谁持有 Kernel 引用谁动手**。
+这样"Harness 不侵入 Execution Kernel"（§2 的 P0-3）在代码里是看得见的。
+
+---
+
+# 24. Tool Runtime
+
+Tool 是：
+
+> 一个可调用的能力。
+
+Tool Runtime：
+
+```text
+Tool Call
+ ↓
+Resolution
+ ↓
+Version Resolution
+ ↓
+Input Validation
+ ↓
+Policy
+ ↓
+Guardrail
+ ↓
+Rate Limit
+ ↓
+Timeout
+ ↓
+Retry
+ ↓
+Executor
+ ↓
+Execution Result
+```
+
+Executor 可以是：
+
+```text
+Native
+HTTP
+MCP
+CLI
+Sandbox
+Agent
+```
+
+Tool Runtime 不关心底层连接协议。
+
+---
+
+# 25. Tool / Skill / Agent
+
+```text
+Tool
+= Capability
+
+Skill
+= Procedure
+
+Agent
+= Decision Maker
+```
+
+例如：
+
+```text
+Agent
+ ↓
+financial_analysis Skill
+ ↓
+query_database Tool
+ ↓
+calculator Tool
+```
+
+Skill 可以是：
+
+```text
+Prompt Skill
+Workflow Skill
+Agentic Skill
+```
+
+---
+
+# 26. MCP / A2A
+
+MCP：
+
+> Tool Connectivity Protocol
+
+```text
+Tool Runtime
+ ↓
+MCP Adapter
+ ↓
+MCP Server
+```
+
+A2A：
+
+> Agent Connectivity Protocol
+
+```text
+Agent
+ ↓
+Agent Delegation
+ ↓
+Child AgentRun
+ ↓
+Execution Kernel
+```
+
+Child Agent 不应该作为普通 Tool 执行。
+
+它拥有：
+
+```text
+自己的 AgentRun
+自己的 Context
+自己的 Policy
+自己的 Tools
+自己的 Memory
+自己的 Execution
+```
+
+但仍然复用统一 Execution Kernel。
+
+---
+
+# 27. Multi-Agent
+
+Multi-Agent 不定义为：
+
+> 多个 Agent 随便聊天。
+
+而定义为：
+
+> **Structured Delegation**
+
+例如：
+
+```text
+Root Agent
+├── Research Agent
+├── Financial Agent
+└── Risk Agent
+```
+
+每个 Child Agent：
+
+```text
+parent_run_id
+delegation_chain
+context_boundary
+permissions
+```
+
+必须限制：
+
+```text
+max_delegation_depth
+max_child_runs
+delegation_policy
+```
+
+防止无限递归。
+
+---
+
+# 28. Model Gateway
+
+Agent Runtime 不直接调用模型供应商 SDK。
+
+统一：
+
+```text
+Agent Runtime
+ ↓
+Model Gateway
+ ↓
+Model Router
+ ↓
+Provider Adapter
+```
+
+Provider：
+
+```text
+OpenAI
+Anthropic
+Qwen
+vLLM
+TensorRT-LLM
+OpenAI-Compatible
+```
+
+---
+
+## Model ≠ Deployment
+
+Model：
+
+> 什么模型。
+
+Deployment：
+
+> 模型在哪里、以什么方式运行。
+
+Router 根据：
+
+```text
+Capability
+Policy
+Availability
+Load
+Latency
+Cost
+Tenant
+```
+
+选择 Deployment。
+
+## Fallback ≠ Kernel Retry
+
+Model Gateway 内部可以有 Fallback（换 Deployment / 换 Provider）。
+
+必须遵守：
+
+> **Fallback 是单次 Attempt 内部的容错，不产生新的 Attempt。**
+
+```text
+Attempt #1
+   ↓
+Provider A 500
+   ↓
+Gateway 内部 Fallback → Provider B
+   ↓
+仍然算 Attempt #1
+```
+
+只有当 Gateway 明确返回失败（所有候选 Deployment 都不可用）时，Kernel 才创建 Attempt #2。
+
+否则会出现重试放大：
+
+```text
+Gateway Fallback(3) × Kernel Retry(3) = 9 次调用
+```
+
+---
+
+# 29. Evaluation Platform
+
+Evaluation 独立于 Harness。
+
+```text
+Evaluation Platform
+├── Dataset
+├── Experiment
+├── Evaluator
+├── EvaluationRun
+├── Metrics
+└── Regression
+```
+
+评估层：
+
+```text
+Deterministic
+ ↓
+LLM-as-a-Judge
+ ↓
+Trajectory
+ ↓
+Outcome
+```
+
+核心指标：
+
+```text
+Task Success
+Tool Success Rate
+Citation Correctness
+Faithfulness
+Answer Relevance
+Latency
+Cost
+Safety
+```
+
+Evaluation 可以消费：
+
+```text
+Kafka Events
+OTel Trace
+AgentRun
+Artifacts
+```
+
+然后生成：
+
+```text
+EvaluationResult
+```
+
+---
+
+# 30. Agent Evolution
+
+Evolution 不等于：
+
+> Agent 自动训练自己。
+
+第一阶段：
+
+```text
+Run
+ ↓
+Trace
+ ↓
+Evaluation
+ ↓
+Failure Attribution
+ ↓
+Candidate Version
+ ↓
+Regression
+ ↓
+Canary
+ ↓
+Production
+```
+
+Failure Taxonomy：
+
+```text
+MODEL_ERROR
+PROMPT_ERROR
+TOOL_SELECTION_ERROR
+TOOL_EXECUTION_ERROR
+RETRIEVAL_ERROR
+MEMORY_ERROR
+PLANNING_ERROR
+POLICY_ERROR
+CONTEXT_ERROR
+TIMEOUT
+EXTERNAL_ERROR
+```
+
+优化对象：
+
+```text
+Prompt
+Tool Selection
+Model Routing
+Skill
+Memory Policy
+Context Strategy
+```
+
+SFT / DPO / RL 属于后续模型优化方向，不是 Kernel 核心。
+
+---
+
+# 31. Cognitive Runtime
+
+Agent 不应该所有任务都走最重的 Reasoning。
+
+```text
+Goal
+ ↓
+Goal Interpreter
+ ↓
+Cognitive Router
+```
+
+路由：
+
+```text
+SIMPLE
+TOOL
+MULTI_STEP
+REASONING
+RESEARCH
+MULTI_AGENT
+HIGH_RISK
+```
+
+对应：
+
+```text
+Fast Path
+Tool Path
+Planner
+Deep Reasoning
+Research Agent
+Multi-Agent
+Planner + Verifier + HITL
+```
+
+---
+
+# 32. Planner
+
+Planner 只负责：
+
+> 产生计划。
+
+不负责直接执行。
+
+```text
+Goal
+ ↓
+Planner
+ ↓
+Plan
+ ↓
+Plan Validator
+ ↓
+Action Selector
+ ↓
+Task
+```
+
+Plan：
+
+```text
+Plan
+├── nodes
+├── edges
+├── dependencies
+├── constraints
+└── expected_output
+```
+
+Validator 检查：
+
+```text
+DAG Cycle
+Tool Exists
+Permission
+Dependency
+Resource
+Budget
+Risk
+```
+
+---
+
+# 33. Workflow 与 Agent
+
+Workflow：
+
+> 静态执行图。
+
+Agent：
+
+> 动态决策图。
+
+```text
+Workflow
+A → B → C
+```
+
+Agent：
+
+```text
+A
+ ↓
+Observation
+ ↓
+Decision
+ ├── B
+ ├── C
+ └── Replan
+```
+
+但两者最终都可以转换成：
+
+```text
+Task
+ ↓
+Execution Kernel
+```
+
+所以：
+
+> **Workflow 和 Agent 的差异在 Intelligence，不在 Execution。**
+
+---
+
+# 34. Enterprise Architecture
+
+## Multi-Tenant
+
+Tenant 是一级领域对象。
+
+隔离：
+
+```text
+API
+Data
+Vector
+Object
+Runtime
+Resource
+```
+
+数据库：
+
+```text
+tenant_id
+```
+
+并可使用 PostgreSQL RLS 做防御性隔离。
+
+---
+
+## IAM
+
+```text
+Organization
+ ↓
+Tenant
+ ├── User
+ ├── Group
+ └── ServiceAccount
+        ↓
+       Role
+        ↓
+    Permission
+```
+
+支持：
+
+```text
+RBAC
+ABAC
+```
+
+---
+
+## OPA
+
+```text
+Action
+ ↓
+PolicyEngine
+ ↓
+OPA / Rego
+ ↓
+ALLOW / DENY / REQUIRE_APPROVAL
+```
+
+---
+
+## Vault
+
+AgentVersion 不保存 API Key。
+
+只引用：
+
+```text
+secret://provider/openai/prod
+```
+
+Credential 由 Vault 注入。
+
+原则：
+
+> Tool ≠ Credential。
+
+---
+
+# 35. Sandbox
+
+不可信代码 / Shell / Browser / 文件操作运行在隔离环境。
+
+```text
+Sandbox Manager
+ ↓
+Firecracker / gVisor / Container
+ ↓
+Ephemeral Runtime
+```
+
+控制：
+
+```text
+CPU
+Memory
+Timeout
+Network
+Filesystem
+```
+
+---
+
+# 36. Production Architecture
+
+```text
+Client
+ ↓
+API Gateway / Ingress
+ ↓
+FastAPI
+ ↓
+PostgreSQL
+ ↓
+Transactional Outbox
+ ↓
+Kafka
+ ↓
+Scheduler
+ ↓
+Worker Pool
+ ├── Default Worker
+ ├── High Priority Worker
+ ├── GPU Worker
+ ├── Long Running Worker
+ └── Sandbox Worker
+ ↓
+Agent Harness
+ ↓
+Agent Runtime
+ ↓
+Execution Kernel
+ ↓
+Model Gateway / Tool Runtime
+```
+
+API 与 Worker 分离部署。
+
+> **⚠️ 这张图最容易读错的一处（v2.1.5 补）：`Kafka → Scheduler → Worker Pool` 是部署拓扑，不是调用链。**
+>
+> Scheduler 是 **Kernel 能力**（§9.1），它从 `ExecutionRepository` + `LeaseIndex` 捞候选，
+> 也就是 **PG + Redis**；它**不消费 Kafka**。派活一律走：
+>
+> ```text
+> PG（当前态） + Redis（Lease 索引） → Scheduler → Atomic Claim（Lease + fencing_token） → Worker
+> ```
+>
+> Kafka 在这张图里的角色只有一个：**传播事实**（Outbox → 事件流 → 下游消费者）。
+> 它是 Durable Event Log，不是任务队列（§41 的 `Kafka ≠ Business Truth`）。
+>
+> 把箭头读成"Kafka 推给 Scheduler"会导致三个具体错误：
+>
+> | 误读后的做法 | 实际后果 |
+> |---|---|
+> | 用 Kafka 当任务队列 | 丢掉 Atomic Claim → 两个 Worker 拿到同一个 Execution，fencing_token 无从产生 |
+> | 用 Kafka 分区当优先级 | 优先级是 `Task.priority` + Scheduler 的排序，与分区无关；且分区数会变成隐形上限 |
+> | 认为"消费到位"就是执行到位 | 消费成功 ≠ Claim 成功；消息到了但 Lease 拿不到的情况会静默丢活 |
+>
+> 一句话：**Kafka 只传播事实，调度与派活一律走 PG + Lease + Atomic Claim。**
+
+AgentOS Scheduler 与 Kubernetes Scheduler 分离：
+
+```text
+AgentOS Scheduler
+= 调度业务 Task
+
+Kubernetes Scheduler
+= 调度 Pod
+```
+
+---
+
+# 37. Data Plane / Control Plane
+
+## Control Plane
+
+管理：
+
+```text
+Agent
+AgentVersion
+Tool
+Skill
+Model
+Policy
+Deployment
+Evaluation
+Tenant
+IAM
+```
+
+## Execution Plane
+
+执行：
+
+```text
+AgentRun
+Task
+Execution
+Worker
+Agent Runtime
+Tool Runtime
+Model Gateway
+```
+
+## Event Plane
+
+```text
+Kafka
+Event
+Outbox
+Audit
+Evaluation Event
+Lifecycle Event
+```
+
+## Data Plane
+
+```text
+PostgreSQL
+Redis
+Qdrant
+S3
+Model Servers
+```
+
+---
+
+# 38. Observability
+
+OpenTelemetry 从第一天接入。
+
+Trace：
+
+```text
+AgentRun
+ ├── Context Build
+ ├── LLM Call
+ ├── Tool Call
+ ├── Retrieval
+ ├── Child Agent
+ └── Final
+```
+
+Metrics：
+
+```text
+Run Success Rate
+P95 Latency
+Tool Success Rate
+LLM Latency
+TTFT
+Tokens
+Cost
+Queue Wait Time
+Worker Utilization
+```
+
+日志：
+
+```text
+structured logging
+trace_id
+span_id
+run_id
+task_id
+execution_id
+attempt_id
+tenant_id
+```
+
+---
+
+# 39. Replay
+
+两种 Replay：
+
+## Live Replay
+
+真实重新调用：
+
+```text
+LLM
+Tool
+Retrieval
+```
+
+用于真实回归。
+
+## Deterministic Replay
+
+使用历史记录的：
+
+```text
+LLM Response
+Tool Result
+Retrieval Result
+```
+
+作为固定输入。
+
+用于：
+
+```text
+Runtime Regression
+Kernel Regression
+Planner Regression
+```
+
+---
+
+# 40. 五大闭环
+
+```text
+① Intelligence
+
+Goal
+ ↓
+Decision
+ ↓
+Action
+ ↓
+Observation
+ ↓
+Decision
+```
+
+```text
+② Execution
+
+Task
+ ↓
+Schedule
+ ↓
+Execution
+ ↓
+Attempt
+ ↓
+Checkpoint
+ ↓
+Recovery
+```
+
+```text
+③ Knowledge
+
+Query
+ ↓
+Retrieve
+ ↓
+Context
+ ↓
+Answer
+ ↓
+Evaluation
+```
+
+```text
+④ Development
+
+Develop
+ ↓
+Test
+ ↓
+Evaluate
+ ↓
+Deploy
+ ↓
+Observe
+```
+
+```text
+⑤ Evolution
+
+Run
+ ↓
+Trace
+ ↓
+Evaluate
+ ↓
+Failure Analysis
+ ↓
+Optimize
+ ↓
+New Version
+```
+
+---
+
+# 41. 核心架构不变量
+
+这些是 AgentOS 最重要的设计原则：
+
+```text
+Agent ≠ LLM
+
+Agent ≠ Tool
+
+Agent ≠ Workflow
+
+Runtime ≠ Harness ≠ Kernel
+
+Memory ≠ Knowledge ≠ Context ≠ Artifact
+
+Decision ≠ Action ≠ Task ≠ Execution ≠ Attempt
+
+Step ≠ Task
+
+Observation ≠ Event ≠ State ≠ Trace
+
+Kernel Recovery ≠ Agent Replanning
+
+Retry ≠ Recovery
+
+Lock ≠ Idempotency
+
+AgentRun ≠ Kernel Execution
+
+Confidence ≠ Probability
+
+Checkpoint ≠ ContextSnapshot
+
+Step ≠ Plan Node          （Step 是运行实例，不是静态图节点）
+
+Task : Execution = 1 : 1
+
+Lease ≠ Lock ≠ Fencing Token
+
+Harness ≠ Kernel 的决策者  （Harness 只请求，Kernel 拥有生命周期）
+
+Model ≠ Deployment
+
+Tool ≠ Credential
+
+Qdrant ≠ Truth
+
+Kafka ≠ Business Truth
+
+AgentOS Scheduler ≠ Kubernetes Scheduler
+```
+
+---
+
+# 42. M0–M15 Roadmap
+
+| Milestone | 主题 | 核心交付 |
+|---|---|---|
+| M0 | Foundation | Monorepo / Docker Compose / PostgreSQL / Redis / Kafka / OTel （**已落地；里程碑行当初漏登记，v2.1.38 补**） |
+| M1 | Agent Domain | Agent / AgentVersion / AgentRun / Step / Event / State （**已落地；里程碑行当初漏登记，v2.1.38 补**） |
+| M1.5 | Minimal Reliability | Outbox / 基础 Retry / 幂等 Key（**最小可用版本，M15 中统一重构为 Kernel**） |
+| M2 | Harness | Context / Memory / Policy / Guardrail / HITL / Cost （**已落地；里程碑行当初漏登记，v2.1.38 补**） |
+| M3 | Runtime | Agent Loop / Tool Runtime / Skill Runtime / Scheduler / Worker（**部分落地**：Loop / Tool Runtime / Scheduler / Worker 已落地；**Skill Runtime 未落地**，全仓 0 处） |
+| M4 | Connectivity | MCP / A2A / Multi-Agent （**已落地；里程碑行当初漏登记，v2.1.38 补**） |
+| M5 | Knowledge | RAG / Hybrid Search / Rerank / Versioning（**部分落地**：`agent_context/retrieval.py` 已落地；**Hybrid Search / Rerank / Versioning 未落地**，全仓 0 处） |
+| M6 | Model Platform | Model Gateway / Routing / Fallback / Cost （**已落地；里程碑行当初漏登记，v2.1.38 补**） |
+| M7 | Production | Kubernetes / HPA / Canary / Rollback / CI/CD（**未落地**：K8s / HPA / Canary / Rollback / CI-CD 全仓 **0 处**；现有 `apps/` 是**进程层**，`infrastructure/docker-compose.it.yml` 只起集成测试用的 PG，都不是部署编排） |
+| M8 | Evaluation | Dataset / Experiment / Evaluator / Regression / Failure Attribution（**未落地**：无评估平台，全仓 0 处） |
+| M9 | Enterprise | Multi-Tenant / IAM / OPA / Vault / Sandbox（**部分落地**：仅 `tasks.tenant_id` 与 policy 有租户维度；**IAM / OPA / Vault / Sandbox 未落地**） |
+| M10 | Advanced Execution | Saga / Compensation / 高级 Recovery 策略（**建立在 M15 Kernel 之上**）（**已在 v2.1.9 落地，见 §58**） |
+| M21 | Process Layer | `apps/` 进程层：把已有的后台控制器**真的跑起来**（**已在 v2.1.10 落地，见 §59**） |
+| M22 | Composition Root | 组合根 + `apps/worker` + 进程入口：让进程**能被启动**（**已在 v2.1.11 落地，见 §60**） |
+| M23 | Real Executors | 真执行器接进组合根 + 两级分派：让 worker **能干活**（**已在 v2.1.12 落地，见 §61**） |
+| M24 | Control Plane HTTP | `apps/api` + 幂等键落 PG：让请求**进得来，且只进一次**（**已在 v2.1.13 落地，见 §62**） |
+| M25 | Child Run Spawn | 子 Run 派生：让活**派得出去，且只派出一份**（**已在 v2.1.14 落地，见 §63**） |
+| M26 | Delegation Durability | 子 Run 活过重启：派出去的那一份**第二天还认得**（**已在 v2.1.15 落地，见 §64**） |
+| M27 | Integration Test Layer | 真 PostgreSQL 集成层：让**验过**不再等于**替身能过**（**已在 v2.1.16 落地，见 §65**） |
+| M28 | Advance & Visibility | 推进契约 `POST /runs/{id}/step` + 账本可见 `GET /runs/{id}/trace` + 单页控制台：让流程**跑得动、看得见**（**已在 v2.1.17 落地，见 §66**） |
+| M29 | Transaction Boundary | **X-3 事务边界 + 存储接线**：一个请求 / 一个 tick = 一个事务，并把 Kernel / 快照 / 补偿三样存储真正接进栈（**已在 v2.1.18 落地，见 §67**） |
+| M30 | Child Run Wake | **子 Run 结果回传**：结果落 PG（X-5）+ `child_run.completed/.failed/.cancelled` 事件 + `apps/child_run_consumer` + PG 兜底扫（**已在 v2.1.19 落地，见 §68**） |
+| M31 | Delegation Retry Semantics | **委派失败与取消的重试语义**：委派不可重试（D-9）、取消不是失败（D-10）、不得挂起在已终态的子 Run 上（D-11）（**已在 v2.1.20 落地，见 §69**） |
+| M32 | Delegation Compensation Ledger | **委派没收成时的账本**：失败/取消也要登记 UNRESOLVED（D-12）、父 Run 已终态时的孤儿不得静默丢弃（D-13）（**已在 v2.1.21 落地，见 §70**） |
+| M33 | Run Cancellation | **Run 级取消入口**：取消是 Run 级动作且必须说得清谁叫停、为什么（B-8）、取消级联到在等的子 Run（B-9）、终态不可取消（B-10）（**已在 v2.1.22 落地，见 §71**） |
+| M34 | Run Cancellation Channel | **跨进程取消的通道**：Run 级取消意图（`run_cancellations`）+ 安全点 + Sweeper（R-7 / R-8 / R-9 / R-10）；契约层对跑在别处的 Run 落意图而不是报 404（**已在 v2.1.23 落地，见 §72**） |
+| M35 | Cancel / Outcome Race | **取消与完成赛跑**：父侧只登记请求、不替子 Run 宣告终态（D-14 / D-15）；赛跑两半各有负责人（D-16）；请求必早于终态（D-17，`012_child_run_cancel_request.sql`）（**已在 v2.1.24 落地，见 §73**） |
+| M36 | Task Persistence | **Task 落库**：`submit()` 在写 Execution 之前写 Task，同一事务（E-26）；`executions.task_id → tasks.task_id` 外键让“没有 Task 的 Execution”不可能存在（E-27）；Task 写一次之后不改（E-28）；读不回来时拒绝而不是编造（PR-34）（**已在 v2.1.25 落地，见 §74**） |
+| M37 | Cancellation Wait Deadline | **取消意图的等待上限**：每个意图自带 `abandon_after`（R-11）；放弃 = 记账"不知道"，不写终态也不写 `settled_at`（R-12）；放弃过的必须退出队首，落点是索引谓词（R-13）；放弃不是撤回（R-14）（**已在 v2.1.26 落地，见 §75**） |
+| M38 | Derivation Wait Deadline | **一次派生的等待上限**：`wait_until` 在 `bind()` 那一刻冻结，与"确认停没停"的上限是两个数（D-18）；等不到结果 = `EXTERNAL_UNKNOWN`，不是失败（D-19）；到期不是终态，迟到的结果照样认（D-20）；旁观者只决定"不再等"，下一步归父 Run 自己（D-21）（**已在 v2.1.27 落地，见 §76**） |
+| M39 | Late Result Reconciliation | **迟到的结果**：等待已声明结束后回来的结果不交付，但必须记账并让出队列（D-22）；账本上那句"不知道"在真相到达时必须被收回，且只补还开着的账（D-23）；迟到必须**看得见**，不得并进"已交付"那个数（D-24，顺带闭合 227）（**已在 v2.1.28 落地，见 §77**） |
+| M40 | Compensation Ledger Events | **账本的每一次变化都要有事件**：登记 / 认领 / 迁移 / 改口七种事件（`compensation.recorded`…`reopened`），发射点覆盖**全部**写路径而不是只补改口那一处（X-15）；事件与状态写入同一事务、同一连接（X-3）；两个 store 实现共用**一个**发射模块（B-7）；组合根收成一个 `pg_compensation_store()`（**已在 v2.1.29 落地，见 §78**） |
+| M41 | Late Result Makes It Compensable | **迟到的可信结果让账本从"撤销不了"升级成"待撤销"**：撤销参数由 S-8 自己的 `materialize(result)` 补，状态回到 PENDING（D-25）；升级不了时留在 UNRESOLVED 并**点名是哪一样挡着**（D-26）；判据钉在 SQL 的 `args = '{}'::jsonb` 与领域对象两处（PR-23）；新增事件 `compensation.upgraded`（与 `reopened` 同迁移、不同起因）（**已在 v2.1.30 落地，见 §79**） |
+| M42 | The Unblocker Drives | **解开阻塞的人必须把 Run 推下去**：交回结果与关掉闸门的两条路径都自己把父 Run 推到下一个阻塞点或终态，不再"留给调用方"（D-27）；推进之后必须落一份新的可恢复点，否则 R-3 被绕开（D-28）；推进排在 `mark_delivered` / `mark_wait_expired` **之前**，崩在这一步只等于下一轮再推一次（D-29）；父 Run COMPLETED ≠ 没人接过，不许再记孤儿（D-30）；推进只有一个定义 `RunDriver`（B-7）（**已在 v2.1.31 落地，见 §80**） |
+| M43 | The Derivation Names Its Own Budget | **这次派生可以自己说等多久**：`ChildRunRequest` / `ChildRunHandle` 带 `wait_timeout`，没说才听登记处的全局默认（D-31）；声明必须落在 `(0, 6h]` 内，越界是**点名拒绝**而非静默截断或静默回退默认（D-32）；裁决发生在**写库之前**且抛会说话的 `InvariantViolation`，部署上限只能比平台更严格（D-33）；冻结之后清掉声明，一个 handle 上只剩一个上限（D-34）；平台上限是 016 的一条 CHECK（物理的），裁决与冻结只有一个定义 `freeze_wait_deadline()`（B-7）（**已在 v2.1.32 落地，见 §81**） |
+| M44 | The Cancel Answers Twice | **叫停也要幂等键**：`POST /runs/{id}/cancel` 吃 `Idempotency-Key` header，重试拿到**第一次的答案**而不是一个 409 去猜（D-35）；幂等记录里存的是**答案**而非指向活对象的指针 —— 取消的答案里最要紧的一半（`cancel_requested` / `status="unknown"`）恰恰装载不回来（D-36）；`run:` 与 `cancel:` 两个命名空间必须分开，共用会让取消静默撞上建 Run 的记录从而**根本没发生**；指纹用 sha256（内置 `hash()` 带随机盐，产物是只在重启后才出现的假 422）；失败不占键；键的定义只有一个模块 `packages/agent_api/idempotency.py`（B-7）（**已在 v2.1.33 落地，见 §82**） |
+| M45 | The HTTP Layer Actually Runs | **把 HTTP 这一层真的跑一遍**：新增真 FastAPI + TestClient + 真 PG 的集成层，断言"带上 `Idempotency-Key` 重试拿到 200 `replayed=True`、不带就 409、换理由 422"——取代 M44 那段只能扫源码的 AST 断言（挡得住删漏、挡不住读错 header）；连接必须走 `pg_connection()` 的 `autocommit=False`，否则事务中间件整个不存在也全绿；补上"控制台页面真的被挂上且内容没被换掉"、"对外报的版本号是服务**答出来**的"、以及一条真起 `uvicorn` 子进程走 TCP 的冒烟（**已在 v2.1.34 落地，见 §83**） |
+| M46 | Reject Re-Drives Status | **驳回后 Run 停在 suspended 但无 waiting_for**：`reject()` 和 `expire_approvals()` 在 `_close_gate` + `_clear_pending` 后没有调 `_sync_after_execution()`，导致 Step/Run 停在 SUSPENDED 而 `pending_approval` 已清空——违反 B-4；在"假挂起"窗口里拍快照会撞上 R-1/R-6 的 InvariantViolation。新增 B-11（B-4 操作细则：关掉闸门后必须立刻重新派生）（**已在 v2.1.35 落地，见 §84**） |
+| M47 | Cancellation Events | **`run_cancellations` 表的三条写路径（request / settle / abandon）全部不发事件**，与 M40 治过的 `compensations` 是同一族病（X-3）。照 M40 的模式：新增三个事件常量 + `cancellation_events.py` + 接进内存和 PG 两个 store 的全部写路径。空洞 225 原始登记"永远 pending"已被 M37（R-11 等待上限）治掉，这一轮治的是"改了 PG 没发事件"（**已在 v2.1.36 落地，见 §85**） |
+| M78 | A Replan Must Actually Change The Plan | **重规划必须真的换一份计划**：M77 落地后探针发现，重规划拿到的计划 `plan_id` 每次都新、但**形状一模一样**（节点一个没变）—— 系统在"换一条路"，换来的路和原来那条是同一条。★ 更要命的是它把上一轮的 I-11 洗白了：I-11 只看"上次规划以来"，重规划一次计数就归零 → **一个失败过的 Run 多花一轮重规划就又"成功"了**。新增 **I-12**：换不出形状不同的计划 → 判 FAILED，不许拿同一份计划再撞一次墙。判据比**形状**不比对象（`plan_id` 必然不同，比对象等于宣布"每次都换了"）。⭐ 顺带修掉一个测试设计问题：M76 那两条 I-10 用例原本用恒定 Planner，I-12 加上之后它们**测的是 I-12 而不是 I-10** —— 已改用 VaryingPlanner（**已在 v2.1.66 落地，见 §115**） |
+| M79 | A Terminal State Must Say Why | **终态必须带上原因**：S-7 把 FAILED 收成唯一出口是对的，代价是四种不同的死法（预算耗尽 / 换不出新计划 / 连续被拒 / …）出去之后长得一模一样 —— 探针实测两条死法的 `run.finished` payload **完全相同**。★ 而那段 docstring 自己写着这条 trace 是谁宣布了这个 Run 结束的**唯一证据**，唯一证据里恰恰没有最关键的那个字：为什么。运维手上只有账本，`loop.history` 与 `last_outcome` 只在内存、快照不带，进程一死就蒸发。新增 **B-12**：原因落在 `run.finished` 的 payload 上，且 `reason` 是**必填关键字参数** —— 新增出口时不写原因就构造不出这次调用（默认值会让忘了说为什么看起来像没什么可说的）。（**已在 v2.1.67 落地，见 §116**） |
+
+| M77 | No Completion With An Unhandled Failure | **带着没被处理的失败，不许宣布完成**：探针实测——一个工具调用失败（`StepOutcome.FAILED`）之后，引擎脚本用完返回 FINISH，于是 `agent_run` 变成 **completed**；而失败证据就躺在 `state.variables["result:…"]` 里没人看。引擎看不见失败，但**宣布终态的是 Runtime**（B-7），于是"这条 Run 成功了"是 Runtime 说的假话。新增 **I-11**：完成前必须没有"自上次规划以来未被处理的失败"，有则 REPLAN（不是 FINISH）；重规划吃预算（I-10）→ 救不回来的走到 FAILED，**既不谎报成功也不空转**。判据钉在 Loop（不是引擎）—— 换一个笨引擎谎言也不回来。⭐ 它同时给 M76 修好的 REPLAN 边带来了**第一个真正的触发条件**（**已在 v2.1.65 落地，见 §114**） |
+| M76 | Replanning Is A Real Edge | **REPLAN 机制齐全但从没人走过**：`ActionType.REPLAN` / `PLAN_INVALIDATED` / `StepOutcome.REPLANNED` / `task_factory` 全都写好了，但没有任何 DecisionEngine 产出它，也没有任何测试触发它 —— 而 `derive.py` 拿「Agent 可能还要 REPLAN」当作 **B-7 的一条论据**（一条不变量的论据依赖一个从未接线的机制）。新增 `tests/unit/test_replan.py`（7 条）证明这条边通：失效 Observation → `current_plan` 清空 → **下一轮真的重新规划**。⭐ 补的时候抓到真 bug：**重规划不吃预算** —— `steps += 1` 只在执行完成那条路径上，于是 `steps >= budget` 永远不成立，一个一直 REPLAN 的引擎会让 Run **永远跑下去**，既不终止也不报错（L-7 同族）。新增 **I-10：重规划必须吃预算**（**已在 v2.1.64 落地，见 §113**） |
+| M75 | The Deploy Manifest Gets Checked Too | **部署清单也要有人检查**：M69/M70 的镜像与八份 K8s 清单此前**零测试**。新增 `tests/unit/test_deploy_manifest.py`（14 条）钉住七件事：`python -m apps.X` 引用的模块真的有 `__main__.py`；`module:attr` 形式的 provider 都能 import 且属性存在；**ConfigMap 内嵌的 TOML 与 `deploy/config/*.toml` 语义相等**（B-7：同一份声明不许有两处）；`replicas>0` 的 agentos 进程都有 `livenessProbe`（M68 的部署侧）；心跳路径只声明一处；Dockerfile COPY 的源路径存在；**镜像 tag 说的版本 == 服务对外报的版本**。⭐ 补的时候**当场抓到一处漂移**：14 处 tag 还写着 `2.1.55-b3` 而服务已报 2.1.63 —— "线上跑的是哪个构建"有两个答案，且每次冻结都会再漂一次（已修 tag + 留下测试）。⭐ 变红验证还抓到**两个测试自身的漏洞**：入口正则 `[a-z_]+` 不含数字，`apps.migrate_v2` 扫不出来；心跳检测只认 `=` 形式、认不出 K8s 的 `name:` 形式 —— 两条都是"变异了却不红"（**已在 v2.1.63 落地，见 §112**） |
+| M74 | A Terminal Run Can Still Be Read | **终态 Run 查得到，只是推不动**：`_recover()` 让 R-3 一路抛上来，那对推进/取消是对的（409 = 别再动它），但对 `GET` 不是 —— 查一条已完成的 Run 得到 409，表达"操作不被允许"，而调用方问的只是"它现在是什么状态"，于是人以为这条 Run 出了事。K8s 里 Pod 重启后内存没有这条 Run，**每一次**"查昨天跑完的那条"都会撞上。现在从快照读出终态 Run 的样子，但刻意**不**编造 `waiting_for` / `pending_approval` —— 终态 Run 什么都没在等（**已在 v2.1.62 落地，见 §111**） |
+| M73 | The Advance Leaves A Recovery Point | **HTTP 推进之后必须落快照**：真实部署里一条 Run 通过 API 推进到 `completed`，Pod 重启后查它变成 `created` 且还挂着一个已 approved 的审批。原因是 `step_run / drive_run / cancel_run` 只在内存里推进、从不落快照，而后台的 `RunDriver.drive()` 每次都落 —— 持久化只在后台那条路径上成立，而**线上绝大多数 Run 恰恰是通过 API 推进的**。这个洞只在进程真的会死的地方出现。快照的 `reason` 与后台路径共用 `snapshot_reason()`（B-7）（**已在 v2.1.61 落地，见 §110**） |
+| M71 | One Place Knows The DSN | **DSN 只有一处**：`python -m apps.migrate apply` 在集群里报 `NO_DSN`，而那个 Pod 明明挂着 `AGENTOS_MANIFEST`、清单里写着 `storage.pg_dsn` —— 迁移器自己去找了环境变量，于是"这一次部署的配置"有了两个来源。后果不报错：清单改了 DSN、迁移器读环境变量 → 把迁移应用到**另一个库**，然后报 `up to date`，一次看不出任何问题的成功。新增 `apps/_dsn.py`，优先级 `--dsn` > 清单 > `$AGENTOS_PG_DSN`，与 `RuntimeConfig.from_env()` 完全一致（**已在 v2.1.60 落地，见 §109**） |
+| M70 | Eight Processes, Two Of Them Parked | **集群部署清单**：`deploy/k8s/` 八份清单，其中 Kafka 依赖的两个是 **`replicas: 0`**。刻意**不**删：删了 `kubectl get deploy` 只剩六个而文档写八个 —— "另外两个去哪了"需要靠口头传承。**0 副本是一个能被看见的答案**：它在那里、它写着为什么不跑、且会被列出来（0/0）。两份 TOML 内嵌 ConfigMap 而非打进镜像：改配置不该需要重新构建，否则"哪份代码"与"哪份配置"被耦合在一起（**已在 v2.1.59 落地，见 §108**） |
+| M69 | One Image, Eight Entrypoints | **运行时镜像**：八个进程代码完全相同、只是入口不同，所以**一个镜像 + 不同 `command`**，不是八个 Dockerfile —— 八个镜像意味着八个构建、八份版本号，以及"这八个是不是同一份代码"每次上线都要重新回答。用 slim 不用 alpine（`psycopg[binary]` 只有 manylinux wheel，alpine 会退化成源码编译：**一个更容易失败的构建**换一份更小的数字）；非 root（八个进程都拿着数据库串，root 意味着被注入后能改镜像里的代码）（**已在 v2.1.58 落地，见 §107**） |
+| M68 | Liveness Is Not Readiness | **给编排层两个**分开**的答案**：`apps/probe live` 看心跳文件、`apps/probe ready` 连一次库；库挂了是 ready 红而 live 绿（摘流量，**别杀**，杀了也连不上），进程卡了才是 live 红（重启）。合成一个结果，这两种情况就被迫得到同一种处置，而"一律重启"在库挂掉时会让八个进程一起 CrashLoopBackOff。新增 `/readyz`：**没配探针返回 503 而不是 200** —— 200 是"可以放流量进来"，说不出依据的 200 比 503 危险得多。心跳只在**完整跑完一轮**之后跳（一轮都跑完就不算在往前走），且阈值必须**严格大于**每一个进程的 `max_idle_sleep`（O-9，那条是被一次真实 CrashLoop 打出来的：阈值与退避相等 → 空闲进程被判死 → 重启 → 又空闲 → 又判死，而日志里没有一行提到探活）。已接进 `deploy/k8s/*.yaml` 的 liveness / readiness 与 Dockerfile 的 HEALTHCHECK（**已在 v2.1.57 落地，见 §106**） |
+| M67 | The Ledger Knows What Ran | **生产迁移器**：17 份迁移此前只有一个消费者（集成测试），而它的用法是 DROP SCHEMA 后重放 —— 那是"每次从零来一遍"，不是迁移；`017` 是裸 `ALTER TABLE ADD COLUMN`，重放第二遍就是 `column already exists`。新增 `apps/migrate`（`plan` / `check` / `apply`）与账本表 `agentos_schema_migrations`。关键取舍（O-1）：**记下"哪些已应用"，而不是把 SQL 改写成 `IF NOT EXISTS`** —— 后者篡改历史（已上线的迁移是不可变的事实），也治不了"部分失败"。已上线的迁移被改动 → **点名拒绝**（O-2），绝不重放；迁移与记账**同一事务**（O-3，剥掉文件自带的 BEGIN/COMMIT）；并发迁移用**会话**咨询锁排队（O-4，事务锁会在每条 commit 时释放，等于没锁）。已接进 `deploy/k8s/*.yaml` 的 initContainer（**已在 v2.1.56 落地，见 §105**） |
+| M66 | Two Implementations, One Behaviour | **补 M47 的覆盖缺口**：取消意图三个事件只有内存单测，补真库验证（outbox 三条 + payload 归因 + 另一条连接可读）。过程中**抓到一个真 bug**：PG 版 `request()` 无条件发事件，而意图已 settled/abandoned 时 INSERT 因 WHERE 被挡、那一行根本没改动 —— 内存版这种情况**不发**，PG 版发了 → 审计流里多出一条假的"又要求取消了一次"。修法：`rowcount == 1` 才发（**已在 v2.1.55 落地，见 §104**） |
+| M65 | The Attribution Finally Has A Reader | **闭合洞 234**：M48 把"谁叫停了这一刀"（cancellation_reason / by）**真的写进了库**，但没有任何端点或命令读它 —— 死数据。现在 `GET /runs/{id}/executions` 与 `apps.cli executions` 都能查到（经 `tasks` 中转 JOIN，刻意**不**给 executions 加 run_id 列 —— 那会在两处存同一个事实，B-7）。这是"写了没用上"这条教训的**第四次**，也是最后一处（**已在 v2.1.54 落地，见 §103**） |
+| M64 | The Page Stops Guessing Agent Names | **闭合 M61 留下的另一个环**：`GET /agents` 端点加了，但控制台页面的 agent 仍是**手填输入框** —— 端点没人用，等于没加。现在页面从 `/agents` 拉候选填进 `datalist`：配了注册表就有得选（附描述），没配就是空列表，输入框照旧手填 —— **不假装有得选**（**已在 v2.1.53 落地，见 §102**） |
+| M63 | Sending The Signal Is Not Stopping It | **修掉一个偶发红的根因**：集成测试里那个"真 uvicorn"用例的清理只写了 `proc.terminate()` —— **`terminate()` 只发信号、立刻返回，不等待进程退出**。该子进程连着真 PG，残留窗口里下一次运行要 `DROP DATABASE`，而 PG 在有其它连接时会**拒绝 DROP**，于是红一条与被测代码毫无关系的灯。修法：`terminate()` 后 `wait(timeout=10)`，超时则 `kill()` 再 `wait(5)`（**已在 v2.1.52 落地，见 §101**） |
+| M62 | The Declared Stack Is The One Used | **闭合 M61 留下的环**：注册表允许每个 agent 声明自己的 `stack`，但当时**没有任何代码读它** —— 那是死数据，写了它的人会以为生效了，实际用的还是全局那一个。这与 M59→M60 同一条教训：一份声明如果启动不了任何东西，它就只是一份文档。现在按声明分派（声明了用它 / 没声明跟随全局 —— 刻意**不**强制每个 agent 都抄一遍），并按 provider 缓存，避免每个 agent 各 new 一个 Kernel（**已在 v2.1.51 落地，见 §100**） |
+| M61 | The Platform Knows Its Agents | **M11 的 Registry，闭合并登记过的空洞 231**：`packages/agent_registry` 声明有哪些 agent（TOML / tomllib，零依赖）。此前 `POST /agents/{id}/runs` 传任何字符串都 201 —— 现在配了注册表就只收登记过的 id（未登记 → 404 `AGENT_NOT_FOUND`）。⭐ 关键取舍：**没配注册表就维持现状**（agent_id 透传）—— 仓库里 7 种即席 agent id都不是登记过的名字，强制校验会把"没登记"和"写错了"混成一种错、打红一堆无关用例。另新增 `GET /agents`，让控制台/CLI 有得可选而不是手填（**已在 v2.1.50 落地，见 §99**） |
+| M60 | The Manifest Actually Boots It | **闭合 M59 留下的环**：此前清单只能被校验和导出，没有东西真的用它启动 —— 那它就只是一个格式良好的文件。现在 `AGENTOS_MANIFEST=<path>` 走清单模式，清单成为**这一次启动的唯一声明源**（不与环境变量叠加，否则会埋下"改了清单却没生效"这种只对了一半的改动，B-7）。配置错（含文件读不到）一律在**启动前**死，不冒裸的 IO 异常。实测：只给一份 `agentos.toml`、不带其它环境变量，服务起得来且完整流程跑通（**已在 v2.1.49 落地，见 §98**） |
+| M59 | The Deployment Says What It Is | **M11 的 Manifest**：一份 `agentos.toml` 声明整个部署（stack / model / tool provider、存储、运行时参数）。此前配置散在十几个环境变量里 —— 能跑，但**不可提交、不可 diff、不可校验**：漏一项不报错，只退化成某个内存兜底，而"退化"在这套系统里是最危险的一类失败（它看起来是好的）。用 TOML（`tomllib` 是 stdlib）→ **零新增依赖**。关键设计：清单**不是**并列的第二套配置，它是环境变量的**唯一声明源**（`to_env()` 翻译给既有 bootstrap）—— 否则会出现"清单改了、启动时读旧环境变量"这种只对了一半的改动。未知键 / 缺必填 / 类型错一律**点名拒绝**，不静默回退默认（**已在 v2.1.48 落地，见 §97**） |
+| M58 | One HTTP Wrapper, Not Two | **M11 的 SDK**：`packages/agent_sdk` 提供 `AgentOSClient`。起因是一处真实重复 —— `apps/cli` 的 `request()` 与 `agent_evaluation` 的 `_http()` 是两份几乎一样的 urllib 封装，各自带着"绕过系统代理"那段。现在 CLI 与评估平台共用 SDK 的那一份（B-7：一个事实一处定义），那种知识只许有一处，否则会出现"CLI 修好了、评估还在误报"这种只对了一半的修复（**已在 v2.1.47 落地，见 §96**） |
+| M57 | One Event, One Deliverer | **outbox 投递领地的并发认领（PR-3 / PR-4）只跑过内存**：源码注释原话"认领的原子性由单条 SQL 提供；先 SELECT 看看有没有人占着再写，永远有窗口" —— 这是**第五条**同款保证（S-4 / S-15 / A-11 / E-25 / PR-3）。认领失败 = 同一个事件被投两次。补 `tests/integration/test_outbox_territory_real_pg.py`，并顺手把 M53~M55 里附加连接改成 `real_pg(fresh=False)` 消除脆弱的顺序依赖（**已在 v2.1.46 落地，见 §95**） |
+| M56 | Two Workers, One Lease | **两个 worker 抢同一条 Execution，只能一个拿到** —— 这条决定同一条 Execution 会不会被执行两遍（工具有副作用，两遍就是外部世界被改两次）。物理保证是 `UPDATE_EXECUTION` 末尾的 `AND version = %s`（E-25 乐观锁），与 S-4 / S-15 / A-11 同一种写法。单测里的租约测试验的都是领域语义，**并发这条从没验过**。补 `tests/integration/test_lease_race_real_pg.py`（**已在 v2.1.45 落地，见 §94**） |
+| M55 | The Queue Survives The Restart | **A-10 / A-11 只跑过 sqlite 替身**：A-10（审批活过重启）的全部意义就是"重启后还在"，而替身与被测代码共享同一个进程内 sqlite 连接、内存从来没被清过 —— 无从模拟重启；A-11 靠 `AND status = 'pending'` 这条条件 UPDATE（源码原话："就是我没输这场竞争"），替身是同步的，两个进程到不了同一时刻。补 `tests/integration/test_approval_store_real_pg.py`，用**另一条连接**代表一次重启（**已在 v2.1.44 落地，见 §93**） |
+| M54 | The Unresolved Ledger Survives | **D-12 / S-15 同样只跑过内存单测**：S-15（UNRESOLVED 不会被认领）靠的也是 `claim()` 里那条`WHERE status = 'pending'` 的条件 UPDATE —— 与 S-4 同源；而 D-12 记下的那条账是"外部世界留了东西、但没人负责"的**唯一物证**，必须真落在库里、重启后还看得见。补 `tests/integration/test_delegation_compensation_real_pg.py`（**已在 v2.1.43 落地，见 §92**） |
+| M53 | The Guarantee Lives In The Database | **S-2 / S-4 只跑过内存单测，真 PG 上从没验过**：S-2（一条副作用一条记录）靠 `UNIQUE(execution_id)`、S-4（原子认领）靠 `UPDATE ... WHERE status='pending'` 的 rowcount ——两条**都是 PG 物理保证**，内存字典里根本无从谈起（A-11 同款："先读一下是不是 PENDING 再写"在两个进程同时到达时两边都会通过）。补 `tests/integration/test_saga_real_pg.py`，全部从**另一条连接**读（**已在 v2.1.42 落地，见 §91**） |
+| M52 | The Platform Can Grade Itself | **M8 评估平台**：`python -m apps.eval` 加载 Dataset → 打真服务跑 Experiment（自动过审批）→ Evaluator 判定 pass/fail 并给出**失败归因** → 与基线对比报**回归**。评的是**行为轨迹**（终态 / 动作 / 审批 / 工具 / 模型是否降级），不是答案文本 —— 账本里没有答案，而路径恰恰最不该变。要紧的一处设计：**两次都失败算 unchanged 不是 regression**，否则 backlog 噪声会把回归信号淹没（**已在 v2.1.41 落地，见 §90**） |
+| M51 | One Fact, One Status Code | **同一个事实不许给两个错误码**：并发推进同一条 Run 时，先跑完的把它推到终态，另一个撞 B-3 → **422**；而单线程下同样的情况走 `_assert_advancable` → **409**。根因是 B-3「终态不可变」用了 `InvariantViolation`，而映射表规定 `IllegalTransition`→409（状态明确但转换不允许）、`InvariantViolation`→422（请求不合法）。B-3 属前者。改为 `IllegalTransition`（消息不变），现在两种路径都报 409（**已在 v2.1.40 落地，见 §89**） |
+| M50 | The Control Plane Has A Command Line | **给控制面一个命令行**：`python -m apps.cli` 提供 health / start / status / step / drive / cancel / approvals / decide / trace 九条子命令。它是 HTTP API 的**薄壳** —— 屏幕上每个数字都由服务真的回答，不推断不补全。退出码必须有意义（0 成功 / 2 服务说错 / 3 连不上 / 4 用法错），因为脚本只看退出码；B-8 在 CLI 上同样成立（`cancel` 缺 `--reason` / `--by` 就拒绝）；刻意**绕过系统代理**，否则本机服务没起时会被误报成 502 而不是'连不上'（**已在 v2.1.39 落地，见 §88**） |
+| M49 | The Register Outlives The Code | **登记也会失真**。逐条实证 M0~M9 后修正：M0 / M1 / M2 / M4 / M6 其实**早就落地**了（里程碑行当初漏登记），M3 缺 Skill Runtime、M5 缺 Hybrid Search / Rerank / Versioning、**M7 Production（K8s / HPA / Canary / CI-CD）与 M8 Evaluation 全仓 0 处**，M9 仅 tenant_id；另修正洞 217（早已被 M42 闭合，表未回写）。同时把 M48 的可见性分两层说清楚：Run 级归因本来就在账本 payload 里看得见，读不出来的是 Execution 级（→ 新登记**空洞 234**）（**已在 v2.1.38 落地，见 §87**） |
+| M48 | Who Asked For The Stop | **Execution 级取消跳过意图直接判死**：`_cancel_gate()` 直接 `kernel.cancel()`，绕过 `request_cancel`，于是 `executions.cancellation_requested` 是一列**死列**（永远 False）、`EXECUTION_CANCEL_REQUESTED` 事件永远不发、B-8 归因（谁叫停/为什么）无处可写 —— 同一条规矩在 Run 级、子 Run 级都有，唯独 Execution 级没有。修法：017 迁移加 `cancellation_reason` / `cancellation_by` 两列（含 CHECK 保证归因与意图同在）+ `request_cancel(reason=, by=)` 必填（B-8 / A-8）+ `_cancel_gate` 改成先请求再判死（R-7 同款）（**已在 v2.1.37 落地，见 §86**） |
+| M11 | Developer Platform | SDK / Manifest / Registry / CLI / Console / GitOps |
+| M12 | Intelligence | Cognitive Architecture / Decision Engine / Planner |
+| M13 | Cognitive Runtime | Router / Deep Reasoning / Verifier / Replan |
+| M14 | Contracts | Intelligence / Execution / Integration Contracts |
+| **M15** | **Kernel Implementation** | **Domain Model → State Machine → Kernel → Infrastructure → Agent Loop** |
+
+> Roadmap 编号是历史编号，不代表最终实现顺序。
+>
+> Kernel 主线的真实顺序：
+>
+> ```text
+> M15（统一 Kernel 成型） → M10（Saga / 高级 Recovery）
+>   → M21（apps/ 进程层） → M22（组合根 + worker 进程） → M23（真执行器 + 两级分派）
+> ```
+>
+> M1.5 只是“先跑起来的最小可靠性补丁”，在 M15 中被统一重构。三者是同一条主线上的三个阶段，不是重复建设。
+>
+> M16+ 不再扩展架构概念。后续只允许在现有边界内实现、优化和演进。
+>
+> **M21 不是新概念，是"把已有的东西真的跑起来"**（§59）：
+> M15~M20 交付的是**库**，它们有方法但没有生命周期；
+> 没有进程驱动，Outbox 只增不减、STALE 没人扫、审批之后没人唤醒、撤销不掉没人重扫。
+>
+> **M22 同样不是新概念，是"让进程能被启动"**（§60）：
+> M21 交付的是**进程类**，它们有构造函数但没人给它们接真实适配器，
+> 而且**唯一真正执行 Task 的 `apps/worker` 压根不存在** ——
+> 没有它，整个系统的产出是零，其余进程无事可做。
+
+---
+
+# 43. M15 Kernel Implementation
+
+M15 不从 FastAPI 开始。
+
+也不从 Kafka 开始。
+
+第一步：
+
+```text
+Goal
+State
+Decision
+Action
+Observation
+
+Task
+Execution
+Attempt
+
+Checkpoint
+Lease
+Cancellation
+Event
+```
+
+先定义：
+
+- Domain Model
+- Invariant
+- State Transition
+- Interface
+- Failure Model
+
+---
+
+## M15 实施顺序
+
+```text
+阶段 1
+agent_domain
+纯 Python
+零基础设施依赖
+        ↓
+阶段 2
+State Machine
+Domain Invariants
+        ↓
+阶段 3
+Execution Kernel
+Task / Execution / Attempt
+Lease / Retry / Recovery
+        ↓
+阶段 4
+Repository Interfaces（Ports & Adapters）
+Clock / Repository / Outbox / LeaseIndex / Publisher / UnitOfWork
+        ↓
+阶段 5
+PostgreSQL
+Schema + 适配器
+Current State / Outbox / 消费端去重
+        ↓
+阶段 6
+Redis
+Lease Index / Cancel Signal / Idempotency
+        ↓
+阶段 7
+Kafka + Worker
+Outbox Publisher / 幂等 Consumer / Worker 五件事
+        ↓
+阶段 8
+最小 Agent Loop
+Goal → State → Decision → Action → Task → Observation
+        ↓
+阶段 9
+Model Gateway
+        ↓
+阶段 10
+Tool Runtime
+        ↓
+阶段 11
+完整 Agent Loop
+```
+
+**与 v2.1.1 原顺序的两处偏差（M15 回写）：**
+
+| 原顺序 | 实际顺序 | 原因 |
+|---|---|---|
+| 3 PostgreSQL → 4 Kernel | 3 Kernel → **4 Ports** → 5 PostgreSQL | 先有接口才有多种实现（inmemory / postgres）。先写 PG 会把 Kernel 钉死在具体存储上 |
+| 6 Kafka → 7 Scheduler+Worker | **7 Kafka + Worker 合并** | Worker 的写回必须经过 Outbox 才原子；拆开后两者都无法独立验收 |
+
+> 阶段 1~8 已完成并通过验收：172 个单元测试全绿，零第三方依赖，
+> 全栈验收跑通 PG + Redis + Kafka + Worker + Agent Loop。
+>
+> 阶段 9（Model Gateway）、阶段 10（Tool Runtime）、阶段 11（完整 Agent Loop）已完成：
+> 323 个单元测试全绿。§44 第一条 End-to-End 闭环接通，六要素
+> `Event / Trace / Attempt / Checkpoint / Cost / Token Usage` 全部落点，
+> 并新增不变量 **L-1 ~ L-7**（详见 §53）。
+>
+> M17（Context / Memory）已完成：357 个单元测试全绿，`packages/agent_context/`
+> 落地 `ContextAssembler` / `ContextSnapshot` / `MemoryManager` / `RetrievalPipeline`，
+> 新增不变量 **C-1 ~ C-12**（详见 §54）。
+>
+> M18（Control Plane 契约层 + HITL 审批回调）已完成：384 个单元测试全绿，
+> `packages/agent_api/` 落地 `POST /runs` 与 `POST .../decision`，
+> 补齐 §44 第一行与"人怎么批准"，新增不变量 **A-1 ~ A-10**（详见 §55）。
+>
+> M19（审批存储持久化）已完成：401 个单元测试全绿，`PostgresApprovalStore` +
+> `003_approvals.sql` 让 A-10 从断言变成事实，并补上 **A-11 ~ A-13**（详见 §56）。
+>
+> M20（Run Recovery）已完成：420 个单元测试全绿，`RunSnapshot` +
+> `004_run_snapshots.sql` + `RunRecovery` 让"重启后批准"从 404 变成可用，
+> 新增 **R-1 ~ R-5**，并修掉 **X-13** 与 **E-25**（详见 §57）。
+>
+> M10（Saga / Compensation）已完成：450 个单元测试全绿，`CompensationSpec` +
+> `005_compensations.sql` + `SagaCoordinator` 让"制造过的副作用"有账可查、有路可撤，
+> 新增 **S-1 ~ S-16**（详见 §58）。
+>
+> M21（`apps/` 进程层）已完成：490 个单元测试全绿，`apps/_runtime.py` +
+> 四个常驻进程 + `006_outbox_delivery.sql` 让上面这些能力**真的有人去跑**，
+> 新增 **PR-1 ~ PR-13**（详见 §59）。
+>
+> M22（组合根 + `apps/worker` + 进程入口）已完成：515 个单元测试全绿，
+> `apps/_bootstrap.py` + `apps/worker` + 五个 `__main__.py`
+> 让 `python -m apps.worker` 第一次能**启动、拉活、执行 Task 并落库**，
+> 新增 **PR-14 ~ PR-18**，并修掉 PR-7 的一处实现缺陷（详见 §60）。
+>
+> M23（真执行器接进组合根）已完成：544 个单元测试全绿，
+> `apps/executor_provider.py` + `examples/demo_stack.py` + `TaskTypeRouter`
+> 让 worker 第一次用**真的 ToolRuntime / ModelGateway** 干完一个 Task，
+> 并把 5 个可路由组合里坏掉的 3 个修好，新增 **PR-19 ~ PR-21**，
+> 另修掉默认 `AGENTOS_EXECUTORS` 把 http 那一半能力砍掉的问题
+> —— 剩下的 `native:skill` / `agent_runtime:agent_delegation`
+> 是**已知未覆盖**，启动时点名，不是没发现（详见 §61）。
+
+**Kernel 交付的最小闭环验收标准（基线首次定义）：**
+
+```text
+1  一次 Tool Call 走完 Task → Execution → Attempt → 回写 → 事件
+2  Worker 崩溃 → Lease 过期 → STALE → Recovery → 新 Attempt 成功
+3  取消请求 → 协作式取消 / Sweeper 兜底 → 终态 CANCELLED
+4  Redis 全丢 → PG 安全网仍能扫出 stale
+5  Publisher 崩溃 → 重投 → 消费端去重 → 不重复处理
+6  Agent Loop 挂起 → Harness 唤醒 → 继续执行
+```
+
+---
+
+# 44. 第一条 End-to-End 闭环
+
+最终必须跑通：
+
+```text
+POST /agents/{agent_id}/runs
+        ↓
+     AgentRun
+        ↓
+       Step
+        ↓
+       Task
+        ↓
+    Execution
+        ↓
+      Worker
+        ↓
+   Agent Runtime
+        ↓
+        LLM
+        ↓
+     Decision
+        ↓
+      Action
+        ↓
+       Task
+        ↓
+   Execution Kernel
+        ↓
+       Tool
+        ↓
+ Execution Result
+        ↓
+Observation Processor
+        ↓
+    Observation
+        ↓
+    State Update
+        ↓
+      State
+        ↓
+     Decision
+        ↓
+      Finish
+```
+
+最终：
+
+```text
+AgentRun = COMPLETED
+```
+
+并且全过程都有：
+
+```text
+Event
+Trace
+Attempt
+Checkpoint
+Cost
+Token Usage
+```
+
+---
+
+# 45. Monorepo
+
+```text
+agentos/
+├── apps/                        ← 进程层（M21，§59）：库没有生命周期，进程才有
+│   ├── _bootstrap.py            ← **组合根**（M22，§60）：唯一允许 import 真实客户端的地方
+│   ├── executor_provider.py     ← **真执行器装配**（M23，§61）：`AGENTOS_EXECUTOR_PROVIDER` 的实现
+│   ├── _entrypoint.py           ← 五个进程共用的入口样板（退出码语义）
+│   ├── _runtime.py              ← 五个进程共用的骨架（PR-1 / PR-2 / PR-7 / PR-8）
+│   ├── api/                     ← 待建：只做 agent_api 的一行绑定
+│   ├── worker/                  ← **唯一真正执行 Task 的进程**（M22）
+│   ├── outbox_publisher/        ← Outbox → Kafka（**投递型**：需要领地，PR-12）
+│   ├── recovery_controller/     ← STALE 检测 + Recovery 触发（含 PG 安全网 sweep）
+│   ├── wakeup_controller/       ← Timer / Event / Approval 唤醒（PR-13：谓词每轮现取）
+│   └── cancellation_sweeper/   ← 取消意图 → 终态收敛（§15 第四段）
+│
+│   注：**没有 `apps/scheduler/`**（PR-18）。Scheduler 是 Kernel 的一项能力，
+│   派活 = worker tick 内的一次 Atomic Claim，不是一个部署单元。
+│
+├── packages/
+│   ├── agent_domain/
+│   ├── agent_harness/
+│   │   └── adapters/            ← ApprovalStore 等 Port 的 PG 实现（M19）
+│   ├── agent_runtime/
+│   │   └── adapters/            ← RunSnapshotStore 的 PG 实现（M20）
+│   ├── agent_context/           ← Context / Memory（M17）
+│   ├── agent_api/               ← Control Plane 契约层（M18）：与框架无关，
+│   │                              `apps/api` 只做一行绑定
+│   ├── execution_kernel/
+│   ├── knowledge/               ← RAG / Retrieval
+│   ├── memory/
+│   ├── governance/              ← IAM / OPA / Vault 适配
+│   ├── sandbox/
+│   ├── event_bus/
+│   ├── database/
+│   ├── cache/
+│   ├── model_gateway/
+│   ├── tool_runtime/
+│   ├── skill_runtime/
+│   ├── evaluation/
+│   └── observability/
+│
+├── examples/
+│   └── demo_stack.py          ← **可跑的** ToolRuntime + ModelGateway（M23，§61）：
+│                                走与真实部署相同的装载路径，不是测试 fixture
+│
+├── infrastructure/
+│   ├── docker/
+│   ├── kafka/
+│   ├── postgres/
+│   ├── redis/
+│   └── k8s/
+│
+└── tests/
+    ├── unit/
+    ├── integration/
+    ├── evaluation/
+    └── e2e/
+```
+
+核心依赖方向：
+
+```text
+agent_domain
+    ↑
+execution_kernel
+    ↑
+agent_runtime
+    ↑
+agent_harness
+```
+
+基础设施通过 Interface / Adapter 注入。
+
+Domain 不直接依赖：
+
+```text
+FastAPI
+Redis
+Kafka
+PostgreSQL
+Kubernetes
+```
+
+---
+
+# 46. 技术选型纪律
+
+每一个技术都必须回答：
+
+1. 为什么需要？
+2. 它负责什么？
+3. 它不负责什么？
+4. 接口是什么？
+5. 数据怎么流？
+6. 出故障怎么办？
+
+同时必须明确：
+
+```text
+Data Model
+Consistency
+Latency
+Failure Model
+Boundary
+```
+
+禁止为了“技术栈看起来高级”而加入技术。
+
+---
+
+# 47. 最终架构结论
+
+AgentOS 最终抽象为：
+
+```text
+                    ┌───────────────┐
+                    │ Intelligence  │
+                    │ Goal/Decision │
+                    │ Plan/Action   │
+                    └───────┬───────┘
+                            ↓
+                    ┌───────────────┐
+                    │    Harness    │
+                    │ Context/Policy│
+                    │ Memory/HITL  │
+                    └───────┬───────┘
+                            ↓
+                    ┌───────────────┐
+                    │    Runtime    │
+                    │ Loop/Planner  │
+                    │ Decision      │
+                    └───────┬───────┘
+                            ↓
+                          Task
+                            ↓
+                    ┌───────────────┐
+                    │Execution Kernel│
+                    │Schedule/Lease │
+                    │Retry/Recovery │
+                    │Checkpoint     │
+                    └───────┬───────┘
+                            ↓
+                      Execution
+                            ↓
+                         Result
+                            ↓
+                     Observation
+                            ↓
+                         State
+                            ↓
+                       Decision
+```
+
+最终核心思想：
+
+> **AgentOS 不是一个“调用 LLM 的 Agent Demo”，而是一套把 Agent 的智能决策与可靠执行基础设施解耦，并通过统一 Execution Kernel 将 Agent、Workflow、Skill、Tool、Multi-Agent、Evaluation 统一起来的平台。**
+
+---
+
+# 48. 架构冻结标准
+
+从 v2.1 开始：
+
+- 不再增加新的核心抽象。
+- 不再增加新的 Execution 类型。
+- 不再增加新的 State 层级。
+- 不再把 Tool / Skill / Agent 做成独立执行内核。
+- 不再让 Runtime 直接承担 Kernel 职责。
+- 不再让 Harness 侵入 Execution Kernel。
+- 不再把 Kafka、Redis、Qdrant 当作业务事实来源。
+- 新需求必须在现有抽象中表达。
+- 如果现有抽象无法表达新需求，必须先证明现有模型存在缺陷，再修改核心模型。
+
+**架构至此冻结，进入实现。**
+
+---
+
+# 49. 变更记录：v2.1 → v2.1.1
+
+本次只补定义，不新增抽象。
+
+## P0
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 1 | 钉死基数 `Task : Execution = 1 : 1`（重跑必须新建 Task） | §4 |
+| 2 | 钉死 **Lease 挂在 Execution**，Scheduler 选 Task、Claim Execution；新增 fencing_token | §5.3 / §12 |
+| 3 | 钉死 **Harness 拦截点**：Agent Loop → Action → Harness.Policy/Guardrail → Task；Harness 永远是被调用方 | §2 |
+| 4 | 钉死 **Step 属于 Business Domain**，定义为 Plan Node 的运行实例（动态产生，非静态图节点） | §3.1 / §5.1 |
+
+## P1
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 5 | 补齐 **Execution / Attempt 状态集合**；明确 STALE 属 Execution、CANCEL_REQUESTED 是意图字段 | §9.2 |
+| 6 | 状态机 **机制（Kernel）/ 策略（Runtime、Harness）分离**；第一版只实现 Execution + Attempt | §9.2 |
+| 7 | 新增 **RetryPolicy** 与 **Kernel Failure Class**（含 EXTERNAL_UNKNOWN 不可盲重试） | §13 |
+| 8 | 钉死 **Idempotency Key = {execution_id}**，跨 Attempt 稳定；区分 Lease / Idempotency / Fencing Token | §16 |
+| 9 | **Checkpoint 拆两层**：Kernel Checkpoint vs Run Checkpoint；补齐写入时机 | §14 |
+| 10 | 明确 **Gateway Fallback 不产生新 Attempt**，防止重试放大 | §28 |
+| 11 | 补齐 **Suspension 所有权**（请求 / 生命周期 / 唤醒 / 重调度四段） | §10 |
+
+## P2
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 12 | §41 不变量补 6 条（AgentRun≠Execution、Confidence≠Probability、Checkpoint≠ContextSnapshot、Step≠Plan Node、Task:Execution=1:1、Lease≠Lock≠Fencing Token） | §41 |
+| 13 | Roadmap 消歧：M1.5 为最小可靠性补丁，M15 成型，M10 建立在 M15 之上 | §42 |
+| 14 | Monorepo 补 3 个部署单元（outbox_publisher / recovery_controller / wakeup_controller）与 4 个包（knowledge / memory / governance / sandbox） | §45 |
+| 15 | Governance 定位为横切能力，非第五边界 | §1 |
+| 16 | State 并发写入策略（version + per-run 有序队列 + 重放） | §7.2 |
+| 17 | Replanning 边界（max_replan_count / budget / no-progress / escalation） | §13 |
+
+---
+
+# 50. 变更记录：v2.1.1 → v2.1.2（M15 落地回写）
+
+本次仍然只补定义、不新增抽象。
+
+来源不是"再看一遍文档"，而是 **M15 阶段 1~8 真正写完代码之后撞出来的空洞**。
+这批修补的共同特征是：**在纸面上读不出问题，一旦实现就必然撞墙。**
+
+## P0 — 不补就无法正确实现
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 18 | **Action 缺 `LLM_CALL`** | `Task(type=LLM_CALL)` 存在但 Action 无对应项 → 模型调用只能塞进 Loop 隐式完成 → **绕过 Harness 拦截点**，不受 Policy/预算约束 | Action 全集补 `LLM_CALL / WAIT / REPLAN / FINISH`；"无下一步"必须表达为 `FINISH`，`Decision.selected_action` 必填 | §7.4 |
+| 19 | **Kernel 缺 Attempt 持久化** | Execution 重载不恢复 Attempt 历史 → 成功回写被判 `E-5 no running attempt to succeed` | 新增 `AttemptRepository` 端口；Attempt 与 Execution 同事务持久化；`aggregate()` 必须恢复完整历史 | §9.1 |
+| 20 | **取消缺收敛者** | `CancellationToken` 只有活着的 Worker 会读 → PENDING / SUSPENDED / STALE 的取消意图**永久悬空** | 取消由三段扩为四段，新增 `CancellationService.sweep()`；RUNNING 且 Lease 有效时跳过（不与活 Worker 抢） | §15 |
+| 21 | **去重记录未指定归属** | 只说"按 event_id 去重"却没说存哪；放 Redis 会变成丢一次就错一次 | 去重属**正确性**层，必须落 PG `processed_events`；给出"变慢 vs 变错"判据 | §20 |
+
+## P1 — 不补会出并发正确性问题
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 22 | **Recovery 缺与 Redis 无关的安全网** | 想用"index 空 → 回退 PG"兜底，但**空闲时 index 本来就是空的**，两者无法区分 → 低频全表扫变常态 | 安全网按固定频率无条件执行，与 Redis 状态无关；钉死"Redis 全丢只允许变慢，不允许变错" | §12 |
+| 23 | **Worker 缺 `LOST_LEASE` outcome** | 写回撞 `StaleWriteError` / `LeaseRequired` 时只能归入 FAILED 或 RETRYING → 误记失败或重试放大 | WorkerOutcome 单列第五种；语义为**沉默退出**，不做任何写入尝试 | §13 |
+| 24 | **Scheduler 未过滤取消意图** | 把 `cancellation_requested = true` 的 Execution 再调度一遍 → 撞 `E-17` | `candidates()` 硬过滤取消意图，是正确性约束不是优化 | §9.1 |
+| 25 | **心跳间隔无约束** | 心跳周期 ≥ 租约时长时，Worker"活着但已被接管"，是最难排查的并发 bug | `heartbeat_interval < lease_ttl`，构造期校验 | §13 |
+| 26 | **State 的 Reducer 无法写入** | State 为做到"Observation 不直接改 State"做成 sealed，但 Reducer 又必须写业务字段 → 死锁 | 引入显式 `reducing()` 写窗口；窗口外一律拒绝；Plan 只能作为 Observation 进入 | §7.2 |
+
+## P2 — 命名 / 结构对齐
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 27 | Task 增加 `ExecutorType` 维度（NATIVE / MCP / HTTP / AGENT_RUNTIME / WORKFLOW），与 `TaskType` 正交 | §5.2 |
+| 28 | Kernel 持久化端口清单化（Clock / ExecutionRepository / AttemptRepository / OutboxStore / LeaseIndex / CancelSignalStore / IdempotencyStore / EventPublisher / UnitOfWork）；LeaseIndex 同步方向**单向** PG→Redis | §9.1 |
+| 29 | M15 实施顺序按实际调整：Kernel → **Ports** → PG；Kafka 与 Worker 合并；补"最小闭环验收标准" 6 条 | §M15 |
+| 30 | Monorepo 补 `cancellation_sweeper` 部署单元；`recovery_controller` 注明含 PG 安全网 | §45 |
+
+## 一句话总结
+
+> v2.1.1 冻结的是**架构**；v2.1.2 冻结的是**架构落地时那些必须有、但纸上容易漏掉的机械细节**。
+> 这批 13 条里，有 9 条是"不写就一定会写错代码"的，不是可选优化。
+
+---
+
+# 51. 变更记录：M16（Harness）落地回写
+
+M16 把 §23 里只有名字的 `PolicyEngine` / `GuardrailEngine` / `CostManager` / `HumanLoop` 实现了。
+回写的动因是：阶段 8 写完 Loop 后发现，**基线 §2 钉死的那个"唯一拦截点"在代码里没有落点** ——
+`_needs_approval` 只是一句本地判断，Harness 根本不存在。
+
+## P0
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 31 | **Guardrail 补三档严重程度**（BLOCK→DENY / REVIEW→REQUIRE_APPROVAL / WARN→ALLOW）；BLOCK 不给人审批绕过（H-7） | §23 |
+| 32 | **审批闸门必须先被 Claim 才能挂起** —— `SUSPENDED` 语义是"执行权授出去过又被挂起"，不是"还没开始" | §23 |
+| 33 | **审批截止时间单一事实源 = `ApprovalRequest.expires_at`**；闸门 Action 的 I-8 timeout 由它推出（H-5） | §23 |
+
+## P1
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 34 | **审批需要自己的 sweep** —— `expire_due()`；意图不会自己变成终态，不扫就永远挂着且不报错（H-8） | §23 |
+| 35 | **Harness 不持有 Kernel**（H-4）：断言 `Harness.__dataclass_fields__` 里没有 kernel；`agent_harness` 不 import `execution_kernel` | §23 / §2 |
+| 36 | **CostManager 是拦截条件不是事后账单**：预算耗尽 → DENY，不给人审批"续杯"的口子 | §23 |
+
+## P2
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 37 | `PolicyContext` 里**没有** confidence 字段 —— 把 I-9 从约定变成类型约束（H-3） | §23 |
+| 38 | DENY 与 REQUIRE_APPROVAL 的区别定义化：前者 Kernel 里不留痕迹但必须进 State；后者在 Kernel 留 SUSPENDED 闸门 | §2 / §23 |
+| 39 | 审批相关 Observation 不进 `completed_tasks`（审批是闸门，不是业务 Task） | §23 |
+
+## 不变量 H-1 ~ H-8
+
+| # | 内容 |
+|---|---|
+| H-1 | DENY / REQUIRE_APPROVAL 必须带 reason |
+| H-2 | REQUIRE_APPROVAL 必须带那条 `ApprovalRequest` |
+| H-3 | confidence_signal 传不进 Policy（类型级） |
+| H-4 | Harness 字段里没有 kernel |
+| H-5 | 审批必须有 expires_at |
+| H-6 | 终态审批不可再改 |
+| H-7 | Guardrail BLOCK 不给人审批绕过 |
+| H-8 | 过期审批不能被批准 |
+
+---
+
+# 52. 变更记录：Business Domain（AgentRun / Step）落地回写
+
+## 动因：基数链最上面一环是断的
+
+§4 把 `AgentRun : Step = 1 : N`、`Step : Task = 1 : N` 定为 P0，§3.1 也把 Business Domain 列为
+`AgentRun / WorkflowRun / SkillRun / EvaluationRun / Step`。但 M15 阶段 1~8 写完时，
+代码里**只有 `run_id: str`** —— Runtime 造 Task、Kernel 管 Execution，中间那两层不存在。
+
+后果不是"少两个类"，而是运行时**没有地方能回答"这个 Run 现在怎么样了"**：
+Model Gateway、Tool Runtime、Observability 接进来时都只能各自定义一遍，然后互相打架。
+
+所以本轮先把 Business Domain 补上，再做阶段 9~11。
+
+## P0 — 不补就无法正确实现
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 40 | **AgentRun / Step 无落点** | 只有 `run_id` 字符串；`Step` 从未被实例化 → 1:N 基数链在顶层断裂 | 新增 `packages/agent_domain/business/`：`AgentRun` / `Step` / `derive`；`start()` 创建真实 AgentRun | §3.1 / §4 |
+| 41 | **`Step : Task` 悄悄退化成 1:1** | `TaskFactory.from_action()` 默认 `new_step_id()` → 每个 Task 一个新 Step，扇出能力消失且**没有任何报错** | `_execute()` / 审批闸门必须显式传 `step_id`；`Step.add_task()` 支撑 1:N；用 `test_default_factory_would_break_1_to_n` 把这个退化钉住 | §4 |
+| 42 | **Run 的终态被错误派生（B-7）** | "所有 Step COMPLETED"被派生成 `COMPLETED` → Runtime 想标 FAILED（放弃 / 预算耗尽）时被终态不可变约束顶回来 | **终态只能由 Runtime 声明**；派生只产出活跃态；全部 Step 已终态但无声明时 Run 为 `RUNNING` | §9.2 / §10 |
+
+## P1 — 不补会出语义错误
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 43 | **§10 漏了 `CREATED → SUSPENDED` 这条边** | Run 的第一个动作就被判 `REQUIRE_APPROVAL` → 第一个 Step 直接 SUSPENDED → 状态机抛 `illegal transition` | 补这条边；并写明**不能**靠"中间采样一次 RUNNING"绕开，因为投影必须是顺序无关的纯函数 | §10 |
+| 44 | **`AgentLoop.run` 字段与方法同名** | 实例属性 `run` 在 `start()` 之后把 `run()` 方法整个盖掉 → `'AgentRun' object is not callable` | 字段改名 `agent_run`（命名冲突本身就是边界不清的症状） | §3.1 |
+| 45 | **进入 SUSPENDED 前可能不写 Run Checkpoint** | §14 写了时机但代码里没人执行 → 唤醒后只能重跑整个 Run，对已产生外部副作用的 Task 是灾难 | `RunCheckpointStore` + `_write_run_checkpoint()`；挂起路径强制调用 | §14 |
+
+## P2 — 概念一致性
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 46 | `StepStatus` 比 `ExecutionStatus` 少一个 `STALE` —— Lease 过期是基础设施细节，Step 只看"做完没有"；STALE 在派生里折叠成 `PENDING` | §9.2 |
+| 47 | Step 只做逻辑分组：字段里没有 lease / attempt / worker / retry / fencing_token（可断言） | §3.1 |
+| 48 | 可重试失败让 Execution 回到 PENDING 时，**Step 必须跟着回到 PENDING**，不能因为"曾经 RUNNING 过"就判 FAILED | §9.2 |
+
+## 不变量 B-1 ~ B-7
+
+| # | 内容 | 落地 |
+|---|---|---|
+| B-1 | `AgentRun` 必须带 `goal` + `agent_id` | 构造期校验 |
+| B-2 | `AgentRun.status` / `suspension_reason` 是**派生值**，不可直接赋值 | `__setattr__` 守卫 + `deriving()` 写窗口（与 `State.reducing()` 同构） |
+| B-3 | Run 终态不可变 | `sync()` 内校验 |
+| B-4 | `SUSPENDED` 必须带 `suspension_reason`；离开 SUSPENDED 自动清空（与 E-8 同构） | `sync()` 内维护 |
+| B-5 | `Step.status` 由所属 Task 派生；Step 必须挂在某个 Plan Node 上（`plan_node_id` 必填） | `__setattr__` 守卫 + 构造期校验 |
+| B-6 | `Step : Task = 1 : N` | `Step.add_task()`（幂等）；调用方必须显式传 `step_id` |
+| B-7 | Run 的 `COMPLETED` / `FAILED` / `CANCELLED` 只能由 Runtime 声明，**不能从 Step 派生** | `derive_run_status(runtime_terminal=...)` |
+| B-11 | 关掉闸门后必须**立刻**重新派生 Step/Run 状态（B-4 的操作细则） | `reject()` / `expire_approvals()` 内调 `_sync_after_execution()` |
+
+## 一句话总结
+
+> v2.1.2 冻结的是 Kernel 的机械细节；v2.1.3 冻结的是**"谁有权说一个 Run 结束了"**。
+> B-7 是本轮唯一一条改变既有认知的修补：在此之前，"Run 完成"被当成一个可以从下层聚合出来的事实；
+> 现在它被钉成 Runtime 的判断 —— 因为"手上的活干完了"从来不等于"目标达成了"。
+
+---
+
+# 53. 变更记录：§44 第一条 End-to-End 闭环接通回写
+
+## 动因：阶段 9 / 10 造好了运行时，但没有接进 Loop
+
+阶段 9（Model Gateway）与阶段 10（Tool Runtime）各自可用，但 `AgentLoop` 仍然只认 `Worker`，
+测试里也还是 `LLMCallExecutor(FakeLLM())` —— 两条运行时**没有进入实际执行路径**，
+于是 G-1 / T-2 这些不变量在生产路径上从未被走过。
+
+§44 定义的第一条闭环要求的不只是"跑通"，而是**跑通且全程留痕**：
+
+```text
+Event / Trace / Attempt / Checkpoint / Cost / Token Usage
+```
+
+少一项不算闭环，即使 `AgentRun.status == COMPLETED` 也是偶然。
+
+## P0 — 不补就无法正确实现
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 49 | **Token 用量从不回流到 CostManager（L-3）** | Loop 只 `charge(steps=1)`，`spent_tokens` 永远是 0 → `Budget.max_tokens` 是一条接了但没通电的线；超 token 的 Run 会一直跑到钱烧完才停 | `_charge()` 从 Attempt result 的 `usage.total_tokens` 回灌 | §23 / §44 |
+| 50 | **被 DENY 不计入任何预算 → 死循环（L-7）** | DENY 不产生 Task、不花钱、不占步数，于是"反复提出被禁动作"这个循环既不被预算拦也不被终态拦，**而且没有任何报错**；装配 E2E 时进程直接跑飞 | 连续（非累计）`max_consecutive_denials` 次 → Run 判 `FAILED` + `DENY_LOOP`；中间有任何一次非 DENIED 结果即清零 | §10 / §23 |
+| 51 | **缺省模型由 Executor 猜（G-8）** | `LLMCallExecutor` 默认 `model_id="default"` → 路由报 `no usable deployment for model 'default'`，**错误指向一个根本不存在的模型名** | `CompletionRequest.model_id` 允许为空；由 `ModelGateway.default_model_id` 解析；两边皆空报 `NO_MODEL_REQUESTED` | §28 |
+
+## P1 — 不补会出语义错误
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 52 | **装配点散落（L-2）** | 每个调用方自己拼 Worker / Harness / Loop → 出现"Worker 用 legacy 适配器、Loop 挂真 Gateway"这种双路径；G-1 / T-2 在没走到的那条路上没被验证过 | 新增 `assemble_runtime_stack()`：装配函数里**没有第二个可以造 Executor 的地方** | §44 |
+| 53 | **Step 完成不写 Run Checkpoint（L-5）** | §14 的表格写了"Step 完成 → Run Checkpoint"，但代码只在"进入 SUSPENDED 前"调用 → 正常完成的路径上没有 Checkpoint | `_execute()` 在 Step 进入终态后落盘 | §14 |
+| 54 | **Trace 缺失** | §44 六要素之一在代码里没有落点；只有进 State 的 Observation，而 Observation 是会被 Replan 覆盖的工作记忆，不是账本 | 新增 `RunTrace`（append-only），记 `run_id / step_id / task_id / execution_id / attempt_no` | §44 |
+| 55 | **`RunTrace` 有 `__len__` → 空账本 falsy** | 装配里写 `trace or RunTrace(clock)` 会把调用方传进来的那个**悄悄换掉**，症状是 Trace 一直为空而断言查的是调用方手上的引用 | 改为 `if trace is None` | — |
+
+## P2 — 概念一致性
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 56 | Trace 记的是**实际服务值**（`model` / `deployment` / `version`），不是请求值 —— 这是"请求值 vs 实际值"那个坑的延续 | §28 / §44 |
+| 57 | `Step : Task = 1 : N` 在真实路径上成立：审批闸门 Task 与获批后真正执行的 Task 挂在**同一个 Step** 上（它们本来就是同一步） | §4 |
+| 58 | Trace 上只有 `append`，没有 `update` / `pop` / `clear` / `__setitem__`（可断言） | §44 |
+
+## 不变量 L-1 ~ L-7
+
+| # | 内容 | 落地 |
+|---|---|---|
+| L-1 | Loop **持有** ModelGateway / ToolRuntime，但不**实现**它们（拿不到 provider / invoker / endpoint） | `AgentLoop` 字段 + 属性断言 |
+| L-2 | Worker 的 Executor 与 Loop 持有的是**同一批对象** | 装配函数无第二入口 + `is` 断言 |
+| L-3 | Token 用量必须回流到 `CostManager` | `_charge()`；`max_tokens=1` 的硬测试 |
+| L-4 | §44 六要素齐全才叫闭环 | 一项一用例 |
+| L-5 | **Step 完成**也要写 Run Checkpoint | `_execute()` 终态后落盘 |
+| L-6 | Trace 是 append-only 的派生审计记录 | `RunTrace` 只暴露 `append` |
+| L-7 | 连续被 Harness 拒绝到上限 → Run 判 `FAILED` | `max_consecutive_denials` + `DENY_LOOP` |
+
+## 一句话总结
+
+> v2.1.3 冻结的是"谁有权说一个 Run 结束了"；v2.1.4 冻结的是**"一个 Run 凭什么算跑完了"**。
+> L-7 是本轮唯一一条改变既有认知的修补：在此之前，"Loop 停下来"被当成一个由预算或终态保证的事实；
+> 现在必须显式补一条收敛规则 —— 因为**被拒绝既不花钱也不占步数**，
+> 一个永远走不下去的 Run 会安静地永远转下去。
+
+---
+
+# 54. 变更记录：M17（Context / Memory）落地回写
+
+## 动因：链通了，但"模型看到了什么"还是空的
+
+v2.1.4 把 §44 第一条 End-to-End 闭环接通了，六要素也齐了。但链上还剩一个空洞：
+`LLM_CALL` 的 payload 里只有一个 `prompt` —— **Context 的组装过程在运行时没有任何记录**。
+
+后果是排障时只能查"prompt 字符串长什么样"，查不到"它为什么长这样"：
+哪些记忆被召回、哪些检索结果被丢掉、token 装不下时牺牲了谁，全都无从回答。
+
+## P0 — 不补就无法正确实现
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 59 | **Context 组装无落点** | 只有 `prompt` 字符串；"这次调用喂了什么"没有记录 | `ContextAssembler` + `ContextSnapshot`（C-2） | §22 / §14 |
+| 60 | **截断不记录（C-4）** | 装不下就悄悄少放一点；事后无法区分"模型没看见"与"模型看见了但没用" | 每条被丢的内容留 `DroppedItem` + 原因；分配结果必须确定 | §22 |
+| 61 | **检索不过权限（C-9）** | 向量库里是全公司文档，不带过滤的检索 = 绕过权限的搜索框，而且**不报错** | `RetrievalPipeline.permission` 构造期必填；pipeline 内再过滤一遍（不能外包给 Retriever） | §21 |
+| 62 | **`Memory ≠ Knowledge ≠ Context ≠ Artifact` 只是一句话** | §41 写了但没落到类型上 → 四者在实际代码里会互相混用 | 四种类型 + **唯一转换口**；不转换进不了 Context（C-1） | §21 / §41 |
+
+## P1 — 不补会出语义错误
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 63 | **pinned 装不下时静默降级（C-3）** | 系统指令被丢掉 = 换了一个 Agent，而且不报错 | `ContextBudgetError` 硬失败 —— 这是配置错误，早失败早修 | §22 |
+| 64 | **Context 做成 Run 级单例（C-2）** | 第 5 次调用的 Snapshot 盖掉第 1 次的 → "它第一次为什么这么答"永远查不到 | 一次模型调用一份 Snapshot | §14 |
+| 65 | **排序与取舍混为一谈（C-12）** | 按 priority 排序输出 → 系统指令被压到检索结果中间 | 顺序由 `SOURCE_ORDER`（语义）定，priority 只决定先丢谁 | §22 |
+| 66 | **引用缺失（C-10）** | 没有 Citation 的检索结果进了 Context → 模型无法标注来源，事后无法审计 | `Chunk.citation` 与 `ContextItem.reference` 双处必填 | §21 |
+
+## P2 — 概念一致性
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 67 | `ContextSnapshot` 与 `RunCheckpoint` 字段互不重叠（可断言）—— 前者是"模型当时看到了什么"，后者是"从哪里恢复" | §14 / §41 |
+| 68 | Memory 分层（WORKING / EPISODIC / SEMANTIC / PROCEDURAL）；`Qdrant ≠ Truth`：索引是派生的，PG 是事实源 | §21 |
+| 69 | Artifact 只以 `reference` 进 Context，不内联（I-7 在 Context 上的落点） | §21 |
+| 70 | Tokenizer 是端口：token 数没有廉价又准确的算法，硬编码等于把 Context 工程钉在某个模型上；默认实现刻意**向上取整**（低估的代价是 `CONTEXT_LENGTH_EXCEEDED`） | §22 |
+| 71 | §36 部署图的 `Kafka → Scheduler → Worker Pool` 补澄清：**那是拓扑不是调用链**。Scheduler 从 PG + Redis 捞候选并走 Atomic Claim，Kafka 只传播事实；否则会被读成"把 Kafka 当任务队列"（丢 Lease / 拿分区当优先级 / 消费到位≠执行到位） | §36 |
+
+## 归属裁决：C-11
+
+§23 写着：
+
+```text
+AgentHarness
+├── ContextManager
+├── MemoryManager
+```
+
+按字面读像是"Harness 负责组装 Context"。但 §2 的四边界说 Harness **控制**、Runtime **驱动**，
+而把内容拼进 Prompt 明显是执行的一部分。
+
+**裁决：组装归 Runtime，准入归 Harness。**
+
+- **组装**（各路来源 → 排序 → 取舍 → 预算 → Context）是 Runtime 的事
+- **准入**（权限过滤 / 敏感信息 / 越权检索）是 Harness 的事 —— 那才是 §23 `ContextManager` 的本意
+
+不裁决的后果是两边都做一半：Harness 里长出拼字符串的逻辑，
+Runtime 里又长出权限判断。
+
+## 不变量 C-1 ~ C-12
+
+| # | 内容 | 落地 |
+|---|---|---|
+| C-1 | Memory / Knowledge / Context / Artifact 是四种对象，转换必须显式 | `MemoryManager.recall()` / `RetrievalPipeline.to_context_items()` 是唯一转换口 |
+| C-2 | Context 是**每次模型调用**的工作台，不是 Run 级状态 | 一次调用一份 `ContextSnapshot` |
+| C-3 | Token Budget 是硬约束；**pinned 装不下直接失败** | `ContextBudgetError` |
+| C-4 | 静默截断是 bug；分配必须确定 | `DroppedItem` + 稳定排序键 |
+| C-5 | `ContextSnapshot ≠ Checkpoint` | 字段互不重叠（可断言） |
+| C-6 | Artifact 只以 `reference` 进 Context | `ContextItem.reference` |
+| C-7 | Memory 分层；Qdrant ≠ Truth | `MemoryLayer` + `MemoryStore` 为事实源 |
+| C-8 | Memory 写入可溯源 | EPISODIC 必带 `source_run_id` |
+| C-9 | Retrieval 必须过 Permission Filter | 构造期必填 + pipeline 内复检 |
+| C-10 | Knowledge 进 Context 必须带 Citation | `Chunk.citation` / `ContextItem.reference` 双处校验 |
+| C-11 | **组装归 Runtime，准入归 Harness** | `AgentLoop.context_assembler`（Runtime 侧） |
+| C-12 | 排序（语义）与取舍（priority）是两个维度 | `SOURCE_ORDER` + `allocate()` |
+
+## 一句话总结
+
+> v2.1.4 冻结的是"一个 Run 凭什么算跑完了"；v2.1.5 冻结的是**"模型的每个回答凭什么这么答"**。
+> C-4 是本轮最容易被低估的一条：**截断而不记录，等于让模型在不知情的前提下失明** ——
+> 而且它不会报错，只会让答案悄悄变差。
+
+---
+
+# 55. 变更记录：M18（Control Plane 契约层 + HITL 审批回调）落地回写
+
+## 动因：§44 的第一行没有落点，而且人根本没法批准
+
+v2.1.5 之后，链通了、模型也看得见东西了。但还有一条更尴尬的断链，而且它在闭环图的**最上面一格**：
+
+```text
+POST /agents/{agent_id}/runs      ← §44 的第一行，在代码里没有任何落点
+        ↓
+AgentRun → Step → Task → Execution → ...
+```
+
+更要命的是 HITL：在此之前 `AgentLoop.approve()` **只是一个进程内方法**。
+一个高风险动作被闸门挡住之后，Run 就永远停在 `waiting_approval` ——
+Kernel 里那条 `SUSPENDED(HUMAN_APPROVAL)` 的 Execution 在等一个永远不会来的信号，
+而整个系统里**没有任何入口**能让一个真人把"批准"这件事递进去。
+
+换句话说：HITL 在架构上是完整的（Harness 发起 / Kernel 拥有生命周期 / Wake-up 检测 / Scheduler 重调度），
+但在工程上是死的 —— **人根本没法批准**。
+
+## P0 — 不补就无法正确实现
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 72 | **§44 第一行无落点** | 闭环图最上面一格在代码里不存在；"系统怎么被唤起"没有答案 | `packages/agent_api`（handlers / service / ports / dto / errors） | §44 / §45 |
+| 73 | **HITL 无法被批准** | 高风险动作被挡后 Run 永远挂 `waiting_approval`，没有任何入口让它继续 | `POST /runs/{id}/approvals/{id}/decision`，且**必须经 `AgentLoop.approve()`**（A-4）—— 直接改 `ApprovalRequest.status` 不会唤醒 Kernel 里那条 SUSPENDED | §23 |
+| 74 | **非 PENDING 审批一律报"已决定"** | EXPIRED 被报成 409 `APPROVAL_ALREADY_DECIDED`（`decided_by="timeout"`）：语法正确，语义上却是在告诉调用方"有人批过了，去等结果吧"——而那个结果永远不会来 | **A-9**：EXPIRED → **410**；CANCELLED → 409 独立码；APPROVED/REJECTED → 409 + `decided_by` | §23 |
+| 75 | **待审批列表读内存 Loop** | 服务一重启列表就空，而 Run 还实实在在挂着等人批：**界面上什么都没有，系统里全在等** | **A-10**：查 `ApprovalStore.pending()`，不查 `loop.pending_approval` | §23 |
+
+## P1 — 不补会出语义错误
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 76 | **领域异常兜成 500** | 调用方以为"服务端坏了"→ 重试；而不变量违规**重试一万次结果完全一样**，同时真 500 被淹没在一堆假 500 里，监控也就没了意义 | **A-2** 映射表：409（状态/并发/Stale/Lease）/ 422（不变量）/ 429（预算耗尽）/ **500 只留给真的没预料到的** | §44 |
+| 77 | **`POST /runs` 不幂等** | 网络重试开出第二个 Run：同一请求跑两遍、花两份钱，且两个 Run 都可能产生外部副作用 | **A-3**：幂等键与"创建 Run"同事务落 PG —— **不能放 Redis**（`IdempotencyStore.get()` 返回 None 的语义是 UNKNOWN 而非"没执行过"，Run 创建没有下游可回查） | §16 / §20 |
+| 78 | **审批回调可匿名** | "谁批的"是这条记录唯一的价值；匿名审批进不了审计 | **A-8**：`by` 必填 | §23 |
+| 79 | **已决定审批再回调静默成功** | 审计记录被第二次调用覆盖，"先批准再驳回"之后说不清到底是谁批的 | **A-5** → 409 `APPROVAL_ALREADY_DECIDED` + `decided_by` | §23 |
+
+## P2 — 概念一致性
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 80 | API 与框架解耦后写：**FastAPI 是唯一一个连 Port 都还没定义的基础设施**（PG / Redis / Kafka 都在阶段 4~7 定义了 Port + 适配器）。先有 Port，HTTP 层才不会开始自己判断业务 —— 那样就出现了第二个事实源 | §45 / §46 |
+| 81 | **A-1 的形式化**：`agent_api` 连 `policy` / `guardrail` / `cost` 都 import 不到 —— "API 自己判断这个动作该不该做"在**结构上**不可能，不用靠自觉也不用靠 code review 抓 | §2 / §37 |
+| 82 | 归属校验用 **404 而不是 403**：不泄漏"另一个 Run 里确实存在这条审批"这个事实 | §34 |
+| 83 | **A-6**：`RunView` 不暴露 Execution / Attempt / Lease / fencing_token —— Control Plane 与 Kernel 之间只过业务语义 | §37 |
+
+## 归属裁决：审批过期谁来判死
+
+一条审批过了 `expires_at` 但存储里还写着 `PENDING`（sweeper 还没扫到）时，API 该怎么办？
+
+| 选项 | 问题 |
+|---|---|
+| 放行 | 违反 **H-8**：过期审批不能被批准，必须先判定 EXPIRED 让 Run 走超时分支 |
+| 报 409 `ALREADY_DECIDED` | 没人决定过它，是时间判死的 |
+| **只读地报 410**（本版） | ✅ |
+
+关键在于**只读**：API **不把状态推进成 EXPIRED**。把 PENDING 写成 EXPIRED 是 sweeper
+（`HumanLoop.expire_due()`）的职责，与 Cancellation 的 sweep 同构 ——
+**意图不会自己变成终态，但也不该由 HTTP 请求顺手变成终态**。
+否则"这条审批是被人判死的还是被时间判死的"就混在一起，审计就废了。
+
+## 不变量 A-1 ~ A-10
+
+| # | 内容 |
+|---|---|
+| A-1 | API 不做业务判断：只校验形状 / 编排 / 翻译；状态变更一律走 Runtime / Kernel |
+| A-2 | 领域异常必须映射成明确 HTTP 语义；**500 只能留给真的没预料到的** |
+| A-3 | `POST /runs` 幂等；**幂等键不能放 Redis** |
+| A-4 | 审批回调是改变审批状态的**唯一入口**，且必须经 `AgentLoop.approve()` |
+| A-5 | 审批回调做归属校验（404，不泄漏别的 Run）；已决定的再回调 → 409，不能静默成功 |
+| A-6 | 响应不暴露 Kernel 内部对象 |
+| A-7 | handler 与框架无关：换框架不动业务 |
+| A-8 | 审批必须带 `by` |
+| A-9 | **过期 ≠ 已决定**：APPROVED/REJECTED → 409；EXPIRED → **410**；CANCELLED → 409 独立码 |
+| A-10 | 待审批列表查**存储**不查内存 Loop |
+
+## 一句话总结
+
+> v2.1.5 冻结的是"模型的每个回答凭什么这么答"；v2.1.6 冻结的是**"这个系统怎么被人唤起，以及人怎么把话递回去"**。
+> A-9 是本轮唯一一条改变既有认知的修补：在此之前，"非 PENDING"被当成一类状态统一处理；
+> 现在必须拆开 —— 因为**审计要回答的恰恰是"到底有没有人批过"**，
+> 而把超时报成"已被 timeout 决定过"，是在用一句语法正确的谎话回答这个问题。
+
+---
+
+# 56. 变更记录：M19（审批存储持久化）落地回写
+
+## 动因：A-10 是一条断言，不是一个事实
+
+M18 写下了 **A-10：待审批列表查存储不查内存 Loop**，理由是"审批必须活过进程重启"。
+但当时这句话在代码里**并不成立** —— `ApprovalStore` 虽然已经是 Port，
+唯一的实现却是 `InMemoryApprovalStore`：服务一重启，列表照样是空的。
+
+换句话说，A-10 描述的是**我们希望成立的性质**，而实现并没有兑现它。
+这类缺口最危险的地方在于：写文档的人、读文档的人都会默认它已经成立了。
+
+## P0 — 不补就无法正确实现
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 84 | **审批没有持久实现** | 服务重启后待批列表为空，而 Run 还挂着等人批：界面上什么都没有，系统里全在等，**且不报错** | `PostgresApprovalStore` + `003_approvals.sql` | §23 |
+| 85 | **A-5 在并发下不成立** | 两个审批请求同时到达：两边读到的都是 PENDING，前置检查都通过，后写的覆盖先写的 —— "谁批的"变成后到的那个人 | **A-11**：`ApprovalStore.transition()` 原子地把 PENDING 推进到终态（`UPDATE ... WHERE status='pending'`，rowcount=0 即输了竞争） | §23 |
+| 86 | **审批存储是 Run 私有状态** | 每个 Run 一套 `Harness` → 一套内存 store → 跨 Run 根本查不到 | **A-12**：存储由 ControlPlane 持有并下传；`assemble_runtime_stack(approval_store=...)` | §37 |
+
+## P1 — 不补会出语义错误
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 87 | 输了竞争却报成功 | 调用方以为自己批过了，而库里没变 | `ConcurrentStateError`（409），且**库里仍然是 PENDING** —— "没批成"绝不能被记成"批过了" | §23 |
+| 88 | 列表依赖 Run 已装载 | 服务刚重启、Run 还没重新装载时列表 404 —— 恰好在最需要看见待批事项的时刻看不见 | 列表是**过滤语义**：空集不是错误，不先查 Run 在不在内存里 | §37 |
+| 89 | 超时扫描同样并发 | 多个 sweeper 同时扫，同一条审批被判死两次 | `expire_due()` 也走 `transition` | §23 |
+
+## P2 — 概念一致性
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 90 | **A-13 审计约束下推到 DB**：`reason` 非空（H-1）、`expires_at > requested_at`（H-5）、已决定必须有 `decided_by` 与 `decided_at`（A-8）、**PENDING 不能有 `decided_by`**。领域里的检查是"善意"，DB 约束才是"兜底" | §23 |
+| 91 | 存储选型判据统一为**"丢了之后是变慢还是变错"**，不是"重不重要"：Lease 索引丢了变慢 → Redis 可以；审批丢了变错 → 必须 PG | §20 / §36 |
+| 92 | `Action` 落库时不存"空值即缺省"：读不出审批对象就 `InvariantViolation`，绝不默默造一个占位 Action 顶上 —— 那等于让人在不知道批的是什么的情况下签字 | §23 |
+
+## 归属裁决：DB 约束能拦什么，不能拦什么
+
+这一轮有个值得单独记一笔的发现。补 A-11 时先写了一条"演示这个洞"的测试，
+它**失败了** —— 但失败的方式出乎意料：DB 的 CHECK 约束直接把写入拒了。
+
+```text
+sqlite3.IntegrityError: CHECK constraint failed: approvals_decided_has_time
+```
+
+原因是我演示"覆盖写入"时没填 `decided_at`。于是得出一条边界：
+
+| 层次 | 管什么 | 管不了什么 |
+|---|---|---|
+| DB CHECK 约束 | **值的形状**（已决定必须有 by / decided_at） | — |
+| A-11 原子 transition | **先后顺序**（谁先写到谁算数） | — |
+
+两次写入都合法（都带 by / decided_at）时，约束完全放行，后写的照样覆盖先写的。
+**约束管形状，不管时序。** 所以 A-13 不能替代 A-11，两者都得有。
+
+## 不变量 A-11 ~ A-13
+
+| # | 内容 |
+|---|---|
+| A-11 | 审批的**判定与写入必须是一次原子操作**：A-5 防的是"先来后到"，A-11 防的是"同时到达" |
+| A-12 | 存储选型的判据是**"丢了之后是变慢还是变错"**，不是"重不重要" |
+| A-13 | 审计约束必须**下推到 DB**（H-1 / H-5 / A-8 / PENDING 无决策者）；领域检查是善意，DB 约束是兜底 |
+
+## 一句话总结
+
+> v2.1.6 冻结的是"这个系统怎么被人唤起，以及人怎么把话递回去"；
+> v2.1.7 冻结的是**"人递回去的那句话，凭什么第二天还作数"**。
+> A-11 是本轮唯一一条改变既有认知的修补：在此之前，"先读一下状态再写"被当成正确的并发写法；
+> 现在必须承认它只在**顺序**调用下正确 —— 而审批恰恰是最可能同时到达的一类请求（两个人同时点）。
+
+---
+
+# 57. 变更记录：M20（Run Recovery）落地回写
+
+## 动因：M19 只让审批"看得见"，没让它"点得动"
+
+M19 结束时有一个明写在缺口里的尴尬：服务重启后，**待批列表查得到**（A-10 已兑现），
+但 `decide()` 依然 404 —— 因为 `decide()` 要求那个 Run 的 `RuntimeStack` 还在内存里。
+
+翻译成人话：**审批页面上有事等你办，你点"批准"，系统说"没有这个 Run"。**
+这比列表为空更糟 —— 列表为空是"看不见"，这个是"看得见却办不了"。
+
+根因是 `RunCheckpoint` 被当成了恢复数据，而它其实是**指针**：
+
+| | 是什么 | 能不能用于恢复 |
+|---|---|---|
+| `KernelCheckpoint` | 单条 Execution 的续跑位置 | 只够续跑一条 Execution |
+| `RunCheckpoint` | 指向"某个 Checkpoint"的引用（E-24：不允许含 current_step / completed_tasks） | **不能** —— 它不含 Run 的状态 |
+| `RunSnapshot`（本轮新增） | Run 级完整快照：State + Steps + 预算计数 + Trace + 待批 id | **能** |
+
+`RunCheckpoint` 的命名是这轮最大的误导来源：名字里带 Checkpoint，
+很容易被当成"存了 Run 的样子"。它存的是"Run 停在哪个 Checkpoint 上"。
+
+## P0 — 不补就无法正确实现
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 93 | **Run 级快照没有落点** | 进程重启后内存里的 `RuntimeStack` 全丢，Run 与它的审批一起消失 | `RunSnapshot`（`agent_domain/business/snapshot.py`）+ `004_run_snapshots.sql` + `PostgresRunSnapshotStore` | §14 |
+| 94 | **进入 SUSPENDED 不落快照** | 只在"正常结束"时落快照的话，最需要恢复的那一刻（挂起等人）恰恰没存 | **R-1**：`_suspend_for_approval()` 结尾强制 `_capture_snapshot()` | §14 / §23 |
+| 95 | **恢复不带预算计数** | 快照只装 State 与 Steps → 挂起—恢复一次，预算就满血一次，变成一个**重置预算的后门** | **R-2**：快照携带 `spent` 与 `consecutive_denials` | §24 |
+| 96 | **恢复由 API 做** | API 层自己拼装 RuntimeStack → 契约层偷偷变成一层 Runtime | **R-5**：`RunRecovery` 在 `agent_runtime/`，API 只调用 | §37 |
+
+## P1 — 不补会出语义错误
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 97 | 终态 Run 被恢复 | 一个已经 FAILED 的 Run 被"恢复"成活的，审计上等于复活死人 | **R-3**：`restore()` 拒绝终态，抛 `IllegalTransition`（409，不是 404） | §10 |
+| 98 | 恢复后账本重开一本 | Trace 序号从 1 重来 → "丢了一段"看起来像"本来就没有" | **R-4**：`RunTrace.restore()` 校验 `run_id` 与序号连续，并留一条 `run.recovered` | §22 |
+| 99 | 快照漏装新字段 | 以后给 State 加字段，序列化器静默丢掉 → 恢复出来的是一个**残缺但看起来正常**的 Run | 序列化器写成通用递归（`_plain()`），不做字段白名单 | §14 |
+| 100 | 快照把域模型钉死在列上 | 把 State 拆成 20 个列 → 域模型一改就要迁表 | `state`/`steps`/`spent`/`trace` 存 JSONB；**只有被查询的**字段提成列（`run_id`/`status`/`step_count`/`pending_approval_id`/...） | §14 |
+
+## P2 — 概念一致性
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 101 | 快照写入**顺序**被固定：RunCheckpoint 在 `kernel.suspend()` **之前**（§14 强制），RunSnapshot 在**之后**——因为它必须带上 `pending_approval_id` | §14 / §23 |
+| 102 | `TraceEntry` 新增 `RECOVERED` 与 `SNAPSHOT` 两种 kind：恢复不是"没发生过"，它自己就是一条事实 | §22 |
+| 103 | 装配层 `assemble_runtime_stack(snapshots=...)` 与审批存储同理：存储由 ControlPlane 持有并下传，不由 Loop 自己造 | §37 |
+
+## 归属裁决：恢复的洞，最后都不是恢复的洞
+
+这一轮写端到端测试时连撞两个缺陷，**没有一个是 Recovery 自己的问题**：
+
+```text
+1  挂起 → 重启 → 批准 → 409 CONCURRENT_STATE（而不是 200）
+```
+
+第一层是 **X-13**：`ApprovalStore.bind()` 改的是**存储里那条**，
+手上那个 `approval` 对象是副本，`execution_id` 一直是 `None`。
+于是 `_close_gate()` 静默提前返回，那条 SUSPENDED 的 Execution 永远醒不过来 ——
+**而且没有任何报错**（人明明批过了，Run 就是不动）。
+
+> 内存版"碰巧正确"，因为 `InMemoryApprovalStore.get()` 返回的是同一个对象。
+> 跨 Port 的语义只能是**副本**：端口另一边可能是另一个进程、另一台机器。
+> 用内存实现去验证"跨边界"的行为，验证的是巧合。
+
+第二层是 **E-25**：`resume()` 内部是 `SUSPENDED → PENDING → RUNNING` **两次**跃迁
+（中间还新建了一个 Attempt），但 Kernel 只 `_persist()` 一次。
+而乐观锁用的是 `previous_version`（上一次**内存自增前**的版本）= 4，库里还是 3：
+
+```sql
+UPDATE executions SET ... WHERE execution_id = %s AND version = 4   -- 命中 0 行
+```
+
+**没有任何并发，乐观锁自己报错。** 隐含假设"一次内核操作 = 一次自增 = 一次落库"从一开始就不成立。
+
+修法是给 `Execution` 增加一个只能由 Repository 改写的 `_store_version`：
+
+| 字段 | 含义 | 谁能改 |
+|---|---|---|
+| `previous_version` | 上一次**内存自增前**的版本 | 域模型（`__setattr__`） |
+| `store_version` | 上一次**存储边界**上的版本 | Repository（`add` / `get` / `save`） |
+
+乐观锁比的是"**我读到的**版本"，不是"我上次自增前的版本"。
+一个可控的副作用是：`resume()` 之后版本号从 3 直接跳到 5 ——
+这是对的，因为它本来就是两次跃迁合成的一次写。
+
+## 不变量 R-1 ~ R-5（新增）与 X-13 / E-25
+
+| # | 内容 |
+|---|---|
+| R-1 | 进入 SUSPENDED 必须同时落 Snapshot —— `RunCheckpoint` 是**指针**不是数据，只靠它恢复不了 |
+| R-2 | 恢复必须带上预算计数与已花费 —— 否则"挂起—恢复"是重置预算的后门 |
+| R-3 | 终态 Run 不可恢复；`IllegalTransition` 是 409，不是 404（"有，但不许" ≠ "没有"） |
+| R-4 | 审计账本必须延续：`run_id` 一致、序号连续、留一条 `RECOVERED`；断号拒绝拼接 |
+| R-5 | 恢复归 Runtime，不归 API —— 契约层不许自己拼装 `RuntimeStack` |
+| X-13 | 跨 Port 拿到的是**副本**：必须用返回值；内存实现"碰巧正确"不构成验证 |
+| E-25 | 乐观锁比的是**存储边界**上的版本（`store_version`），不是内存自增前的版本；一次内核操作可以含多次跃迁 |
+
+## 一句话总结
+
+> v2.1.7 冻结的是"人递回去的那句话，凭什么第二天还作数"；
+> v2.1.8 冻结的是**"第二天，谁来接这句话"**。
+> X-13 与 E-25 是本轮真正值钱的两条：
+> 它们都不是恢复的问题，而是**"用内存实现跑出来的正确性"**与**"乐观锁到底在比什么"**这两个更老的错觉，
+> 在终于有一条端到端路径把它们走通时才暴露出来。
+> 换句话说：M19 之前的 HITL 从来没真正"跨过进程"，所以它下面的洞一直没人踩到。
+
+---
+
+# 58. 变更记录：M10（Saga / Compensation）落地回写
+
+## 动因：这个系统会制造状态，却不知道自己制造过什么
+
+M15~M20 把"可靠地把一个动作执行完"这件事做到了相当程度：
+有 Attempt、有 Lease、有 Retry、有 Recovery、能从快照恢复。
+
+但整条链上缺一环 —— **Agent 是会在外部世界留下东西的**（下单、开工单、发消息、调支付）。
+在这之前：
+
+```text
+Run 失败 → 已经发生的副作用就那么留着 → 没有任何报错
+```
+
+系统不知道自己制造过什么，于是也就没有"撤销"这个动作可谈。
+这不是一个可以靠"以后再补"的功能项，因为**副作用是不可逆的时间函数**：
+发现得越晚，能撤销的越少。
+
+## 归属裁决：M10 不新增执行通道
+
+这是本轮最重要的一条设计决定。Saga 很容易被做成一个"新的执行子系统"
+（自己的调度、自己的重试、自己的状态机）。那样做会有两套可靠性语义。
+
+**S-1：补偿是一等 Execution。** 撤销动作就是一条普通的 `Task → Execution`，
+Retry / Lease / Attempt / Idempotency 全部复用 Kernel 现成的能力。
+
+| 问题 | 归谁 |
+|---|---|
+| 要不要撤销、按什么顺序、撤销不掉怎么收尾 | **Runtime**（`SagaCoordinator`） |
+| 把撤销动作可靠地跑完 | **Kernel**（它不知道这是撤销） |
+| 逆操作能不能用 | **Harness**（在正向动作提出时一起审，S-9） |
+
+## P0 — 不补就无法正确实现
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 104 | **副作用没有任何账本** | Run 失败后副作用留着，且**没有任何报错** | `CompensationRecord` + `005_compensations.sql` | §14 / §42 |
+| 105 | **逆操作事后发明** | 失败时正向 result 可能已经取不到（撤销"创建订单"需要订单号），于是瞎猜参数 | **S-8**：`CompensationSpec` 随正向 Action 一起声明 | §23 |
+| 106 | **补偿账本在内存里** | 进程一崩，账本没了 → 副作用还在但没人知道要撤销 | **A-12 判据**：丢了变错不是变慢 → 必须 PG | §20 |
+| 107 | **同一笔副作用被记两条** | 两个 Coordinator 各扫一遍 → 撤销两次（"撤销的撤销"多数是另一笔真实副作用） | **S-2**：`UNIQUE(execution_id)` —— 约定守不住，约束守得住 | §42 |
+
+## P1 — 不补会出语义错误
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 108 | 撤销顺序随机 | 先建订单后开发票，却先撤订单 → 发票挂在已取消的订单上 | **S-3**：LIFO（按产生顺序倒序） | §42 |
+| 109 | 认领不原子 | 两个进程同时扫到同一条 → 两边都读到 PENDING → 撤销两次 | **S-4**：`UPDATE ... WHERE status='pending'`（与 A-11 同源） | §42 |
+| 110 | 撤销失败被静默 | 一个跑不了 Run 的撤销动作让整批副作用永久化 | **S-5 / S-6**：单条失败不阻断其余，全部记 `UNRESOLVED` + reason + Trace | §42 |
+| 111 | **成功的 Run 留下一堆"待撤销"** | 每一次成功运行都在账本里留一串 PENDING，运维看板上全是假待办 —— 信息还在，指向是错的 | **S-16**：成功时把待撤销结案为 `NOT_NEEDED`（不能记成 `COMPENSATED`，那是另一句谎话） | §42 |
+| 112 | 撤销挂在原 Step 上 | 撤销 Task 会把已完成 Step 的派生状态倒推回去（B-5）→ "这一步完成了"变成"还在跑" | **S-12**：补偿挂独立 Step | §5.1 |
+| 113 | 撤销占用正向预算 | 预算耗尽恰恰是最需要清理的时刻 → 烧完钱的那次运行不许打扫 | **S-10**：撤销不计步数、不计费 | §24 |
+
+## P2 — 概念一致性
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 114 | **S-9：批准一个动作 = 同时批准它的撤销** —— 撤销阶段绕过 Harness，所以必须在正向过策略时把逆操作一起审掉 | §23 |
+| 115 | **S-11：`EXTERNAL_UNKNOWN` 的副作用存疑** —— 自动撤销是猜，"当没发生"也是猜；唯一诚实的是记 `UNRESOLVED` 交给人 | §15 |
+| 116 | **S-13：只有会产生外部副作用的动作类型才允许声明补偿** —— 给 `LLM_CALL` 声明撤销是句谎话，谎话的代价是**稀释** | §23 |
+| 117 | **S-14 / S-15**：撤销状态不许倒流（唯一例外是人工 `reopen`）；取消不自动撤销，但不静默（记 `compensation.deferred`） | §42 |
+| 118 | 撤销参数用 `.` 路径声明（`result.order_id`）—— 执行结果带信封，"智能地猜哪层是输出"猜错就是带着 `None` 去撤销 | §42 |
+
+## 归属裁决：A-10 的教训重演了一次
+
+M19 发现 A-10 是"一条断言，不是一个事实"。这一轮在同一条沟里又摔了一次：
+
+**S-9 一开始也只是一句注释** —— "人批准一个动作时，同时也批准了它的撤销"。
+但撤销阶段是**故意绕过** `before_action` 的：
+撤销时再等人批准，那么"人走了、Run 失败了"会让副作用永久留着，
+而且系统不报错（它确实在"等批准"）。
+
+既然撤销时不再审一次，那么"一起审过"就必须发生在**正向动作提出时**。
+于是本轮在 `Harness.before_action` 里加了一段：声明了补偿的动作，
+要连它的逆操作一起过 Policy；逆操作被禁 → 整个动作都不许做。
+
+```text
+一个不能撤销的高风险动作，不该被放出去。
+```
+
+这条现在是**事实**（有测试断言 `Verdict.DENY` 且 reason 含 S-9），不再是一句注释。
+
+## 不变量 S-1 ~ S-16
+
+| # | 内容 |
+|---|---|
+| S-1 | 补偿是**一等 Execution**，不新开执行通道 —— 撤销就是一条普通的 Task → Execution |
+| S-2 | 一条 Execution 最多一条补偿记录；`UNIQUE(execution_id)` 是物理保证 |
+| S-3 | **LIFO**：按产生顺序倒序撤销 |
+| S-4 | 认领必须**原子**（`WHERE status='pending'`）；与 A-11 同源 |
+| S-5 | 撤销不掉必须**可见**：`UNRESOLVED` + reason + Trace，不许静默 |
+| S-6 | 单条失败**不阻断**其余 —— 停下来等于用一个局部故障换一批永久性副作用 |
+| S-7 | 补偿挂在 FAILED 的**唯一出口**（`_declare_terminal`）上，不给"漏掉一个"的机会 |
+| S-8 | 补偿必须随正向动作**声明**；撤销参数取不到 → `UNRESOLVED`，绝不带着缺失参数去撤销 |
+| S-9 | **批准一个动作 = 同时批准它的撤销**：逆操作跟着正向一起过策略（否则撤销是一条没过策略的动作） |
+| S-10 | 撤销不计步数、不计费 —— 不能跟正向动作抢同一份预算 |
+| S-11 | `EXTERNAL_UNKNOWN` 的副作用**存疑**：不自动撤销，也不当没发生 |
+| S-12 | 补偿挂**独立 Step** —— 挂原 Step 会把已完成状态倒推回去（B-5） |
+| S-13 | 只有会产生外部副作用的动作类型才允许声明补偿（`TOOL_CALL` / `SKILL_CALL` / `AGENT_DELEGATION`） |
+| S-14 | 撤销状态不许倒流（唯一例外：人工 `reopen`） |
+| S-15 | 取消**不自动撤销**，但不静默 —— 记 `compensation.deferred` |
+| S-16 | Run 成功 → 待撤销结案为 `NOT_NEEDED`；记成 `COMPENSATED` 是另一句谎话 |
+
+## 一句话总结
+
+> v2.1.8 冻结的是"第二天，谁来接这句话"；
+> v2.1.9 冻结的是**"它在这个世界上动过的东西，怎么收回去"**。
+> M10 表面上是一个新能力，实际上是一次**记账**：
+> 在此之前系统只记"我做了什么"，不记"我在外部留下了什么"。
+> 而"没记账"的代价不是查不到，是**根本不会有人去查** ——
+> 失败的 Run 安静地留下一堆副作用，谁也不知道。
+
+---
+
+# 59. 变更记录：M21（`apps/` 进程层）落地回写
+
+## 动因：四个控制器写完了，但没人跑它们
+
+M15~M20 结束时，`packages/` 里有四个**逻辑完整、测试全绿**的后台控制器：
+
+```text
+OutboxPublisher.drain()            Outbox → Kafka
+RecoveryController.run_once()      Lease 过期 → STALE → Recovery
+WakeupController.run_once(is_satisfied)   Wait Condition → Runnable Task
+CancellationService.sweep()        取消意图 → 终态收敛
+```
+
+它们全是**库**：有方法，没有生命周期。磁盘上没有 `apps/` 目录，
+没有任何东西负责"每隔多久调一次、什么时候停、崩了怎么办"。
+
+于是真实世界里的长相是：
+
+```text
+Outbox 里的行只增不减            →  Kafka 是一封死信
+STALE 的 Execution 没人扫        →  Worker 崩了就永远躺着
+审批通过了没人去唤醒              →  M19 的"活过重启"只兑现了一半
+撤销不掉没人重扫                  →  S-6 的"不静默"只是断言
+```
+
+这不是"还没部署"，这是**四个里程碑许诺过的能力，一个都没有兑现**。
+区别很实在：断言写在注释里，事实由进程产生。
+断言错了没人发现；事实错了，Outbox 会长。
+
+## 归属裁决：循环属于进程，不属于库
+
+M21 做的第一件事是把 `OutboxPublisher.run(max_rounds, sleep_seconds)` **删掉**。
+
+理由不是"这样更好看"，而是这一行代码放错层了：
+"还要不要跑下一轮、隔多久跑、什么时候停"是**进程**的问题，
+库只要回答"一个周期里该做什么"。放在库里的代价是：
+想换一种退避策略、想接 SIGTERM、想加健康检查，都得改库 ——
+而库是四个进程共用的。
+
+```text
+packages/   回答"这一步怎么做"
+apps/       回答"要不要做下一步、做多久、什么时候停"
+```
+
+判据可以直接拿来用：**一行"它现在该不该继续跑"的代码，
+出现在 `packages/` 里就是越界。**
+
+## 归属裁决：投递需要领地，收敛不需要（PR-12）
+
+四个进程里只有 `outbox_publisher` 有领地（`006_outbox_delivery.sql`）。
+这不是"先做一个、剩下的以后补"，而是它们的动作性质不同：
+
+| | 动作 | 重复做的后果 | 要不要领地 |
+|---|---|---|---|
+| `outbox_publisher` | 往 Kafka 投一次 | **多一份**（三副本各投一遍 = 三份） | 要 |
+| `recovery_controller` | `mark_stale` / `recover` | 走状态机，已终态即 no-op | 不要 |
+| `wakeup_controller` | `wakeup` | 只认 SUSPENDED，重复调用不二次生效 | 不要 |
+| `cancellation_sweeper` | `cancel` | 走状态机，已终态即 no-op | 不要 |
+
+判据不是"要不要多副本部署"，而是**"这个动作重复做会不会改变结果"**。
+写反的代价是两个方向的：
+
+- 该认领的没认领 → 副作用放大 N 倍
+- 不该认领的认领了 → 白白多出一条"租约过期才会释放"的静默卡住路径
+
+## P0 — 不补就无法正确实现
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 119 | **没有进程驱动 Outbox** | Outbox 只增不减，Kafka 是死信；X-3 声称的"事件一定会出去"没有兑现路径 | `apps/outbox_publisher` + `apps/_runtime.py` + `006_outbox_delivery.sql` | §45 |
+| 120 | **多副本各投一遍** | 三个副本扫到同一批 → Kafka 里躺着三份，消费端去重能救正确性，救不了三倍流量 | **PR-3**：存储层原子认领（`UPDATE ... WHERE` / `INSERT ON CONFLICT`） | §59 |
+| 121 | **进程被 SIGKILL 后领地永久丢失** | 没人归还 → 别的实例白等一个租约周期，且没人知道为什么慢 | **PR-4**：领地必须带租约，`claim` 强制带 TTL | §59 |
+| 122 | **一条坏事件害死整批** | 整批 flush 失败 → 整批 `attempts+1` → 整批进死信，**一条**坏事件拖死 99 条好的 | **PR-5**：逐条隔离重试；broker 能指认时直接判死那几条 | §59 |
+
+## P1 — 不补会出语义错误
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 123 | 死信静默丢弃 | 事件消失且查不到，比卡住更糟 —— 卡住至少看得见 | **PR-6**：必须带 `last_error`，且 DB 有 CHECK 约束钉住 | §59 |
+| 124 | 空闲时无限自旋 | 空队列被轮询成 PG 热点 | **PR-7**：指数退避但**有上限** | §59 |
+| 125 | 进程活着但不干活 | broker 永久不可用，健康检查却一直报 healthy → 编排系统永远不会重启它 | **PR-8**：活着 ≠ 就绪；连续失败达阈值**必须退出** | §59 |
+| 126 | 退出时带着领地消失 | 同上 121，但这是"优雅退出"路径，`on_drain` 不写就永远没人测 | **PR-2**：`DRAINING` 阶段显式归还 | §59 |
+| 127 | 停止信号打断半个 tick | 一批投了一半被杀，剩下的一半要靠租约过期才有人接 | **PR-1**：信号只在 **tick 与 tick 之间**检查，一个 tick 原子 | §59 |
+| 128 | 死信自动复活 | 运维刚判死的坏事件下一轮又回来，永远清不掉 | **PR-10**：只能人工 `reopen`（与 S-14 同源） | §59 |
+| 129 | **每轮新建控制器 → PG 安全网变死代码** | `sweep_every` 的节奏计数在控制器里，每轮重建则 `ticks` 永远是 1 → 兜底扫**一次都不触发** | **PR-11**：控制器实例必须跨 tick 存活 | §59 |
+
+## P2 — 概念一致性
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 130 | **PR-9**：投递顺序按 `occurred_at`，由存储层排序；运行时不重排，也不由认领竞争决定 | §59 |
+| 131 | **PR-12**：要不要领地的判据是"重复做会不会改变结果"，不是"是不是后台进程" | §59 |
+| 132 | **PR-13**：唤醒谓词必须每轮现取审批结果（A-10 第三次以同一副面孔出现） | §23 |
+| 133 | 失败分两类：broker **指认得出**是哪条坏 → 毒消息（就地判死）；**指认不出** → 系统性故障（抛给进程，PR-8 靠它退出）。混淆二者会在 broker 挂掉时把整批好事件逐条判死 | §59 |
+| 134 | 删掉 `CancellationService.sweep(grace=...)` 这个**写了但没生效**的参数：宽限期已经由 Lease 表达，两层宽限期并存会互相掩盖 | §15 |
+
+## 归属裁决：A-10 第三次出现
+
+A-10 的形态是"把该是事实的东西写成断言"。它的三次出场：
+
+```text
+M18  A-10  审批列表读内存里的 Loop          → 重启后就没了
+M19  S-9   "批准动作 = 批准撤销"只是注释    → 撤销阶段根本不过 Harness
+M21  PR-13 唤醒谓词在构造时快照一次         → 审批到了也永远唤不醒
+```
+
+第三次最隐蔽，因为**代码看起来完全合理**：
+
+```python
+# 构造时取一次审批结果，之后每轮复用
+self._predicate = approval_satisfied(self.approvals())
+```
+
+现象极难排查：审批系统显示已通过，执行却一直挂着，
+而所有单元测试（都在一个 tick 内构造 + 断言）全部通过。
+所以本轮把"每轮现取"写成了 `WakeupControllerApp.predicate()` 的**结构**：
+谓词在 `tick()` 里现场组装，`now` 与审批结果都不许跨轮缓存。
+
+## 归属裁决：`delivery` 为什么没有默认值
+
+`OutboxPublisher.delivery` 是**必填**的，没有 `delivery=None` 的开关。
+
+理由和 A-10 / S-9 是同一条：留一个开关，等于把"多副本安全"做成可选项。
+多副本是**默认部署方式**，不是高级特性。
+可选的安全性在实际部署里等于没有安全性 ——
+因为"先跑起来再说"永远会选默认值。
+
+## 不变量 PR-1 ~ PR-13
+
+| # | 内容 |
+|---|---|
+| PR-1 | 生命周期两阶段 `RUNNING → DRAINING → STOPPED`；停止信号**只在 tick 与 tick 之间**检查，一个 tick 原子 |
+| PR-2 | 退出时必须**显式归还**还握着的领地（`on_drain`）—— 做完或放弃都算数，带着领地沉默消失不算 |
+| PR-3 | 认领必须**在存储层原子**（单条 SQL `UPDATE ... WHERE`）；进程内锁管不了进程间竞争。与 A-11 / S-4 同源 |
+| PR-4 | 领地必须带**租约**（`claimed_until`）；SIGKILL 的进程不会归还，租约过期是唯一的安全网 |
+| PR-5 | 毒消息必须**让位**（`max_attempts` 后判死），且**逐条隔离** —— 一条坏事件不许拖死同批的好事件 |
+| PR-6 | 进死信必须带 `last_error` 且**查得出来**；DB 用 CHECK 钉住，静默丢弃比卡住更糟 |
+| PR-7 | 空闲退避指数增长但**有上限**（`max_idle_sleep`） |
+| PR-8 | 活着 ≠ 就绪；连续失败达阈值必须**退出**让编排系统重启，而不是一边报 healthy 一边什么都没干 |
+| PR-9 | 投递顺序由存储层按 `occurred_at` 排序；运行时不重排，也不由认领竞争决定 |
+| PR-10 | 死信不许自动复活，人工 `reopen` 是唯一通道（与 S-14 同源） |
+| PR-11 | 带内部节奏的对象必须**跨 tick 存活** —— 每轮重建会让兜底路径变成永远不会执行的死代码 |
+| PR-12 | 收敛型进程不需要领地；判据是"这个动作重复做会不会改变结果"，不是"要不要多副本" |
+| PR-13 | 唤醒谓词必须**每轮现取**审批结果与 `now`；快照一次，审批就永远唤不醒 |
+
+## 失败分类（新增）
+
+`ports.PartialPublishError` 把投递失败分成两类，语义完全不同：
+
+| 类别 | 表现 | 处理 |
+|---|---|---|
+| **毒消息** | broker 收下批次，但**指名道姓**拒了几条（topic 不存在 / 记录超限 / schema 不合规） | 抛 `PartialPublishError({event_id: 原因})` → 就地判死，`drain()` 正常返回 |
+| **系统性故障** | broker 没收到（不可达 / 鉴权失败 / flush 超时） | 抛别的异常 → 逐条隔离重试；**一条都没投出去**才上抛给进程（PR-8） |
+
+混淆这两类的代价：
+在 broker 挂掉时把整批好事件逐条判死，或者
+在只有一条坏事件时把整个进程拖去重启。
+
+## 一句话总结
+
+> v2.1.9 冻结的是**"它在这个世界上动过的东西，怎么收回去"**；
+> v2.1.10 冻结的是**"谁来收"**。
+> M21 没有新增任何一个架构概念 —— 它只是承认了一件一直被忽略的事：
+> 库不会自己跑起来。
+> 在此之前，AgentOS 的可靠性是一组**性质**：
+> 它们写在文档里、测在单元测试里，但没有任何进程在产生它们。
+> 在此之后，它们是一组**事实** —— 由四个常驻进程每隔几秒产生一次，
+> 停掉就会停止产生，而这正是可以被观测、被告警、被追责的那种东西。
+
+---
+
+# 60. 变更记录：M22（组合根 + `apps/worker` + 进程入口）落地回写
+
+## 动因：进程类仍然不是进程
+
+M21 建好了四个进程，`apps/` 目录第一次存在。但那一轮结束时：
+
+```text
+$ python -m apps.outbox_publisher
+ModuleNotFoundError: No module named 'apps.outbox_publisher.__main__'
+```
+
+四个 `App` 类的构造函数要的都是 **Port**，谁去 new 那些 PG / Redis / Kafka
+客户端，没有任何地方回答。它们依然是**类**，不是进程。
+
+## 更严重的一件事：`apps/worker` 不存在
+
+排查入口时顺手查了"谁在驱动什么"，结果是：
+
+| 能力 | 有没有进程驱动 |
+|---|---|
+| `OutboxPublisher.drain()` | 有（M21） |
+| `RecoveryController.run_once()` | 有（M21） |
+| `WakeupController.run_once()` | 有（M21） |
+| `CancellationService.sweep()` | 有（M21） |
+| **`Worker.run_once()`** | **没有** |
+| `Scheduler.dispatch()` | **没有** |
+
+`Worker` 是唯一真正把 Task 跑完的角色。它没有进程，意味着：
+
+```text
+没有任何 Task 会被真正执行
+    ↓
+不产生事件（Outbox 空）· 不会有 Lease 过期 · 不制造外部副作用
+    ↓
+M21 那四个后台进程在打扫一间从来不会脏的房间
+```
+
+所以 M21 的兑现程度，取决于这一轮。
+
+## 归属裁决：组合根唯一（PR-14）
+
+五个进程都要连 PG。各自写一份 wiring 的后果不是"重复代码"，是
+**五种"连不上库时怎么办"**，而每一种只在那一个进程里被测过。
+
+```text
+PR-14：除了 apps/_bootstrap.py，任何模块里出现
+       import psycopg / redis / kafka 都是越界。
+```
+
+这条是**可断言的事实**，不是约定：测试用例扫描 `apps/` 与 `packages/` 下
+所有 `.py`，断言客户端的静态 import 出现 0 次；并配一个控制组证明扫描器
+本身没写坏。
+
+顺带兑现了一条一直只是口号的纪律：**`packages/` 零第三方依赖**。
+以前这句话的边界是模糊的（适配器是 duck-typed 的，所以"没依赖"靠自觉）；
+现在它的边界是清晰的 —— 客户端只能出现在组合根里，而且是**惰性**出现。
+
+## 归属裁决：客户端必须惰性导入（PR-15）
+
+如果 `apps/_bootstrap.py` 顶层 `import psycopg`，那么：
+
+- 想读一下 `apps/worker` 怎么写的人，得先装一遍数据库客户端
+- 515 个单元测试会在 **import 阶段**全红（测试机上没有 psycopg）
+
+所以客户端一律在函数内部 `importlib.import_module`，缺的时候给一条
+能照着做的提示（`pip install 'psycopg[binary]'`），而不是把裸 `ImportError`
+丢出去让人猜。
+
+## 归属裁决：配置不许静默兜底（PR-16）
+
+判据和 A-12 是同一条：**缺了以后是变慢还是变错。**
+
+| 配置 | 缺了以后 | 处理 |
+|---|---|---|
+| `AGENTOS_PG_DSN` | **变错** —— 什么都不持久，却看起来在跑 | 拒绝启动（exit 2） |
+| `AGENTOS_REDIS_URL` | **变慢** —— Lease 索引没了，退回 PG 全扫 | 允许缺省，跳过快路径 |
+| `AGENTOS_KAFKA_BROKERS` | 没法干活（Outbox 只增不减） | 拒绝启动 |
+| `AGENTOS_EXECUTOR_PROVIDER` | 每个 Task 以 PERMANENT 失败 | 拒绝启动 |
+
+最危险的写法是"没配 DSN 就 fallback 到内存实现"：
+那会造出一个**跑得很好但什么都不持久**的进程，而且它对外报 healthy。
+这是"请求值 vs 实际值"那个坑的**第四种变体** ——
+前三种是记错值，这一种是**没配值却假装有值**。
+
+`AGENTOS_EXECUTOR_PROVIDER` 同理不给默认值：
+执行器（`ToolCallExecutor` / `LLMCallExecutor`）属于 Runtime 与 Intelligence 层，
+不是基础设施。组合根猜出来的那个会让每个 Task 以 `EXECUTOR_NOT_FOUND` 失败，
+而报错看起来像配置坏了，排查方向从一开始就错。
+
+## 归属裁决：`apps/scheduler` 不该存在（PR-18）
+
+§45 的树里画了一个 `apps/scheduler/`，那是不对的。
+
+`Worker.run_once()` 内部调用 `Scheduler.dispatch()` —— 派活是 **worker tick 内的
+一次 Atomic Claim**。做成独立进程有两个后果：
+
+1. **它是一个中心。** 它挂了，所有 worker 都拿不到活。
+2. **它必须"通知" worker。** 通知要走消息，那正是 §36 明令禁止的
+   "把 Kafka 当任务队列"（消息传到 ≠ 拿到执行权）。
+
+> §36：调度与派活一律走 PG + Lease + Atomic Claim。
+> Scheduler 是 Kernel 的一项能力，不是一个部署单元。
+
+所以本轮把 `apps/scheduler/` 从 §45 的树里删掉，并注明原因。
+`apps/api` 保留（它是人进入系统的通道，不是调度）。
+
+## 归属裁决：Worker 不另设领地表（PR-17）
+
+`apps/outbox_publisher` 需要 `006_outbox_delivery.sql`，而 worker 不需要第二张表。
+差别不在"谁更重要"，而在 PR-12 那条判据 —— **这个动作重复做会不会改变结果**：
+
+| | 领地在哪 | 为什么 |
+|---|---|---|
+| Worker | **Lease 本身** | `executions` 行上就带着 Lease（含 fencing_token），Atomic Claim 保证一个 Execution 同时只有一个持有者，第二个 worker 来抢会失败 |
+| Outbox 投递 | 另开一张表 | `outbox_events` 由**业务事务**写入，回答"发生了什么"；它身上没有"谁正在投"这一列，**也不该有** —— 投递进程不能去改业务事务写的表 |
+
+同一句"要不要领地"，Outbox 要、Worker 不要，因为前者的领地**无处安放**。
+
+## P0 — 不补就无法正确实现
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 135 | **没有进程执行 Task** | 系统产出为零；M21 的四个进程无事可做；Outbox 空、STALE 不存在、副作用不产生 | `apps/worker` + `ProcessRuntime` 驱动 `Worker.run_once()` | §45 |
+| 136 | **没有入口** | `python -m apps.*` 直接 `ModuleNotFoundError`；M21 仍是断言 | 五个 `__main__.py` + `apps/_entrypoint.py` | §45 |
+| 137 | **没有组合根** | 五个进程各写一份 wiring → 五种"连不上库怎么办"，每种只在一个进程里被测过 | `apps/_bootstrap.py`（PR-14） | §60 |
+| 138 | 客户端顶层导入 | 515 个测试在 import 阶段全红；读代码前先装数据库 | 惰性导入 + 可执行的安装提示（PR-15） | §60 |
+
+## P1 — 不补会出语义错误
+
+| # | 空洞 | 症状 | 修补 | 位置 |
+|---|---|---|---|---|
+| 139 | 配置静默兜底 | 造出一个"跑得很好但什么都不持久"的进程，且报 healthy | **PR-16**：缺 PG 拒绝启动；缺 Redis 允许（变慢不是变错） | §60 |
+| 140 | 默认执行器 | 每个 Task 以 `EXECUTOR_NOT_FOUND`（PERMANENT）失败，报错像业务坏了 | `AGENTOS_EXECUTOR_PROVIDER` 必填，无默认值 | §60 |
+| 141 | 心跳 ≥ 租约在运行时才发现 | 要等第一次心跳才暴露，而那时已经有 Execution 在跑了 | 配置期校验（`from_env` 就抛） | §60 |
+| 142 | **退避上限截在指数之后** | `min(idle_sleep * 2 ** streak, cap)` 在 streak 到几万时先抛 `OverflowError` —— 进程在**最闲的时候**崩在一个跟业务无关的地方 | **PR-7 修正**：先截指数（`_MAX_BACKOFF_STEPS`），再取 min | §60 |
+| 143 | 崩溃返回 0 | 编排层把崩溃当成正常结束，不重启、不告警 | 退出码语义：0=STOPPED / 1=FAILED 或崩溃 / 2=配置错误 | §60 |
+
+## P2 — 概念一致性
+
+| # | 修补 | 位置 |
+|---|---|---|
+| 144 | **PR-17**：Worker 的领地就是 Lease，不另设表 | §60 |
+| 145 | **PR-18**：`apps/scheduler/` 从 Monorepo 树中删除并注明原因 | §45 |
+| 146 | 组合根不偷偷注册信号处理器：不传 `signal` 就是 `ManualStop`，`SignalStop()` 由入口显式构造 | §60 |
+| 147 | 执行结果留在 `Worker.last_outcomes` 上，供入口 / 探针读取 | §60 |
+
+## 不变量 PR-14 ~ PR-18
+
+| # | 内容 |
+|---|---|
+| PR-14 | **组合根唯一**：除了 `apps/_bootstrap.py`，没有第二个地方知道客户端长什么样（可静态扫描断言） |
+| PR-15 | 客户端必须**惰性导入**：顶层 import 会让全部测试在 import 阶段失败，也给读代码的人添门槛 |
+| PR-16 | 配置不许静默兜底。判据同 A-12：缺了**变错**（PG）→ 拒绝启动；缺了**变慢**（Redis）→ 允许缺省 |
+| PR-17 | Worker 不另设领地表 —— **Lease 本身就是领地**（Atomic Claim + fencing_token） |
+| PR-18 | Scheduler 不是部署单元：派活 = worker tick 内的一次 Atomic Claim。独立 scheduler 是一个中心，且会诱导"Kafka 当任务队列" |
+
+## PR-7 的修正（本轮唯一的实现缺陷）
+
+原实现：
+
+```python
+min(self.idle_sleep * (2 ** max(0, self.idle_streak - 1)), self.max_idle_sleep)
+```
+
+上限在**算出**那个数之后才生效。空队列跑一晚上，`idle_streak` 到几万，
+`2 ** 几万` 先抛 `OverflowError: int too large to convert to float`。
+
+也就是说"退避有上限"这条，只在 `idle_streak` 很小的时候成立。
+写它的时候想的是`min` 兜住了，没想过 `2 ** n` 本身就是一次可能失败的运算。
+
+修法：把上限**截在指数之前**（`_MAX_BACKOFF_STEPS = 32`），
+配一个跑 1200 个空 tick 的测试钉住它。
+
+## 一句话总结
+
+> v2.1.10 冻结的是**"谁来收"**；
+> v2.1.11 冻结的是**"谁来干"**。
+> M21 承认了"库不会自己跑起来"，M22 承认了一件更难堪的事：
+> **连"真正干活的那个人"都还没被雇进来。**
+> 在此之前，AgentOS 是一台保养得很好的机器 ——
+> 四个清洁工按时上班，而车间里从来没有开过工。
+> 在此之后，`python -m apps.worker` 会真的从 PG 认领一个 Task、
+> 执行它、把结果写回去，并让 `outbox_publisher` 第一次有东西可投。
+> 剩下的只是把执行器（Tool / LLM）接进组合根 —— 那是 §36 边界内的事。
+
+---
+
+# 61. 变更记录：M23（真执行器接进组合根）落地回写
+
+## 动因：指针指向空气
+
+M22 结束时，`python -m apps.worker` 能启动了 —— 但它仍然干不了活：
+
+```text
+$ AGENTOS_PG_DSN=... python -m apps.worker
+configuration error: AGENTOS_EXECUTOR_PROVIDER is required for apps.worker
+(format: 'package.module:build_executors'); there is no default executor
+because executors belong to Runtime and Intelligence, not to infrastructure
+```
+
+这条消息本身是对的（PR-16：组合根不替你猜执行器）。问题是
+**仓库里没有任何一个模块实现它**。`AGENTOS_EXECUTOR_PROVIDER` 是一个
+`module:function` 指针，而它指向空气。
+
+## 更深的洞：路由错误被伪装成载荷错误
+
+补 provider 之前先核对"执行器表的 key 到底是什么"，结果发现分派有两个维度，
+而系统只表达了一个：
+
+| 维度 | 谁用 | 取值 |
+|---|---|---|
+| `executor_type` | **Kernel**（`Worker._executor_for`，E-12） | native / http / mcp / agent_runtime / workflow —— **传输** |
+| `task_type` | 表里实际填的东西 | llm_call / tool_call / skill / … —— **语义** |
+
+两者能对上，全靠 `ACTION_TO_TASK` 的巧合：它把 LLM 送到 HTTP、把 TOOL 送到 NATIVE。
+把 `ACTION_TO_TASK` 能产生的全部组合列出来（这是 `executor_coverage()` 算出来的，
+不是人记住的）：
+
+| `(executor_type, task_type)` | M23 之前 | 实际行为 |
+|---|---|---|
+| `http:llm_call` | 有 | 正常 |
+| `native:tool_call` | 有 | 正常 |
+| `native:human_approval` | **无** | 落到 `ToolCallExecutor` → `BAD_PAYLOAD: payload.tool is required` |
+| `native:skill` | **无** | 同上 |
+| `agent_runtime:agent_delegation` | **无** | 落到 `EXECUTOR_NOT_FOUND` |
+
+5 个里坏了 3 个。而前两个的报错是 **`BAD_PAYLOAD`** ——
+一句既不对（闸门 payload 里本来就没有 `tool`，它有的是 `approval_id`）、
+又把排障引向"payload 是谁填的"的话。而且它是 **PERMANENT**，连重试的机会都没有：
+
+> 你要的是 skill 执行器，拿到的是 tool 执行器，而报错说的是 payload 不对。
+
+这是"请求的值 vs 实际拿到的值"在**路由**上的变体 —— 和 A-10（审批读内存）、
+S-9（批准动作 = 批准撤销）、PR-16（没配值却假装有值）是同一个家族。
+
+## 本轮新增的不变量
+
+| # | 不变量 | 为什么必须是它 |
+|---|---|---|
+| **PR-19** | 分派是两级的：`executor_type`（传输）× `task_type`（语义）。缺 handler 一律 `EXECUTOR_NOT_FOUND`，且消息**点名两个轴**；禁止退化成 `BAD_PAYLOAD` | 伪装的错误比没有错误更贵 —— 它把人引向错误的方向，而且是 PERMANENT |
+| **PR-20** | `WorkerCapability` 有两个维度，新增 `task_types`；`Scheduler._matches` 过滤它 | 声明干不了的活儿应当**留在队列里等能干的人**，而不是被派下来炸一次 |
+| **PR-21** | 能力一律从**真实装配出来的执行器表**推导；`AGENTOS_TASK_TYPES` 只是配置期的**期望**，用来断言而非声明；缺 handler 就拒绝启动 | 两份声明就会漂移（A-10 那条"记错值"的坑，换成了"声明错值"） |
+
+### PR-19 的边界：为什么第二级在 Runtime
+
+X-2：Kernel 不认识 Goal / Decision / Action。"这个 Task 到底要干什么"是 Runtime 的知识。
+`TaskTypeRouter` 本身就是一个 `Executor`，所以 **Kernel 一行都没改** ——
+`Worker` 完全无感。
+
+```python
+native ─┬─ tool_call       → ToolCallExecutor(tool_runtime)
+        └─ human_approval  → ApprovalGateExecutor()   ← 诚实拒绝，不是伪装
+http   ──  llm_call        → LLMCallExecutor(gateway)
+```
+
+**L-2 的代价**：路由器把 Gateway 包在里面之后，"Worker 的 Executor 与 Loop 持有
+同一批对象"这件事就看不见了。所以 `TaskTypeRouter.handler()` 是**必须**存在的 ——
+否则 L-2 从"可断言的事实"退化成"一句注释"。
+
+## 顺手修掉的第三个洞：默认值把一半能力砍掉
+
+`AGENTOS_EXECUTORS` 的默认值是 `{"native"}`，而表里有 `native` 和 `http` 两格。
+于是：
+
+> worker 明明装了 `http:llm_call`，却因为默认值里没有 `http`，
+> **永远不派发 LLM 任务**。它空转、队列堆积、对外报健康。
+
+这和 PR-16 的"静默兜底"是同一种错的近亲 —— 默认把能力砍掉。
+修法：空集 = "表里有什么我就接什么"，`executor_types = config.executors or frozenset(table)`。
+显式声明仍然可以收窄（有控制组证明它没坏）。
+
+## 已知未覆盖（不是没发现，是没实现）
+
+`executor_coverage()` 算出来还剩两个洞，启动时打到 stderr：
+
+```text
+apps/worker: no executor for agent_runtime:agent_delegation, native:skill;
+those tasks will stay PENDING forever (PR-20 keeps them from being
+dispatched, so they never even fail loudly)
+```
+
+PR-20 让这些 Task **不会被派发**，于是它们连错都不报，只会安静地堆在 PENDING 里。
+**一个不报错的洞比一个报错的洞更难发现**，所以必须说出来。
+清单被测试钉住（`test_the_real_table_leaves_only_two_holes`），谁补上一个，那条测试就红。
+
+## 空洞编号（续 §60）
+
+| # | 级别 | 空洞 | 现在 |
+|---|---|---|---|
+| 148 | P0 | `AGENTOS_EXECUTOR_PROVIDER` 没有任何实现，指针指向空气 | `apps/executor_provider.py` |
+| 149 | P0 | 执行器表按传输分派却按语义填充，5 个组合坏了 3 个 | `TaskTypeRouter` 两级分派（PR-19） |
+| 150 | P0 | 路由错误伪装成 `BAD_PAYLOAD`，且 PERMANENT 不重试 | `EXECUTOR_NOT_FOUND` 点名两个轴 |
+| 151 | P0 | 审批闸门 Task 落到 `ToolCallExecutor`，报 `payload.tool is required` | `ApprovalGateExecutor`（PR-19） |
+| 152 | P1 | `WorkerCapability` 只有 executor_type 一个维度 | 新增 `task_types`（PR-20） |
+| 153 | P1 | 声明干不了的活儿会被派下来炸，而不是留在队列里 | `Scheduler._matches` 过滤 task_type |
+| 154 | P1 | 能力声明可从配置来，与实际装配的表会漂移 | 一律从表推导（PR-21） |
+| 155 | P1 | `AGENTOS_EXECUTORS` 默认 `{"native"}` 把 http 那一半砍掉 | 空集 = 接下整张表 |
+| 156 | P1 | 未覆盖的组合不报错，只安静堆在 PENDING | 启动时点名（stderr）+ 测试钉住 |
+| 157 | P2 | 工具表的来源没有定义 | `AGENTOS_TOOL_PROVIDER`（必须返回真 `ToolRuntime`） |
+| 158 | P2 | 模型网关的来源没有定义 | `AGENTOS_MODEL_PROVIDER`（必须返回真 `ModelGateway`） |
+| 159 | P2 | 空执行器表会让 worker 永久拒绝每个 Task 还报健康 | 配置期拒绝启动 |
+| 160 | P2 | `native:skill` / `agent_runtime:agent_delegation` 未实现 | 已知未覆盖，启动可见（见上） |
+
+## 一句话总结
+
+> v2.1.10 冻结的是**"谁来收"**；
+> v2.1.11 冻结的是**"谁来干"**；
+> v2.1.12 冻结的是**"干的到底是不是该干的那一件"**。
+> M22 把工人雇进来了，M23 发现他手里的工具箱标错了标签：
+> 写着 `native` 的格子被塞进了"调工具"，于是"跑技能"和"等审批"这两件活
+> 也往那个格子里塞 —— 塞错了还不说塞错了，说的是"你的货不对"。
+> 在此之后，第一个 Task 真的被一个进程、用一套真的 ToolRuntime 跑完了，
+> 而剩下的两个洞不是被藏起来，是被**点名**了。
+
+
+# 62. 变更记录：M24（`apps/api` + 幂等键落 PG）落地回写
+
+版本：v2.1.12 → **v2.1.13**　测试：544 → **574**（+30）
+
+## 动因：一条早就被冻结的不变量，其实一直是被违反的
+
+A-3 写的是"`POST /runs` 幂等，**幂等键不能放 Redis**"。
+这句话在 §55 里冻结过，在 §56、§57、§58、§59、§60、§61 里被反复引用，
+**但没有一轮真的去查过组合根把 `IdempotencyStore` 接到了哪里。**
+
+M24 去查了：
+
+```python
+# apps/_bootstrap.py（M24 之前）
+idempotency=RedisIdempotencyStore(...)   # ← A-3 明令禁止
+```
+
+六轮过去，一次都没人发现。这件事本身比这条接线更值得写下来。
+
+## 为什么没人发现
+
+因为**测试全绿**。`InProcessControlPlane` 默认用的是内存 `IdempotencyStore`，
+幂等语义测了一遍又一遍，"同一个键第二次来返回第一个 Run" —— 全过。
+
+但 A-3 约束的不是语义，是**存储位置**：
+内存实现没有存储位置，Redis 实现有存储位置但正是被禁的那个。
+也就是说，**那些测试证明的是"逻辑对"，不是"存储对"**，
+而 A-3 从头到尾只在说存储。
+
+用替身跑通的测试，替身替掉的恰好是这条不变量约束的那一层时，
+这份"全绿"是一份假证据 —— 而且是最难怀疑的那种假证据，
+因为它不是写错了，是**测了另一件事还测对了**。
+
+## 更严重的一件事：`get()` 返回 `None` 是什么意思
+
+Redis 丢了的后果，比"慢一点"严重得多：
+
+```
+    IdempotencyStore.get(key)
+        ├── 返回 dict  → 这个键执行过，结果是它
+        └── 返回 None  → ???
+```
+
+`None` 有两个来源，程序分不出来：
+
+| 来源 | 真相 | 该怎么做 |
+|---|---|---|
+| 键真的没写过 | 从没执行过 | 执行，写入结果 |
+| 键写过但 Redis 丢了 | **已经执行过，结果找不回来了** | 不能再执行 |
+
+这两条的处理方式完全相反，而返回值一模一样。
+`None` 的真实语义是 **UNKNOWN**，不是"从没执行过"。
+
+对大多数写操作这个歧义是可补救的 —— 下游会用业务键再兜一层
+（Execution 的幂等有 `task_id`，Attempt 有 `attempt_no`，Outbox 有 `event_id`）。
+**创建 Run 是唯一没有下游的那个**：它的幂等键就是它唯一的身份。
+所以键一丢，系统没有任何别的办法知道"这个 Run 已经建过了" ——
+下一个请求会**再建一个**。
+
+这就是 A-3 那句"不能放 Redis"的全部理由，
+也是为什么它值得单列一条而不是归到 A-12 里：**A-12 的判据是"丢了变慢还是变错"，
+而创建 Run 是唯一一个连"变慢"的机会都没有的入口。**
+
+## 第三个洞：键落对了，命中之后还是能开出第二个 Run
+
+把 `IdempotencyStore` 换成 PG，只是解决了"键不丢"。
+但 `start_run()` 命中之后还有一步 —— **拿着键去把那个 Run 找回来**：
+
+```python
+# M24 之前
+cached = self.idempotency.get(f"run:{key}")
+if cached is not None:
+    existing = self.runs.get(str(cached["run_id"]))   # ← 只在内存里找
+    if existing is not None:
+        return replayed
+# 找不到就顺着往下走 —— 于是又建了一个
+```
+
+`self.runs` 是一个内存字典。服务一重启它就是空的，而 PG 里的键还在。
+于是"命中了但找不到"退化成了"当没执行过"，第二个 Run 被开出来：
+
+```
+    run_7c004c362fc74abd   ← 第二个，replayed=False
+```
+
+而键仍然指向第一个，**第二个从此谁也查不到** —— 它照样在花钱，
+照样产生外部副作用，只是不会再出现在任何幂等查询里。
+
+这是 A-3 上最藏得住的一种破法：存储选对了（PG），语义也对了
+（"同一个键返回第一次的结果"），测试全绿 ——
+只有"命中之后找不到"这一条分支错了，而这条分支**只在重启后才走得到**，
+测试里的 Control Plane 从来不重启。
+
+修法是把这条路堵死，而不是让它更聪明：
+
+```python
+existing = self.runs.get(run_id) or self._recover(run_id)   # 先试着从快照装回来
+if existing is None:
+    raise Conflict(..., code="RUN_NOT_RELOADABLE", hint="retry with the SAME key")
+```
+
+**装载不回来就如实报，不能猜。** 猜的代价是第二个 Run；
+报错的代价只是这次请求失败，而客户端拿着同一个键重试就行 ——
+这正是幂等键存在的意义。
+
+判据和 PR-16 是同一条：宁可拒绝，不可假装。
+
+## 归属裁决：PR-14 与框架不是一回事（PR-22）
+
+M22 冻结的 PR-14 说"客户端（psycopg / redis / kafka）只许出现在组合根"。
+M24 要接 FastAPI 时，这条立刻卡住：FastAPI 不是客户端，
+但把它塞进组合根会让组合根长出路由；不塞，就等于在自己刚定的禁令上开洞。
+
+洞不该这么开。真正的区别是：
+
+| | 有几个 | 谁需要 | 收在哪 |
+|---|---|---|---|
+| **客户端** | 很多个（每个进程都可能自己连一次库） | 所有进程 | 组合根（**唯一**） |
+| **框架** | 只有一个（只有 HTTP 进程需要它） | 一个进程 | `apps/api/app.py`（**单点**） |
+
+客户端的危险是"每个进程各连一次，配置漂移、连接池失控" —— 所以必须收到**唯一**一处。
+框架的危险是"业务逻辑长进路由函数" —— 所以只要**单点**就够，
+因为一个进程里不存在第二个 HTTP 进程去复制它。
+
+两者都要求单点，但**理由不同、收口方式不同**，
+所以不应并成一条禁令 —— 并成一条，就会逼出"要么组合根塞满路由，要么偷偷放宽"。
+
+> **PR-22**：框架绑定单点于 `apps/api/app.py`；
+> 且该文件只认识 `packages.agent_api`（契约层），不认识领域。
+> 单点这件事仍被静态扫描断言，不是靠自觉。
+
+## 为什么 `serve()` 不开一个 `run.py`
+
+`uvicorn.run()` 放在 `build_app()` 的同一个文件里，看起来挤，
+但开一个 `apps/api/run.py` 会让 `apps/api/` 下出现**两个**认识框架的文件，
+PR-22 的"单点"当场变成两点，而扫描器（按文件过滤）会直接失效 ——
+它只能放行 `app.py`，于是 `run.py` 变成扫描器的盲区。
+
+把一个函数放进去，比给扫描器开一个例外便宜。
+
+## 路由文件不认识领域：两次收紧
+
+**第一版**用正则扫 import，然后按**完整模块名**比对：
+
+```python
+_PACKAGES_IMPORT = re.compile(r"^\s*(?:from|import)\s+(packages\.[A-Za-z_][\w.]*)", ...)
+_ALLOWED_PACKAGES = {"packages.agent_api"}
+```
+
+`app.py` 里写的是 `from packages.agent_api.handlers import start_run`，
+扫出来是 `packages.agent_api.handlers`，不在白名单里 —— **自己写的合法代码被自己判违规**。
+
+修法是归一到**顶层子包**（`packages.agent_api`）。这不是为了让测试过：
+PR-22 约束的是"路由认识哪一层"，不是"认识哪个模块"。
+按模块名比对，会把一次无害的下移（`handlers` → `handlers.start`）判成违规，
+于是断言逼着人不敢重构 —— 那不是这条不变量想要的。
+
+**第二版**想再钉一层语义：路由函数体里不该出现 `Harness` / `AgentLoop` / `Scheduler`。
+第一反应是 `assertNotIn("Harness", source)`，立刻失败 ——
+因为 `app.py` 的 docstring 里写着"业务判断在 Harness"。
+
+`assertNotIn` 在这里是**错的判据**：它扫描的是文字，不是代码。
+docstring 里提到 Harness 是在讲道理，不是在调用 Harness。
+按文本扫描，唯一的结果是逼人把 docstring 写得含糊其辞 ——
+那正好毁掉这份代码最该说清的部分。
+
+改成 AST 扫**标识符**（`Name` / `Attribute` / 定义名 / import 别名），
+docstring 与注释天然不在其中。并配两条控制组：
+一条证明真的用了 `AgentLoop` 时抓得到，
+一条证明 docstring 里提到 `Harness` **不算**。
+
+## 顺手抓住的第三次漂移：版本号
+
+`build_app()` 里要写 `FastAPI(version=...)`。
+顺手写了 `2.1.13`，而当时基线文档还是 `v2.1.12`。
+
+这个洞和前面"幂等键接 Redis"是同一类：**对外报的值与实际的值不是同一个**。
+`/health` 与 OpenAPI 会把它发出去，运维拿它对基线文档 ——
+两边不一致时，"我们线上跑的是哪一版"就没有答案了。
+
+补了一条测试把二者钉在一起（`test_the_version_shipped_by_the_api_is_the_frozen_baseline`）：
+它读根目录唯一的冻结基线文件名，比对 `app.py` 里的 `version="..."`。
+**它 30 秒内就红了** —— 正好证明这条不是装饰。
+
+## 空洞编号（续 §61）
+
+| # | 级别 | 空洞 | 现在 |
+|---|---|---|---|
+| 161 | P0 | 组合根把幂等键接到 Redis，A-3 被明令禁止却一直违反 | `PostgresIdempotencyStore` + `007_idempotency.sql` |
+| 162 | P0 | 内存实现下幂等测试全绿 → A-3 根本没被断言过 | **PR-23** + 组合根断言 `isinstance` |
+| 163 | P0 | `apps/api` 不存在，整条链走不到 HTTP | `apps/api/{app,__main__}.py` |
+| 164 | P0 | `get()` 返回 `None` 分不清"没执行过"与"执行过但丢了" | A-3 的理由写实：`None` = **UNKNOWN** |
+| 165 | P1 | PR-14 与框架混在一条禁令里，逼出两难 | **PR-22**：客户端唯一 vs 框架单点 |
+| 166 | P1 | 路由文件可以 import 领域包，A-1 无从断言 | 静态扫描 + 归一到顶层子包 |
+| 167 | P1 | 文本扫描把 docstring 的讲解判成违规，逼人把话说含糊 | AST 扫标识符 + 两条控制组 |
+| 168 | P1 | 幂等键"允许丢 / 不允许丢"没有区分 | `durable` 列 + 清理索引 |
+| 169 | P1 | 空值命中会被当成"命中了空结果" | `CHECK (value <> \'{}\'::jsonb)` |
+| 170 | P2 | 框架版本号硬编码，会与冻结基线漂移 | **PR-24** + 测试钉住（当场抓到一次） |
+| 171 | P2 | `AGENTOS_STACK_PROVIDER` 无默认 → 组合根不替你猜智能体怎么想 | 必须 `module:function` |
+| 172 | P2 | `serve()` 若单独开 `run.py`，PR-22 单点变两点且成为扫描盲区 | 与 `build_app` 同文件 |
+| 173 | P2 | 运行期 SQL 的 `::jsonb` 在测试替身上是语法错误（DDL 剥了，DML 没剥） | shim 统一剥 |
+| 174 | P2 | `ControlPlane` 的三种存储落点散在各处，改一处会漏 | `build_control_plane()` 一次收口 |
+| 175 | P0 | 幂等键命中后只在内存里找 Run，找不到就当没执行过 → **重启后开出第二个 Run** | 装载不回来就报 `RUN_NOT_RELOADABLE`（409），绝不新建 |
+
+## 不变量 PR-22 ~ PR-24
+
+| # | 不变量 |
+|---|---|
+| **PR-22** | 框架绑定单点于 `apps/api/app.py`；该文件只认识 `packages.agent_api`。客户端与框架分开判：**客户端很多 → 唯一（组合根）；框架只有一个 → 单点（本文件）** |
+| **PR-23** | 不变量必须钉在**它真正约束的那一层**。判据：把替身换掉，这条测试还会不会红。用替身跑通而替身恰好替掉了被约束的那一层，那份"全绿"是假证据 |
+| **PR-24** | 对外报的版本号必须等于**冻结基线**的版本号，否则"线上跑的是哪一版"没有答案 |
+
+## 一句话总结
+
+> v2.1.11 冻结的是**"谁来干"**；
+> v2.1.12 冻结的是**"干的到底是不是该干的那一件"**；
+> v2.1.13 冻结的是**"请求从哪儿进来，以及它凭什么只进来一次"**。
+> M23 把工具箱的标签订正了，M24 才第一次把门装上 ——
+> 装门时发现：门上写着"此处不许用 Redis 钥匙"，而钥匙一直挂在 Redis 上，
+> 挂了六轮没人看见，因为**测试一直是绿的**。
+> 绿的原因不是幂等做对了，是内存替身替掉的恰好是"存在哪儿"这一层 ——
+> 那一层正是 A-3 唯一在说的东西。
+> 所以这一轮真正冻结的不是一次接线，是一条判据（PR-23）：
+> **换掉替身，这条测试还会不会红。**
+>
+> 而这条判据当晚就又兑现了一次：把键搬回 PG 之后，
+> 命中以后"只在内存里找 Run、找不到就当没执行过"那条分支才浮出来 ——
+> 它只在重启后才走得到，所以从来没有人走到过。
+> **存储对了、语义对了、测试绿了，第二个 Run 照样被开出来。**
+> 于是第二次堵法不是更聪明，是更老实：装载不回来就报，不许猜。
+
+
+# 63. 变更记录：M25（子 Run 派生）落地回写
+
+版本：v2.1.13 → **v2.1.14**　测试：574 → **599**（+25）
+
+## 动因：那两个洞其实是同一个洞
+
+M23 点名过两个未覆盖组合：`native:skill` 与 `agent_runtime:agent_delegation`。
+当时把它们写成"两个执行器没人写"。M25 动手时才发现不是：
+
+    Skill            = Procedure（§25）—— 内部有多步
+    Agent Delegation = 起一个 Child AgentRun（A2A，§26）
+
+**两者都意味着"开一条子 Run"。** 而 Kernel 的 `Executor.execute()` 契约是
+同步返回一个最终结果 —— 它没有"已启动，稍后完成"这个状态。
+
+所以把任何一个当成普通 Task 交给 Worker，撞的是同一堵墙：一条 Execution
+（`Task : Execution = 1 : 1`，E-19）里塞进一整条子 Run 的 N 条 Execution。
+后果不是"跑得慢一点"：
+
+| 后果 | 为什么 |
+|---|---|
+| 子 Run 无法独立恢复 | 父 Execution 的 Lease 一过期，Recovery 重跑父 Task → **整条子 Run 从头再来**，副作用重放 |
+| 没有自己的 Lease / Attempt / Cancellation 粒度 | 子 Run 的一次卡顿会耗掉父 Execution 的租约 |
+| 补偿粒度对不上 | S-13 说 SKILL_CALL / AGENT_DELEGATION 都可补偿，但"撤销整个技能"在只跑了 3/5 步时是错的 |
+
+这与 M23 里 `ApprovalGateExecutor` 的情形是**同构**的：闸门也不由 Worker 执行。
+所以 M25 沿用同一条先例，把两者交给同一套机制。
+
+## 更重的一件事：`CHILD_AGENT` 从没被设置过
+
+查派生机制的时候翻到一行：
+
+```python
+class SuspensionReason(str, Enum):
+    HUMAN_APPROVAL = "human_approval"
+    CHILD_AGENT    = "child_agent"      # ← 从 M15 冻结至今，无人设置
+    TIMER = "timer"
+    EXTERNAL_EVENT = "external_event"
+```
+
+全仓库检索：`CHILD_AGENT` 在 `execution.py` 之外**一次都没有出现过**。
+
+这和 M24 的 A-3 是同一种病，而且比 A-3 更典型：
+
+    A-3            写了一条禁令（幂等键不能放 Redis），组合根违反了它
+    CHILD_AGENT    冻结了一个概念，实现从头到尾没有跟上
+
+两者的共同点是：**没有任何一条测试断言"谁设置了它"**。
+于是一个在文档里存在了六个版本的枚举值，实际上是一句空话 ——
+"我们支持等待子 Agent"这句话从来没有被代码兑现过，也没人发现。
+
+修法不是补注释，是补一条会红的测试（D-4）：
+
+```python
+def test_d4_delegation_suspends_with_child_agent(self):
+    ...
+    self.assertEqual(execution.suspension.reason, SuspensionReason.CHILD_AGENT)
+```
+
+## 归属裁决：派生归 Loop，不归 Worker（D-4）
+
+`SKILL_CALL` / `AGENT_DELEGATION` 在 `step()` 里的落点很讲究：
+
+```
+Harness.before_action()          ← 委派同样会改变外部世界，策略必须先审
+        ↓
+REQUIRE_APPROVAL → 挂起等人
+        ↓
+_suspend_for_child()             ← 派生子 Run 并挂起（**在派发之前**）
+        ↓
+_execute()                       ← 只有"干一件活"的 Action 才走到这里
+```
+
+放在 Harness **之后**：委派是高风险动作，必须先过策略。
+放在 `_execute` **之前**：一旦交给 Worker 就晚了，一条 Execution 装不下子 Run。
+
+顺序照抄闸门，一个都不能换：
+
+```
+submit → spawn → Checkpoint → claim → suspend → snapshot
+```
+
+`submit` 必须在 `spawn` 之前：派生键是 `execution_id`（D-1 / E-21），
+没有 execution_id 就没有"这次派生"的身份。
+
+## D-1：重试不得开出第二个子 Run
+
+父 Task 会因为 Attempt #2、Recovery 重排队而**再次执行**。
+如果每次执行都派生一次，就会开出第二条子 Run ——
+这正是 M24 修掉的那个"第二个 Run"（A-3）在子 Run 上的重演，
+而且更难发现：**父 Run 看起来完全正常**，只是后台多跑了一份，多花一份钱，
+多产生一份外部副作用，而没有任何一个界面会显示它。
+
+所以派生键 = 父 Execution 的 `execution_id`（E-21：跨 Attempt 稳定），
+并且**两处**都要卡：
+
+```python
+# InProcessChildRunSpawner.spawn —— 先查再派
+existing = self.registry.for_execution(request.parent_execution_id)
+if existing is not None:
+    return existing
+
+# ChildRunRegistry.bind —— 已存在则返回第一次那条，不覆盖
+existing = self._by_execution.get(handle.parent_execution_id)
+if existing is not None:
+    return existing
+```
+
+两处不是冗余：spawner 那道是**快路**（不进工厂），
+registry 那道是**兜底**（换一个 spawner 实现也不会漏）。
+覆盖等于抹掉幂等本身 —— 第二次派生出来的那条子 Run 从此谁也查不到。
+
+## 覆盖度不许说谎：三档，不是两档（PR-25）
+
+补上两个执行器之后 `unrouted` 清零了。如果报告的还是"有洞 / 没洞"，
+启动日志从此一片安静 —— **把"做不到"报成了"做到了"**。
+
+这与 PR-24（版本号漂移）是同一类错：**对外报的值与实际能做的事不是同一个**。
+所以覆盖度必须分三档：
+
+| 档 | 含义 | 后果 |
+|---|---|---|
+| `covered` | 有 handler，Worker **真能干完** | 正常执行 |
+| `deferred` | 有 handler，但它的职责是**拒绝**（`DeferringExecutor`） | 主人在别处；Worker 收到 = 拥有它的 Run 不在了 |
+| `unrouted` | 连 handler 都没有 | 不派发也不报错，安静堆在 PENDING |
+
+`describe_coverage()` 三档都要出口，且 `deferred` 必须带上"主人是谁"
+（`deferral_owner`）。现在启动 worker 会看到三行：
+
+```
+native:human_approval   → 主人是 Harness / Loop（H-4）
+native:skill            → 主人是父 Loop（CHILD_SKILL）
+agent_runtime:agent_delegation → 主人是父 Loop（CHILD_AGENT）
+```
+
+顺手删掉了 `describe_unrouted()`。留一个"只报第一行的兼容别名"
+正是这个项目一直在消灭的**第二条代码路径**。
+
+## Skill 落成什么形态
+
+§25 说 Skill 可以是 Prompt / Workflow / Agentic 三种。M25 只落地 **Agentic Skill**
+（一条子 AgentRun，target 加 `skill:` 前缀）。
+
+理由不是省事：三种形态里只有 Agentic Skill 在"子 Run"这个抽象上是自洽的 ——
+Prompt / Workflow 的多步结构同样需要子 Run，只是**解释器**不同，
+那份解释器属于 M3（Skill Runtime），现在不存在。
+所以 `CHILD_SKILL` 这个挂起原因先立起来，形态留给 M3。
+
+## 已知未做（不是没发现，是没实现）
+
+派生、挂起、收口、补偿登记、结果回灌 State —— 全都是真的、被测试钉住的。
+**没做的是"谁把子 Run 跑到终态，以及谁发出完成事件"**：
+
+    · 进程内：`InProcessChildRunSpawner.drive()` 可以跑（测试里的闭环走的就是它）
+    · 跨进程：子 Run 在别的进程里，需要那条"子 Run 完成 → 唤醒父 Run"的事件链
+
+`drive()` 对跨进程的情况**如实报错**，不假装跑过 ——
+假装跑一次再返回一个结果，比直接报错坏得多：父 Run 会拿到一个
+根本没人执行过的结果，而且没有任何痕迹表明它没跑。
+
+## 空洞编号（续 §62）
+
+| # | 级别 | 空洞 | 现在 |
+|---|---|---|---|
+| 176 | P0 | `native:skill` / `agent_runtime:agent_delegation` 无 handler | 两个安全网执行器（M25） |
+| 177 | P0 | `SuspensionReason.CHILD_AGENT` 冻结了六个版本，无人设置 | `AgentLoop._suspend_for_child()` + D-4 测试 |
+| 178 | P0 | 两个洞其实是同一个：都意味着"开子 Run"，而 `execute()` 无"进行中"态 | 派生归 Loop（D-4），Worker 侧只留拒绝 |
+| 179 | P0 | 父 Task 重试会开出第二条子 Run | **D-1**：派生键 = execution_id，两处兜底 |
+| 180 | P1 | 覆盖度只有"有洞/没洞"两档 → 补上后一片安静，等于报谎 | **PR-25**：三档 + `deferral_owner` |
+| 181 | P1 | `describe_unrouted` 只报 unrouted，会把拒绝型当成已覆盖 | 改名 `describe_coverage`，删掉兼容别名 |
+| 182 | P1 | 派生失败时那条 Task 会留在 PENDING | 可接受：安全网执行器会点名；补上 spawner 再 resume |
+| 183 | P1 | 子 Run 没有 `SkillRun` 这个业务类型（§3.1 声明过） | 先落成 Agentic Skill；Prompt/Workflow 留给 M3 |
+| 184 | P2 | 跨进程"子 Run 完成 → 唤醒父 Run"的事件链还没有 | `drive()` 对非本进程的子 Run 如实报错 |
+| 185 | P2 | `_record_compensation` 拿 execution 对象，子 Run 路径只有 id | 改成 `execution_id`（避免传伪造对象） |
+| 186 | P2 | `ChildRunRegistry` 是内存的，重启后 D-1 失效 | 需 `008_child_runs.sql`（同 007 的判据） |
+
+## 不变量 D-1 ~ D-4、PR-25
+
+| # | 不变量 |
+|---|---|
+| **D-1** | 派生键 = 父 Execution 的 `execution_id`（E-21 跨 Attempt 稳定）。重试 / 重排队**不得**开出第二条子 Run；spawner 与 registry 两处都要卡 |
+| **D-2** | `ChildRunRequest` 的必填字段在构造时校验，不留"半个请求" |
+| **D-3** | 只能关**正在等的那一条**子 Run；拿错 id 直接报错，不静默放行 |
+| **D-4** | `SuspensionReason.CHILD_AGENT` / `CHILD_SKILL` 必须真的被设置；派生归 Loop，在派发**之前**接走，且必须在 Harness 之后 |
+| **PR-25** | 覆盖度分**三档**（covered / deferred / unrouted）。有 handler 但只会拒绝的组合必须单独报，并点名主人是谁 —— 只报 unrouted 等于把"做不到"报成"做到了" |
+
+## 一句话总结
+
+> v2.1.12 冻结的是**"干的到底是不是该干的那一件"**；
+> v2.1.13 冻结的是**"请求从哪儿进来，以及它凭什么只进来一次"**；
+> v2.1.14 冻结的是**"谁有权把活派出去，以及派出去的那一份凭什么只有一份"**。
+> M23 说"这两个格子是空的"，M25 才看清它们不是两格，是**一格**：
+> 技能和委派都意味着开一条子 Run，而 `execute()` 的契约里没有"进行中"。
+> 顺手翻出一件更旧的事：`CHILD_AGENT` 这个挂起原因从 M15 冻结至今，
+> 六个版本里没有任何一行代码设置过它 —— 和 A-3 是同一种病，
+> 病因也相同：**没有一条测试断言"谁设置了它"**。
+> 于是这一轮补的不只是两个执行器，是一条判据（D-4）：
+> **冻结在文档里的概念，必须有一条会红的测试指着它的实现。**
+
+
+# 64. 变更记录：M26（子 Run 活过重启）落地回写
+
+版本：v2.1.14 → **v2.1.15**　测试：599 → **629**（+30）
+
+## 动因：动手前先量，量出来是四个洞
+
+M25 收尾时留了一句：D-1 靠内存 registry，**重启即失效**。
+这句话从来没被质疑过 —— 它是"已知未做"，不是"已知有洞"。
+所以这一轮动手的第一件事不是写 `008_child_runs.sql`，
+而是写个探针去量：**重启之后到底会发生什么**。
+
+探针做的事很笨：起一个父 Run，派生，落快照，换一个全新的 loop 恢复，再走一步。
+结果比预想的严重得多 —— 那条路径上有**四个**洞：
+
+    A  step() / run() 不认识 WAITING_CHILD
+       派生之后下一次 step() 完全无视 pending_child 继续推进，
+       一路走到 FINISH，把父 Run 判成 COMPLETED ——
+       子 Run 还在跑，父 Run 已经宣布成功，委派的结果永远不会回到 State。
+       而且**没有任何报错**。
+
+    B  快照里的 status 落后一步
+       _suspend_for_child 在 _sync_after_execution() 之前拍快照，
+       于是记的是 created，而 Run 实际已经是 SUSPENDED。
+
+    C  R-1 只认审批
+       RunSnapshot.__post_init__ 写着 is_gated → pending_approval_id。
+       M25 引入 CHILD_AGENT / CHILD_SKILL 之后这句话开始误伤：
+       为子 Run 而挂起的 Run 一旦被快照就直接 InvariantViolation ——
+       它连一份快照都落不下来，遑论恢复。
+
+    D  registry 在内存 + pending_child 不在快照里
+       重启后 restore() 接不回 pending_child → 再走一次派生 → 开出第二条子 Run。
+
+关键是**前三个让第四个根本修不好**。尤其是 A：
+就算 D 修好了，只要 A 还在，恢复出来的父 Run 不会"再派生"，
+它会**直接跑完** —— 结果一样是子 Run 的结果永远回不来，
+而且不报错。这比多一条记录更难查。
+
+## 第二个发现：唯一键在这里是安慰剂（PR-26）
+
+D 的直觉修法是"登记处落 PG + `UNIQUE(parent_execution_id)`"。
+这确实是本轮要做的事，但探针把它戳穿了：
+
+    重走 step() 会 submit 一个新的 Task。
+    新 Task → 新 Execution → 新的 parent_execution_id。
+    派生键本身就换了。
+
+于是唯一键拦不住它 —— 两个键不一样，两条都合法插入。
+**唯一键只在"键不变"时才拦得住重入；而重派恰恰会造出一个新键。**
+这是同一类病的第三次发作（前两次是 A-11 与 S-4）：
+把"先查再写"或"加个唯一约束"当成主保证，
+而它们挡的其实只有**并发**，挡不住**重入**。
+
+所以层次必须写清楚，不许颠倒：
+
+    D-5  派生过子 Run 之后，这一步就到此为止      ← 主保证：不再走到那一步
+    R-6  挂起必须带着"在等谁"，恢复时接得回来      ← 主保证：认得出已经派过
+    D-6  登记处持久 + UNIQUE(parent_execution_id)  ← 兜底：挡两个进程同时派
+
+把 D-6 当主保证，等于用唯一键去拦一个键会变的重派。
+
+## 第三个发现：S-8 的撤销声明从来没有序列化通道
+
+补"派生记录要带 Action"这条时，顺手去看 Action 是怎么落 PG 的，
+结果发现 `CompensationSpec.to_dict` / `from_dict` **根本不是方法** ——
+它们缩进写在了模块级函数 `_dig` 的 `return` 之后，是死代码：
+
+    >>> hasattr(CompensationSpec, "to_dict")
+    False
+
+也就是说 S-8（"撤销必须声明在 Action 上"）**从来没有**进出 PG 的通道：
+任何"存一个 Action、再读回来"的路径都会静默丢掉 `compensation`。
+后果不是报错，是 `SagaCoordinator` 静默跳过 ——
+补偿账本缺一条，缺的正是子 Run 留在外部世界的副作用。
+
+这又是同一种病，只是换了个动词：
+D-4 说的是"没有一条测试断言**谁设置了它**"，
+这条说的是"没有一条测试断言**谁把它带过进程边界**"。
+
+修法不是各写一份：抽出单点 `action_to_dict` / `action_from_dict`
+（`packages/agent_domain/business/snapshot.py`），审批与派生两条路共用。
+两份各自写的序列化，迟早只有一边带上补偿声明。
+
+## 一次自纠：本轮自己又犯了一次同样的病
+
+`load_stack_factory` 那条"provider 不收 `child_registry` 就拒绝"写完时是绿的，
+因为**没有任何一条测试碰它** —— 加之前没有，加之后也没有。
+也就是说这条规则的存在与否，测试套件完全无感。
+
+这是 D-4 的原话：**冻结在文档里的概念，必须有一条会红的测试指着它的实现。**
+本轮拿它去要求 `CHILD_AGENT` 和 `compensation`，却没拿它要求自己刚写的那一行。
+
+补的时候顺手定了一条更严格的落点（PR-23 的直接应用）：
+断言不落在"函数被调用过"，而是真的把栈造出来，看
+`stack.loop.spawner.registry` 究竟是 `PostgresChildRunRegistry` 还是内存版 ——
+换掉替身，这条立刻红。
+配三条控制组：收得下的 provider 照样放行（不是一律拒绝）、
+不给登记处时不校验签名（不是误伤）、不传时退化成内存（退化长什么样要有据）。
+
+## 空洞编号（续 §63）
+
+| # | 级别 | 空洞 | 现在 |
+|---|---|---|---|
+| 187 | P0 | `step()` / `run()` 不认识 `WAITING_CHILD` → 子 Run 还跑着，父 Run 已判 COMPLETED，且不报错 | **D-5**：`step()` 见 `pending_child` 即返回；`run()` 退出集补上 |
+| 188 | P0 | 快照的 `status` 落后一步（在 `_sync_after_execution()` 之前拍） | 快照挪到 sync **之后** + `test_r6_the_snapshot_status_is_the_true_status` |
+| 189 | P0 | R-1 只认审批 → 为子 Run 挂起的 Run **造不出**快照 | **R-6**：`RunSnapshot.pending_child_id`，断言放宽到 `waiting_for` |
+| 190 | P0 | registry 在内存 + `pending_child` 不在快照 → 重启后接不回 → 再派生 | `008_child_runs.sql` + `009_snapshot_pending_child.sql` + `restore()` 接回 |
+| 191 | P0 | 重走 `step()` 会 submit 新 Task → 派生键本身换了 → `UNIQUE` 拦不住 | 层次订正：D-5 / R-6 是主保证，D-6 只兜底并发（**PR-26**） |
+| 192 | P0 | `CompensationSpec.to_dict` / `from_dict` 是死代码 → S-8 撤销声明**没有**序列化通道 | 修缩进 + 单点 `action_to_dict` / `action_from_dict`（**PR-27**） |
+| 193 | P1 | `ChildRunRequest` 不带 Action → 恢复后才等到子 Run 结果时，`_record_compensation` 静默跳过 | `action` / `parent_task_id` 变必填（D-2 扩展） |
+| 194 | P1 | `pending_child_task` 存的是对象不是 id，活不过重启 | 改 `pending_child_task_id: str` |
+| 195 | P1 | 组合根可能接一个不接受 `child_registry` 的 provider，D-1 静默退化成内存 | `load_stack_factory` 反射检查签名并**拒绝** |
+| 196 | P1 | `assembly.py` 默认 worker 缺 SKILL / AGENT_DELEGATION → `spawner=None` 时报 `EXECUTOR_NOT_FOUND`（PERMANENT），错误信息误导（PR-19 同类） | 默认 worker 补两个安全网执行器 |
+| 197 | P2 | 序列化在审批与派生两处各写一份，补偿声明容易只在一边带上 | 单点：`snapshot.action_to_dict` / `action_from_dict` |
+| 198 | P2 | 没有一条测试保证每份迁移都真被执行过 → 009 是靠"列数对不上"才被发现的 | `MigrationHygieneTest`：每份 `*.sql` 必须被某个测试引用 |
+| 199 | P2 | 跨进程"子 Run 完成 → 唤醒父 Run"事件链仍未闭环（承接 §63 空洞 184） | **仍缺**：需 Kafka `child_run.completed` 消费者；D-5 / R-6 只是让它不再"无声地错"，还不能跨进程唤醒 |
+| 200 | P1 | `load_stack_factory` 的"provider 不收 `child_registry` 就拒绝"写完后**没有**测试断言它（本轮自查发现，见下） | `ChildRunRegistryWiringTest` 7 条，含 3 条控制组；断言落在 `stack.loop.spawner.registry` 上（PR-23） |
+
+## 不变量 D-5 / D-6 / R-6、PR-26 / PR-27
+
+| # | 不变量 |
+|---|---|
+| **D-5** | 派生过子 Run 之后，**这一步就到此为止**：`step()` 见 `pending_child` 即返回 `WAITING_CHILD`，且 `run()` 的退出集必须包含它。父 Run 不得在子 Run 未完成时推进或宣布成功 |
+| **D-6** | 派生登记处必须**持久**：`UNIQUE(parent_execution_id)` + `INSERT ... ON CONFLICT DO NOTHING` + rowcount 判重。这是**兜底**，挡的是两个进程同时派生；它不是 D-1 的主保证（PR-26） |
+| **R-6** | 挂起必须带着"**在等谁**"，且**不能只认审批**：`RunSnapshot` 提供 `waiting_for = pending_approval_id or pending_child_id`；挂起却说不出在等谁，照样拒绝。恢复时按 id 接回，接不回就报错，不许"当作没在等" |
+| **PR-26** | 唯一键 / 物理约束是**兜底**不是主保证。判据：问一句"**重来一次时，这个键还一样吗？**"—— 若重入会造出新键（新 `execution_id`），唯一键只挡得住并发，挡不住重入。主保证必须落在"**不再走到那一步**"（状态机 / 早退） |
+| **PR-27** | 声明要落库，就得有**往返测试**。一个字段只要在序列化里被丢掉一次，它在库里就等于不存在 —— 而且不报错（`from_dict` 会给默认值），只会静默少一条。判据：`from_dict(to_dict(x)) == x`，且这条断言只能有一份实现 |
+
+## 一句话总结
+
+> v2.1.13 冻结的是**"请求从哪儿进来，以及它凭什么只进来一次"**；
+> v2.1.14 冻结的是**"谁有权把活派出去，以及派出去的那一份凭什么只有一份"**；
+> v2.1.15 冻结的是**"派出去的那一份，第二天还认不认得"**。
+>
+> 这一轮最该记住的不是补了两个迁移文件，是**动手前先量**。
+> 原话是"D-1 靠内存 registry，重启即失效" —— 一句被写了六轮的"已知未做"。
+> 量出来是四个洞，而且前三个让第四个根本修不好：
+> 光把登记处搬进 PG，恢复出来的父 Run 不会"再派生"，
+> 它会**直接跑完**，子 Run 的结果照样永远回不来，照样不报错。
+>
+> 然后是那个反问：**重来一次时，这个键还一样吗？**
+> 不一样 —— 重新 submit 会拿到新的 `execution_id`，
+> 于是 `UNIQUE(parent_execution_id)` 看着像保证，其实是安慰剂（PR-26）。
+> 这是同一类病的第三次发作：A-11、S-4，现在是它。
+> 三次都栽在同一个念头上：**以为加个约束就挡住了，而它挡的其实只有并发。**
+>
+> 最后一件事更安静：`CompensationSpec.to_dict` 从来不是一个方法 ——
+> 缩进把它写成了模块级 `_dig` 的死代码，于是 S-8 的撤销声明
+> **从来没有**进出 PG 的通道。它不报错，只是让 `SagaCoordinator` 静默跳过
+> 最该补偿的那一条：子 Run 留在外部世界的副作用。
+> 三次了，病因都相同 —— **没有一条测试断言"谁把它带过进程边界"**（PR-27）。
+
+
+# 65. 变更记录：M27（真 PostgreSQL 集成测试层）落地回写
+
+版本：v2.1.15 → **v2.1.16**　测试：629 → **647**（+18 集成）
+
+## 起因：一句提问，盘出三档
+
+「什么时候可以测试呢。」
+
+这句话没有主语，所以先把它拆开。AgentOS 的"能测"至少有三档，
+而在此之前**只有第一档真实存在**：
+
+| 档 | 现在 | 跑在哪 | 状态 |
+|---|---|---|---|
+| 单元测试 | 629 条 | `sqlite_shim` | 从第一天就能跑 |
+| 真 PG 集成 | **此前为零** | 真实 PostgreSQL | **本轮补上** |
+| 事件链端到端 | 零 | PG + Kafka + 真模型 | 仍缺 Kafka 消费者 |
+
+第二档为空意味着一件很具体的事：
+**9 份迁移和全部 PG 适配器，从未被 PostgreSQL 认可过一次。**
+
+## 探针先跑：结果比预想的好，也比预想的更值得
+
+按惯例先量再做。把 9 份迁移的**原文**丢进真 PG 执行，
+再逐条试 `UNIQUE` / `CHECK` / `ON CONFLICT`：
+
+    9 份迁移                        全部 OK（PG 16.15）
+    UNIQUE(parent_execution_id)     真拦住了 → UniqueViolation
+    CHECK(kind)                     真拦住了 → CheckViolation
+    CHECK(action <> '{}'::jsonb)    真拦住了 → CheckViolation
+    CHECK(ids not empty)            真拦住了 → CheckViolation
+    ON CONFLICT DO NOTHING          rowcount = 0，赢家是第一条
+    009 的 ALTER                    pending_child_id 真的加了
+
+**好消息是：SQL 是对的。** 但这恰恰是最该警惕的时刻 ——
+一次全绿很容易被读成"那不用测了"，而它真正说明的是：
+**shim 的每一处"碰巧对上"这次都运气好，不是每一处都被验证过。**
+运气不是保证。这一层存在的意义就是把运气换成断言。
+
+## PR-28：替身能过 ≠ 被认可
+
+`sqlite_shim` 做的是三件翻译，其余一律放行。于是下面这些
+**此前每一处都碰巧对上、但没有一处被 PostgreSQL 认可过**：
+
+    `::jsonb`                  shim 直接剥掉（sqlite 里是语法错误）
+    `ON CONFLICT DO NOTHING`   sqlite 恰好有同名语法 → 碰巧通过
+    `CHECK (action <> '{}')`   剥掉 cast 后变成字符串比较 → 碰巧等价
+    `TIMESTAMPTZ`              shim 用 register_converter 模拟
+    `rowcount`                 语义由 shim 自己实现
+
+这不是 PR-23 的重复。PR-23 说的是"**换掉替身这条测试还会不会红**"——
+它管的是**测试**钉在哪一层。
+PR-28 说的是另一件事：**替身放行得越多，"全绿"的含义就越薄。**
+一个替身如果替掉了方言、约束、事务语义，那它验证的是"逻辑走得通"，
+不是"数据库认这份 SQL"。两者之间隔着一次部署。
+
+所以判据是：**凡是依赖数据库方言 / 约束 / 事务语义的不变量，
+至少要有一条跑在真库上。** 不必每条都搬，但一条都没有等于没验。
+
+## IT-1 ~ IT-3：这一层的三条硬规则
+
+| # | 不变量 |
+|---|---|
+| **IT-1** | 没有真库时集成层必须**跳过**，绝不报红。缺 psycopg / 连不上 / `AGENTOS_SKIP_IT=1` 一律 `SkipTest`。否则它会绑架那 629 条 —— 一个没装驱动的人会以为代码坏了 |
+| **IT-2** | 每个用例都用**全新 schema**（`DROP SCHEMA public CASCADE` + 重跑全部迁移）。用例之间零残留，于是"上一个用例污染下一个"这种只在集成层出现的偶发红没有立足之地 |
+| **IT-3** | 集成层跑的必须是**生产同一批 SQL 文件**的原文，不复制、不改写。改写过的 SQL 验的是改写，不是部署时会执行的那份 |
+
+## 空洞编号（续 §64）
+
+| # | 级别 | 空洞 | 现在 |
+|---|---|---|---|
+| 201 | P0 | 9 份迁移与全部 PG 适配器从未在真 PostgreSQL 上执行过 | `tests/integration/` 18 条（PG 16.15 实测全绿） |
+| 202 | P1 | `::jsonb` / `ON CONFLICT` / `CHECK` / `TIMESTAMPTZ` 只被 shim"碰巧"放行，未被 PG 认可 | **PR-28** + `test_migrations_real_pg.py` |
+| 203 | P1 | 仓库**没有任何依赖声明文件** —— "要装什么"全靠口口相传 | `requirements-integration.txt`（psycopg 只在集成层） |
+| 204 | P1 | 集成所需的基础设施没有可复现的起法 | `infrastructure/docker-compose.it.yml`（5544，容器/端口全带 `agentos-it-` 前缀，不碰在跑的 PG/Redis） |
+| 205 | P2 | 集成层若默认报红会绑架单元测试 | **IT-1**：无 PG → skipped（实测 `OK (skipped=18)`） |
+| 206 | P2 | `docker compose` v2 插件在本机不可用（是 v1 的 `docker-compose`） | compose 文件注释里两个命令都写了 |
+| 207 | P2 | 事件链端到端仍缺 Kafka（本机无 kafka / redpanda 镜像） | **仍缺**：需 pull 镜像 + `child_run.completed` 消费者（承接空洞 199） |
+
+## 一句话总结
+
+> v2.1.14 冻结的是**"谁有权把活派出去，以及派出去的那一份凭什么只有一份"**；
+> v2.1.15 冻结的是**"派出去的那一份，第二天还认不认得"**；
+> v2.1.16 冻结的是**"凭什么说它被验过"**。
+>
+> 这一轮不是被一个 bug 逼出来的，是被一句提问逼出来的：
+> 「什么时候可以测试呢」—— 一问才发现，629 条全绿里
+> **没有一条跑在真的 PostgreSQL 上**。9 份迁移、全部 PG 适配器、
+> `ON CONFLICT` 的 rowcount、`::jsonb` 的 CHECK，全靠 sqlite 替身
+> 处处"碰巧对上"撑着。
+>
+> 而这次探针的结果是**全绿** —— 所以最该警惕的恰恰是这一刻。
+> 一次全绿很容易被读成"那就不用测了"，
+> 可它真正说明的是：运气好，不是每一处都被验过。
+> **运气不是保证**（PR-28）。
+> 替身放行得越多，「全绿」的含义就越薄：
+> 它验证的是"逻辑走得通"，不是"数据库认这份 SQL"，
+> 而这两者之间隔着一次部署。
+>
+> 顺带补的两件小事也很说明问题：仓库此前**没有**任何依赖声明文件，
+> 集成所需的 PG 也**没有**可复现的起法 ——
+> 「能测」从来不是一句承诺，是一组可以照着做的动作。
+
+---
+
+# 66. 变更记录：M28（推进契约 + 单页控制台）落地回写
+
+版本：v2.1.16 → **v2.1.17**　测试：647 → **685**（+22 契约推进 / +9 示例栈 / +7 生产连接集成）
+
+## 起因：一句提问，探出四个断点
+
+「还缺什么能做一个整个流程的测试，有页面的那种。」
+
+先说一个**自我更正**。上一轮我曾判断：Kafka `child_run.completed` 消费者是
+"派得出去、认得回来之后唯一还断着的一环"。**这个判断是错的。**
+它默认了「API 能推进一条 Run」，而探针实测证明它不能：
+
+    POST /agents/demo/runs  → 201
+    GET  /runs/{id}         → status=created, step_count=0, trace=0 条
+    六个端点里没有任何一个能让它往前走一步
+
+四个断点，且 **C 依赖 A**：
+
+| | 级别 | 断点 | 本轮 |
+|---|---|---|---|
+| A | **P0** | 契约层没有推进能力；`start_run` 调的是 `stack.start()`（只初始化） | 已修（F-1/F-2/F-3） |
+| B | **P0** | `build_model_gateway()` 没设 `default_model_id`（G-8）→ 模型调用必 PERMANENT 失败 | 已修 + 9 条测试 |
+| C | P1 | 没有页面 | 已做（单页控制台） |
+| D | P1 | Kafka `child_run.completed` 消费者 | **仍缺**（空洞 207） |
+
+**顺序改成 A → B → C → D。** 理由：C 是"跨进程唤醒"，
+在单进程流程都跑不通的时候做它，等于**给一台没通电的机器装天线**。
+而且打通 A + C 之后，D 也能被看见 —— 后面的每一步都不再是盲的。
+
+## A：补推进契约（F-1 ~ F-4）
+
+| 不变量 | 内容 |
+|---|---|
+| **F-1** | 契约层必须能推进一条 Run：`step_run`（一步）/ `drive_run`（跑到停） |
+| **F-2** | 推进一个**终态** Run 必须被拒绝：`409 RUN_TERMINAL`，不静默成功 |
+| **F-3** | 挂起的 Run 必须说清在等谁：`RunView.waiting_for`（审批 id 或子 Run id，R-6） |
+| **F-4** | 账本必须能被**单独**读出来：`GET /runs/{id}/trace` |
+
+### 为什么 F-1 比"缺两个接口"严重
+
+一个开得出却跑不动的 API，**比没有 API 更危险** —— 它看起来完全是通的：
+装得起来、开得出 Run、查得到状态、审批列表也 Working。
+只有把 Run 一路点下去才发现它一动不动。
+
+### `drive_run` 刻意**没有** `max_steps`
+
+它看起来是个无害的保险丝，实际是在给"一个 Run 能走几步"开**第三个**定义：
+第一个是 `Goal.budget.max_steps`（Intelligence），
+第二个是 `AgentLoop.run()` 的停止集合（Runtime，B-7），
+再让 HTTP 调用方传一个，三者不一致时没人说得清以哪个为准。
+真需要上界时改的是 Goal 的预算 —— 那是它该待的地方。
+
+### F-2 的收益：账本不再被污染
+
+M28 探针实测到：终态之后重复 `step()`，账本里会**再记一条** `run.finished`
+（实测 3 条重复）。于是"这个 Run 完成了几次"变成一个没有答案的问题。
+现在被拒绝的那一次**什么都没记** —— 这一条单独有控制组守着。
+
+## B：`default_model_id`（G-8）
+
+```python
+return ModelGateway(
+    ModelRouter([_DEMO_MODEL], [_DEMO_DEPLOYMENT]),
+    {"demo": FunctionProvider("demo", _demo_complete)},
+    max_fallbacks=0,
+    default_model_id=_DEMO_MODEL.model_id,     # ← 曾经漏掉的就是这一行
+)
+```
+
+漏掉它的后果：`LLMCallExecutor` 拿着空 `model_id` 去调，Gateway 抛
+`NO_MODEL_REQUESTED`（PERMANENT），第一步就死。
+于是 **`AGENTOS_STACK_PROVIDER` 的默认实现从来没有真的跑通过一次模型调用**。
+
+测试一直是绿的，因为没人测"跑得通"，只测了"装得上" ——
+`test_http_api.py` 里那条断言的是 `callable(factory)`。
+**装载成功 ≠ 跑得通**（与 D-4、PR-27 同一种病的第四次发作）。
+
+## 第一次真起服务：两个 P0
+
+`python -m apps.api`（真 PG + 真 uvicorn + 真 HTTP）跑起来的第 4 个请求就 500：
+
+```
+File "packages/agent_harness/adapters/postgres.py", line 111, in _row_to_approval
+    approval_id=row["approval_id"],
+TypeError: tuple indices must be integers or slices, not str
+```
+
+**原因一：`pg_connection()` 没设 `row_factory`。**
+psycopg 默认返回元组，而三个 PG 适配器全部按列名取字段。
+
+为什么 660 条测试没一条发现它：
+
+    tests/unit/sqlite_shim.py  →  raw.row_factory = sqlite3.Row   （按名取 √）
+    tests/integration/_pg.py   →  row_factory=dict_row            （按名取 √）
+
+**两个替身都比生产好用。** 生产那条路径从来没被跑过一次 ——
+PR-28 最狠的一个变体：不是替身简化了对错，是**替身比真的更宽容**。
+
+**原因二：`packages/` 里没有任何一处 `commit()`。**
+适配器不持有事务边界，不开 autocommit 的话所有写都在隐式事务里、
+进程退出即回滚 —— "PG = Truth" 变成一句漂亮的空话，而且**不报错**。
+
+修法是让 `pg_connection()` 带上 `row_factory=dict_row, autocommit=True`。
+⚠️ 这**不等于** X-3（status 写 + event 写同一事务）已经成立 ——
+事实上它在 sqlite 替身下也从来没成立过。这里做的是
+**复现已经被验证过的那套语义**，不是宣称解决了事务边界（登记为空洞 208）。
+（空洞 208 已在 **v2.1.18 / M29** 闭合，见 §67：`autocommit` 随后翻为 `False`，
+事务边界由进程层驱动 —— PR-30 / PR-31。）
+
+新增 **PR-29**：适配器必须在**生产那条连接**上被验证。
+`tests/integration/test_production_connection_real_pg.py`（7 条）
+刻意**不用** `RealPostgresCase.conn`（自带 `dict_row`），
+而是调 `apps._bootstrap.pg_connection()` —— 否则这个 bug 明天还能再回来一次。
+
+## C：单页控制台
+
+`apps/api/console/index.html`（单文件、零框架），挂在 `/`。
+
+四块：发起 Run / Run 状态 + 审批闸门 / 账本时间线 / HTTP 日志。
+
+设计上刻意让**拒绝可见**：终态再点「走一步」，页面顶部会明说
+「终态 Run 不接受推进（409 RUN_TERMINAL）—— **这不是失败，是系统在明确说「没了」**」。
+一个会静默成功的系统最可怕的地方，就是它从不在界面上承认自己拒绝了什么。
+
+演示用的栈是 `build_approval_demo_stack_factory`（`approval_at_step=2`）：
+审批**不是**智能体主动请示（`ActionType.HUMAN_APPROVAL`），
+而是**治理层拦下来的** —— 一个 HIGH 风险的 WRITE 工具调用被 Harness 判
+`REQUIRE_APPROVAL`（I-9）。演示的正是"审批不靠智能体自觉"。
+
+## 实测：真 HTTP 全流程
+
+```
+POST /agents/demo/runs              201  created
+POST /runs/{id}/step                200  running    executed
+POST /runs/{id}/step                200  suspended  waiting_approval  apr_f9b2…
+GET  /runs/{id}/approvals           200  [pending]  policy[risk-gate]: risk_level >= high
+POST …/approvals/{aid}/decision     200  running    executed          ← 被挂起的动作真执行了
+POST /runs/{id}/step                200  completed  finished
+POST /runs/{id}/step                409  RUN_TERMINAL
+GET  /runs/{id}/trace               200  11 条（task.submitted → … → run.finished）
+```
+
+## 新判据 PR-29
+
+> **适配器在生产连接上被验过，才算被验过。**
+>
+> PR-28 说的是"替身能过 ≠ 被认可"。这一轮补上它的另一半：
+> 替身不仅可能简化对错，还可能**比真的更好用**。
+> `row_factory` 就是典型 —— 两个测试替身都按名取，只有生产返回元组。
+>
+> 判据：**验证时用的连接，必须是由生产那个函数造出来的。**
+> 少这一层，"集成测试"就退化成又一份替身。
+
+## 空洞编号（续 §65）
+
+| # | 级别 | 空洞 | 现在 |
+|---|---|---|---|
+| 208 | **P0** | X-3 未真正成立：`packages/` 无任何 `commit()`，适配器不持有事务边界，status 写与 event 写不在同一事务 | **仍缺**：需要引入显式 Unit of Work（一个请求 / 一个 tick = 一个事务）；当前 `autocommit=True` 只是复现 shim 语义 |
+| 209 | P1 | Kafka `child_run.completed` 消费者（承接 199 / 207） | **仍缺**：现在 A + C 打通了，它是下一个 |
+| 210 | P2 | `_pg.real_pg()` 用 `DROP SCHEMA public CASCADE`，一次被中断的跑会让整层再也起不来 | 已改 `DROP SCHEMA IF EXISTS` |
+| 211 | P2 | `apps/api` 真进程冒烟此前从未做过 | **本轮闭合（M45 / §83）** |
+
+## 冻结的是什么
+
+> v2.1.16 冻结的是**"凭什么说它被验过"**；
+> v2.1.17 冻结的是**"凭什么说它跑得动"**。
+>
+> 这两个问题看起来很像，其实差一层：
+> M27 证明了"数据库认这份 SQL"，
+> 但一个 **开得出 Run 却永远推不动** 的 API，照样能让全部测试变绿 ——
+> 它只是还没有人去点第二下。
+>
+> 这一轮最该记住的不是 F-1~F-4 这四条不变量，
+> 而是那个 500 的报错位置：`row["approval_id"]`。
+> 660 条测试、18 条真 PG 集成、9 份迁移全部通过，
+> 而生产连接第一次被使用就崩在一个元组上。
+> **替身越顺手，全绿的含义就越薄** —— 因为它验的是"逻辑走得通"，
+> 不是"这套配置真的能跑"。这两者之间隔着一次部署（PR-28），
+> 而现在还要再加一句：**也隔着一次"由谁来造连接"**（PR-29）。
+
+---
+
+# 67. 变更记录：M29（X-3 事务边界 + 存储接线）落地回写
+
+版本：v2.1.17 → **v2.1.18**　测试：685 → **717**（+12 事务边界单测 / +5 存储接线 / +6 空洞 212 接线 / +9 X-3 真 PG 集成 / −1 陈旧断言）
+
+## 起因：一条"写在基线里、但从未真正成立"的 P0
+
+M28 收尾时做全局盘点，发现 X-3 是唯一一条满足下面两个条件的不变量：
+
+    · 从 M15 冻结起就写在基线里，且 `ExecutionKernel._emit` 的注释
+      明写着"真实实现里是同一个事务"；
+    · 到 M29 之前，**从来没有成立过**。
+
+量了两个数字就确认了：
+
+    grep -rn "commit()" packages/     →  0 处
+    grep -rn "UnitOfWork" packages/  →  只有定义，使用次数 0
+
+也就是说它此前只有两种"成立"方式，而两种都算不上成立：
+
+    方式一  靠 `autocommit=True`
+            → 那不叫同一事务，那叫"各自生效"，中间没有任何东西
+              保证它们一起出现；
+    方式二  靠内存 Outbox（`InMemoryOutbox`）
+            → 更糟：它确实原子，但原子在进程内存里，
+              `outbox_events` 表一行都没有。
+
+两条都不报错 —— 这是本次最该记住的一点。
+
+## 空洞 208：`UnitOfWork` 端口落地
+
+`UnitOfWork` 从 M15 起就是一个**死端口**：定义了、写进基线了、没人实现、没人调用。
+本轮补上两个实现，其中第二个是**刻意**不提供原子性的：
+
+| 实现 | `atomic` | 语义 |
+|---|---|---|
+| `PostgresUnitOfWork` | `True` | 一个上下文 = 一个真事务；`commits` / `rollbacks` 可计数 |
+| `InMemoryUnitOfWork` | `False` | **明确声明自己不原子** —— 不许它把 X-3 骗过 |
+
+`InMemoryUnitOfWork.atomic = False` 是这轮的一条硬设计：
+内存实现如果也标 `atomic=True`，那么"X-3 成立"这句话
+就会在内存装配下被判定为通过 —— 而那正是 X-3 唯一不该通过的地方。
+
+## 新判据 PR-30 / PR-31：边界由进程层驱动，不由包驱动
+
+> **PR-30：一个 tick = 一个事务。**
+> **PR-31：一个 HTTP 请求 = 一个事务。**
+
+事务边界**不在** `packages/` 里。理由是：一个包不知道自己"是不是一个完整的业务动作"——
+只有进程层知道一次 tick / 一次请求到哪里算结束。
+放在包里，就会出现"每个方法自己提交一次"，于是 X-3 又被拆开了。
+
+实现落在两处，且都是**单点**：
+
+    PR-30  `apps/_runtime.py::ProcessRuntime._tick_once`
+           → 五个后台进程（worker / outbox publisher / recovery /
+             wakeup / cancellation sweeper）共用同一个骨架
+    PR-31  `apps/api/app.py` 的 HTTP 中间件
+           → 4xx 提交，5xx 回滚，异常一律回滚后重抛
+
+"4xx 提交"这一条值得单独说：4xx 是**业务拒绝**（形状不对、Run 已终态、
+审批缺 `by`），它是一次完整的、成功的处理 —— 拒绝本身要留痕。
+只有 5xx（系统故障）才回滚。
+
+`PostgresUnitOfWork` 由组合根的 `pg_unit_of_work(conn)` 统一给出，
+五个进程不各写一份 —— 写五份就会有五种"连不上库时怎么办"，
+而漏掉的那一个**不报错**，它只是让这个进程的写在 DB 意义上不再是原子的。
+
+## 空洞 212 / 213 / 214：最反直觉的一类 —— 装配了，但没接上
+
+`pg_connection()` 从 `autocommit=True` 翻成 `False` 之后，
+边界有了物理对应物，于是第一次可以去量"到底有什么落了库"。
+真起一次服务、跑完整个流程，从**独立连接**数出来：
+
+| 表 | M29 之前 | M29 之后 |
+|---|---|---|
+| `executions` | **0** | 3 |
+| `run_snapshots` | **0** | 1 |
+| `tasks` | 0 | 0（见空洞 215） |
+
+而同一个 Run 明明刚刚跑完三步、挂起过一次（挂起正是拍快照的时机）。
+`GET /runs/{id}/trace` 依然说得清 Run 走到第几步 ——
+**这是最难发现的一种"看起来跑通了"。**
+
+根因三行，形状完全一样：
+
+    assemble_runtime_stack(...)
+        kernel        = kernel        or ExecutionKernel(InMemory...)
+        snapshots     = snapshots     or InMemoryRunSnapshotStore()
+        compensations = compensations or InMemoryCompensationStore()
+
+`assemble_runtime_stack` 给三样都留了内存兜底，于是漏掉任何一样都**不报错**。
+最讽刺的是 `snapshots`：`build_control_plane` 一直都装配了
+`PostgresRunSnapshotStore` —— 它只是**从没递到栈里去**。
+
+于是判据变了：
+
+> **不是"装配了没有"，而是"栈里的那一份是不是 PG 版"。**
+
+断言落在 `stack.kernel.repository` / `stack.loop.snapshots` /
+`stack.loop.compensations` 上。换成内存版，测试立刻红。
+
+组合根现在把这四样（`child_registry` / `kernel` / `snapshots` /
+`compensations`）列成一张 `_REQUIRED_EXTRAS` 表：
+**provider 收不下就装载失败，绝不静默退化。**
+
+列成一张表而不是写四段 `if`，是因为第五个这样的参数迟早会出现 ——
+那时"忘了加校验"就是第五个洞。写成一个数据结构，漏的是一条数据，不是一段逻辑。
+
+## 变红验证：把边界拿掉，测试必须红
+
+PR-23 的判据（换掉替身，测试还会不会红）在本轮被显式执行了一次：
+把 `pg_connection` 临时改回 `autocommit=True`，重跑 X-3 集成层：
+
+    9 条里 5 条变红，4 条保持绿
+
+变红的 5 条正是"回滚后两者都不在""未提交时外部看不见""autocommit 必须是关的"
+这一类；保持绿的 4 条是"提交后同时可见""共享同一连接"这类正向断言 ——
+**它们本就该保持绿**，因为提交语义没变。
+这个分布本身就是"测得对"的证据：不是全红（那说明测的是别的东西），
+也不是全绿（那说明什么也没测）。
+
+## 一条被更正的陈旧断言
+
+`tests/integration/test_production_connection_real_pg.py` 里有一条
+`test_writes_are_committed_without_an_explicit_commit`，
+它是 M28（autocommit=True）时写的。M29 把开关翻过来之后，
+这条测试**依然会绿**（它只做了一次 SELECT，没有断言写），
+但它的名字和文档字符串从此在说一句假话。
+
+已改成 `test_the_connection_has_a_real_transaction_boundary`，断言
+`autocommit is False`。
+
+记这一条是因为它比红更危险：**一条绿着但已经说谎的测试**，
+比一条红的测试更难被发现。这也是 PR-24（对外报的值与实际做的事不是同一个）
+在测试层的对应物。
+
+## 新判据 PR-32
+
+> **一条测试绿着，不代表它还在说真话。**
+>
+> 断言会随被断言的东西一起过期。当一条不变量的**物理实现**变了
+> （autocommit 翻转、存储从内存换到 PG、边界从包挪到进程层），
+> 原先那条断言可能既不变红、也不再成立 —— 它只是不再指向那件事了。
+>
+> 判据：**改了实现，就要回头检查那些"还绿着"的断言说的是不是还是同一件事。**
+
+## 空洞编号（续 §66）
+
+| # | 级别 | 空洞 | 现在 |
+|---|---|---|---|
+| 208 | **P0** | X-3 未真正成立 | **已闭合**：`PostgresUnitOfWork` + PR-30（一个 tick 一事务）+ PR-31（一个请求一事务）+ `autocommit=False`；真 PG 集成层 9 条钉住（拿掉边界 → 5 条变红） |
+| 209 | P1 | Kafka `child_run.completed` 消费者（承接 199 / 207） | **仍缺**：A / B / C / D 里只剩 D |
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 212 | **P0** | 栈里的 Kernel 是内存版 → `executions` / `attempts` / `outbox_events` 恒为 0 | **已闭合**：组合根要求 provider 收下 `kernel`；实测 0 → 3 |
+| 213 | **P0** | `snapshots` 装配了但没递到栈里 → `run_snapshots` 恒为 0，R-5 不成立 | **已闭合**：实测 0 → 1 |
+| 214 | **P0** | `compensations` 同上 → 补偿账本在内存里，S-9 活不过重启 | **已闭合**（接线；示例栈未声明补偿，故实测仍为 0） |
+| 215 | P1 | `tasks` 表有建表与两个索引，但**没有任何代码写它**：Task 只活在 `ExecutionKernel._tasks` 内存字典里 | **仍缺**：重启后 Scheduler 拿不到 priority / tenant / resource |
+
+## 冻结的是什么
+
+> v2.1.17 冻结的是**"凭什么说它跑得动"**；
+> v2.1.18 冻结的是**"凭什么说它留下了"**。
+>
+> 这三个字差得比看起来远。M28 证明了流程能从头走到尾：
+> 201 创建、200 推进、200 挂起、审批、200 完成、409 终态。
+> 但把流程走完和把流程**记录下来**是两件事 ——
+> M29 之前，那条走过的流程在数据库里几乎不存在：
+> `executions` 是 0，`run_snapshots` 是 0，
+> 而界面上每一步都显示得清清楚楚。
+>
+> 一个能跑完但什么都不留的系统，和一个跑不完的系统，
+> 在运维眼里是同一种系统：出事之后都查不到。
+>
+> 这一轮最该记住的不是 PR-30 / PR-31 这两条边界，
+> 而是它们之所以此前一直没被补上的原因 ——
+> **`UnitOfWork` 这个端口从 M15 起就写在基线里，一直是死的，
+> 而没有任何一条测试因此变红。** 一条不变量只要没人去问
+> "它在物理上对应什么"，它就可以在文档里成立很多年。
+>
+> 所以现在判据多了一句：**装配了不算接上**（空洞 212~214 三兄弟），
+> **绿着也不算还在说真话**（PR-32）。
+
+---
+
+# 68. 变更记录：M30（子 Run 结果回传）落地回写
+
+版本：v2.1.18 → **v2.1.19**　测试：723 → **762**
+
+    单元    689 → 714   （+14 登记处结果/交付 · +10 唤醒与消费进程 · +1 陈旧性控制）
+    集成     34 →  48   （+13 真 PG：010 两条 CHECK · rowcount 幂等 · 端到端回传
+                          +1 组合根在**生产连接**上的接线断言，PR-29）
+
+## 起因：一条只有测试走过的路
+
+M25 让父 Run 派得出子 Run（D-1 保证不多派），M26 让派生登记活过重启。
+但"结果回来"那一半一直缺一半证据：
+
+    grep -rn "child_completed(" packages/ apps/   →  只有定义 + 测试调用
+                                                    生产路径上没有任何人来调
+
+后果不是"慢一点"，是**委派永远回不来**：父 Execution 一直 SUSPENDED，
+界面上显示"在等子 Agent" —— 看起来完全正常。
+
+M29 收尾时的盘点把它编号为**空洞 209**（承接 199 / 207）。本轮补齐。
+
+## 空洞 209：补齐的那一段
+
+```text
+子 Run 进终态 ──X-3──▶ outbox: child_run.completed / .failed / .cancelled
+                              │
+                        (outbox_publisher → Kafka)
+                              │
+    apps/child_run_consumer ◀─┘ → ChildRunWaker.wake() → 父 Run 重建并继续
+```
+
+三处新代码，分工是"谁负责哪一句话"：
+
+| 位置 | 负责 |
+|---|---|
+| `AgentLoop._emit_child_run_outcome` | **子 Run 自己说**：进终态时登记结果 + 发事件（同一事务） |
+| `apps/child_run_consumer` | **什么时候去问、什么时候才许说"消费完了"** |
+| `packages/agent_runtime/child_wake.py` | **怎么把结果交回去**（唯一定义，事件路径与兜底扫共用） |
+
+### 为什么取消要单列一个事件类型
+
+`child_run.cancelled` 不是"顺手加的第三种"。
+取消说的是"到此为止"（S-15），失败说的是"没做成"；
+对父 Run 两者都意味着"没拿到结果"，但对**审计**不是一回事 ——
+并成一个类型之后，这个区别只能去 payload 里找，而没有人会去找。
+
+## 空洞 216：结果曾经只活在 Kafka 里（X-5）
+
+补链路时发现一件更根本的事：**结果根本没有落在 PG 里**。
+它跟着事件走，而事件在 Kafka 里 —— Kafka 有 retention，PG 没有。
+
+于是：
+
+| | 归属 | 生命周期 |
+|---|---|---|
+| 结果 | **事实** → Truth（PG） | 与库同寿 |
+| 事件 | **消息** → Log（Kafka） | retention 到期即消失 |
+
+把事实只放在 Log 里，等于让 Truth 少一块 ——
+而缺的这块正是补偿账本要用的（S-1：撤销参数取自子 Run 的结果）。
+
+落点是 `010_child_run_result.sql`：`result JSONB` + `completed_at` +
+`delivered_at`。结果在**它成为事实的那一刻**写入，与"子 Run 声明终态"
+同一个事务（X-3），事件退化为纯粹的"去叫醒父 Run"。
+
+`mark_finished` 的幂等判据与 D-1 同一形状：
+
+```sql
+UPDATE child_runs SET status=%s, result=%s, completed_at=%s
+ WHERE child_run_id=%s AND completed_at IS NULL
+```
+
+rowcount 判胜负，**不靠先读**。at-least-once 下同一条事件会来第二次，
+那时唯一正确的行为是"什么都不做并返回第一次的结果"。
+
+## D-6 / D-7 / D-8：三条新不变量
+
+> **D-6**　终态与非终态由 `completed_at` 区分，两者必须同进同退。
+> 　　　　"说完了却说不出什么时候说完"、"没说完却有说完的时刻"都是说谎。
+> 　　　　SQL 侧有 CHECK；`ChildRunHandle.is_finished` **只看** `completed_at`，
+> 　　　　不在 Python 侧复制一份终态集合（B-7 同款理由）。
+
+> **D-7**　结果不可能在产生之前被交付，也不可能被交付两次。
+> 　　　　`mark_delivered` 用 `WHERE completed_at IS NOT NULL AND delivered_at IS NULL`
+> 　　　　+ rowcount；CHECK 只是兜底（PR-26）。
+
+> **D-8**　交回结果之后必须落一个新的可恢复点。
+
+D-8 是本轮最反直觉的一条，值得把推演写全：
+
+```text
+AgentLoop.step() 一见 pending_child 就返回 WAITING_CHILD
+  而重建出来的父 Run 是从"挂起时"那份快照装载的
+    那份快照里写着 pending_child_id
+      → 子 Run 早就跑完了、结果也交回去了
+      → 父 Run 每次被重建都还是"在等那条子 Run"
+      → step() 永远 WAITING_CHILD
+      → 一个已经拿到结果却永远走不下去的 Run
+```
+
+而且它**不报错** —— 界面上是"等待子 Agent"，一切正常。
+所以 `ChildRunWaker.wake()` 在交付之后立刻 `snapshots.save(loop.capture(...))`，
+把"我不再等它了"变成可恢复的事实。
+
+## A-12 的第二个副本：Kafka 不再是唤醒路径的单点
+
+`recovery_controller` 身上那句"Redis 全丢只允许变慢、不允许变错"
+在这里原样出现了第二次：
+
+    Kafka 丢了这条事件
+      → 快路径失效
+      → 每 N 轮扫一次 PG（`delivered_at IS NULL` 的部分索引）
+      → 最多晚 N 轮被叫醒          ← 变慢
+    没有 sweep
+      → 父 Run 永远 SUSPENDED     ← 变错
+
+所以 `sweep_every` 不是性能参数，是**这条不变量的兑现节奏**。
+和 `RecoveryController` 一样，计数必须活在跨 tick 的对象上（PR-11 同款陷阱），
+否则 `ticks % N` 永远是 `1 % N`，安全网一次都不会触发。
+
+## 新判据 PR-33：offset 提交排在事务提交之后
+
+> **PR-33：先落库，后说"消费完了"。**
+>
+> Kafka offset 提交必须排在**自己的事务提交之后**
+> （`ProcessRuntime.on_commit`，本轮为它新加的钩子）。
+>
+> 顺序反过来的后果不是"多处理一次"，是**永远不处理**：
+>     offset 先提交 → PG 事务随后回滚 → 那条消息再也不会被投递
+>     Kafka 侧：已消费。PG 侧：从没发生过。
+> 两边都没有报错 —— 这正是 A-12 那条判据里"变错"的那一半。
+
+`on_commit` 与既有的 `on_drain` 不是一回事，区分写在代码注释里：
+
+    on_drain  = 退出时归还领地（做没做完都算数）
+    on_commit = 这一轮真的落库了，才可以把"我处理过了"说出去
+
+## 变红验证
+
+| 拿掉什么 | 结果 |
+|---|---|
+| D-8 的快照保存 | 24 条里 **5 条变红**（交付后父 Run 仍 pending / 扫第二次仍交付 / step 仍 WAITING_CHILD 等），其余 19 条保持绿 —— 保持绿的正是登记处与参数校验那批，它们本就不依赖 D-8 |
+
+这个分布是"测得对"的证据：不是全红（那说明测的是别的东西），
+也不是全绿（那说明什么也没测）。
+
+## 空洞编号（续 §67）
+
+| # | 级别 | 空洞 | 现在 |
+|---|---|---|---|
+| 209 | P1 | Kafka `child_run.completed` 消费者 | **已闭合**：`child_wake.py` + `apps/child_run_consumer` + `KafkaEventConsumer` + 兜底扫 |
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 215 | P1 | `tasks` 表无人写 | **仍缺** |
+| 216 | **P0** | 子 Run 的**结果**只活在 Kafka 事件里，PG 里查不到 | **已闭合**：`010_child_run_result.sql` + `mark_finished`（X-5） |
+| 217 | P2 | `ChildRunWaker` 只恢复父 Run、不驱动它：跨进程部署下"谁来调 `drive_run`"仍是调用方的事 | **仍缺** |
+| 218 | P2 | 子 Run 被 CANCELLED 后父 Run 走 `child_failed`（TRANSIENT），D-1 保证重试拿回同一条已取消的子 Run → 可能原地打转 | **仍缺** |
+
+## 冻结的是什么
+
+> v2.1.18 冻结的是**"凭什么说它留下了"**；
+> v2.1.19 冻结的是**"凭什么说它回得来"**。
+>
+> 派出去只是半条路。M25~M26 把"派得出去"钉死了（D-1 不多派、
+> 登记活过重启），但结果那一半一直只有测试走过 ——
+> 于是生产路径上，委派的结果永远回不来，
+> 而且没有任何界面会显示这一点。
+>
+> 补这一段的时候还翻出一件更根本的事：**结果根本没落在 PG 里**（空洞 216）。
+> 它跟着事件走，而事件在 Kafka 里，Kafka 有 retention。
+> X-5 说 PG 是唯一 Truth —— 可那条 Truth 当时只活在 Event Log 里。
+>
+> 所以这一轮真正冻结的不是"多了一个消费者进程"，
+> 而是两句话的先后：**结果先落库，再说"消费完了"**（PR-33）；
+> 以及**交付之后必须重拍快照**（D-8）——
+> 否则一个已经拿到结果的 Run 会永远停在那里，且不报错。
+
+---
+
+# 69. 变更记录：M31（委派失败与取消的重试语义）落地回写
+
+版本：v2.1.19 → **v2.1.20**　测试：762 → **775**
+
+    单元    714 → 727   （+13：D-9 不可重试 · D-10 取消不是失败 · D-11 兜底断言
+                          +4 条控制组）
+
+## 起因：§68 末尾自己登记的那一问
+
+> 空洞 218：子 Run 被 CANCELLED 后父 Run 走 `child_failed`（TRANSIENT），
+> D-1 保证重试拿回同一条已取消的子 Run → 可能原地打转。
+
+"原地打转"这个猜测**不对**，而真实情况比它更糟。
+
+M31 的第一个动作不是改代码，是写一个探针把这条链跑一遍。跑出来的是：
+
+```
+子 Run 进终态（failed / cancelled）
+  → child_failed() → _close_child_gate(completed=False)
+  → kernel.fail(TRANSIENT) → 父 Execution 回到 PENDING（attempt=2）
+  → Worker 领走 → AgentDelegationExecutor 拒绝
+  → FAILED（attempt=3）
+  → 终态 error = DELEGATION_NOT_WORKER_EXECUTABLE
+```
+
+父 Execution 没有"原地打转"，它干脆**换了主人**：
+从父 Loop 手里滑到 Worker 手里，然后被 Worker 以一句
+"拥有你的 Loop 不在了"拒绝掉。
+
+### 三重损害
+
+**一、真因被抹掉。** 排障的第一入口是父 Execution 的终态 error。
+它现在读到的是 `DELEGATION_NOT_WORKER_EXECUTABLE`，
+于是排查方向是"父 Run 的 Loop 怎么没了"，
+而真相只是"子 Run 没做成"。
+
+这与 **PR-19** 是同一类错：当年 `native:human_approval` 被
+`ToolCallExecutor` 以 `BAD_PAYLOAD: payload.tool is required` 拒掉 ——
+一句既不对又误导的话。PR-19 之后这一类错的判据是：
+**报错说的那件事，和真实发生的那件事，是不是同一件？**
+
+**二、重试必然失败。** 委派 Execution 在 Worker 侧只有一种归宿 ——
+`DeferringExecutor` 拒绝（见 `executors.py` 的 `AgentDelegationExecutor`）。
+所以那个 TRANSIENT 重试 100% 以 PERMANENT 收场：
+多一次 Lease、多一次 Attempt、多两条事件，换不来任何可能性。
+
+**三、取消被当成可重试的失败。** S-15 说取消是"到此为止"。
+把它塞进 TRANSIENT 重试，等于把一个被叫停的动作再跑一遍。
+
+## 新不变量 D-9：委派动作的失败在父侧不可重试
+
+> **D-9：委派动作（`SKILL_CALL` / `AGENT_DELEGATION`）的父 Execution 失败后不可重试。**
+>
+> 理由不是"父不管了"，是**判过的题不判第二遍**：
+>
+>   1. 子 Run 是它自己的 Run，有自己的 Kernel、Attempt 与 RetryPolicy。
+>      它进 FAILED 意味着**那套预算已经判过了**。
+>   2. D-1 保证父侧重试拿回的是**同一条**子 Run（派生键 = 父
+>      `execution_id`，跨 Attempt 稳定）—— 第二次不会得到不同的答案。
+>   3. 委派 Execution 在 Worker 侧只有"被拒绝"一种归宿，所以重试必然失败。
+
+### 不可重试 ≠ 父 Agent 无路可走
+
+`retry.py` 开头把三件事分开了：
+
+    Retry            这次要不要再来一次
+    Recovery         故障之后怎么把它救回来
+    Agent Replanning 策略失败之后换条路
+
+D-9 关掉的是**第一件**，第三件完全开放：
+父 Agent 看到"子 Agent 失败"这条 Observation 之后，可以决定换一个目标再派 ——
+那是新的 Decision → 新的 Task → **新的 execution_id**，
+于是 D-1 派生的是一条**新的**子 Run。
+
+这一点有测试钉着（`ReplanningIsStillAllowedTest`），
+否则"不可重试"会被后来的人误读成"委派失败就到此为止"。
+
+## 新不变量 D-10：取消不是失败，尤其不可重试（S-15）
+
+> **D-10：`cancelled` 与 `failed` 在父侧走**不同的**终态处置。**
+>
+>   `failed`    → `FailureClass.PERMANENT`（子 Run 自己的预算判过了，D-9）
+>   `cancelled` → `FailureClass.POLICY_DENIED`（有人决定到此为止，S-15）
+>
+> 两者刻意不同：排障方向不一样。
+> 一个该去找"它为什么没做成"，一个该去找"**谁**取消了它"。
+> 并成一个值之后，这个区别就只能在 payload 里找，而没有人会去找。
+
+落地方式是一张表而不是散在的 if/else（`loop.CHILD_OUTCOME_FAILURE`）：
+"这个终态要不要重试"这件事只有一处（B-7），将来多一个终态就加一行。
+
+原先 `_close_child_gate` 的第二参是 `completed: bool` ——
+布尔只有两个值，于是"失败"和"取消"被迫共用一个分支，
+FailureClass 只能写死一个。**写死成 TRANSIENT 就是空洞 218 本身**。
+所以这一轮把它换成 `outcome: str`。
+
+## 新不变量 D-11：不得挂起在一条已经有结果的子 Run 上（兜底）
+
+> **D-11：`spawn()` 若交回一条已经终态的子 Run，父 Loop 必须立刻喊出来，
+> 不得 `suspend()` 等它。**
+
+D-1 把"父 Execution 重试"和"同一条子 Run"绑死了。
+于是只要委派还允许重试，第二次 `spawn()` 拿回的就是那条**已经终态**的子 Run ——
+而它不会再变，父 Run 挂起等它等于等一个不会再来的答案，且**没有任何报错**。
+那是 D-8 那个"静默挂住"形状的第三个副本。
+
+D-9 已经关掉了委派的重试，所以这条**不可达**。
+正因如此它做成**响亮的断言**而不是恢复路径（PR-26 同款：
+兜底就该喊出来，而不是悄悄退化）。
+哪天有人把 FailureClass 改回可重试，这里会立刻变红。
+
+## 为什么这一轮必须带一个真的 Worker 才能测
+
+空洞 218 的后果（真因被 `DELEGATION_NOT_WORKER_EXECUTABLE` 盖掉）
+**只有 Worker 真正把那条重试 Attempt 领走才会发生**。
+在只有 Kernel、没有 Worker 的世界里，"重试"只是停留在 PENDING 上，
+看不出任何后果 —— 那正是它从 M25 活到 M31 都没被发现的原因。
+
+所以 `RetryWorld` 装配了真的 `Worker`，
+并有一条断言走**调度层面**：让 Worker 去捞一次，必须捞不到东西
+（`self.assertEqual(self.worker.run_once(limit=10), {})`），
+而不是只断言状态没回到 PENDING。
+
+## 变红验证
+
+| 拿掉什么 | 结果 |
+|---|---|
+| D-9 / D-10（两个 FailureClass 都改回 TRANSIENT，取消并回 `child_failed`）+ D-11 断言 | 13 条里 **8 条变红**，其余 5 条保持绿 |
+
+保持绿的那 5 条全是控制组：
+
+- 「重试不是被全局关掉了」（TRANSIENT 本身仍可重试）
+- 「正常的未终态子 Run 照样挂起等它」
+- 「`failed` 的 Observation 仍然读作 failed」
+- 「换目标再派仍然可行」×2
+
+这个分布是"测得对"的证据（PR-23）：
+不是全红（那说明测的是别的东西），也不是全绿（那说明什么也没测）。
+
+## 空洞编号（续 §68）
+
+| # | 级别 | 空洞 | 现在 |
+|---|---|---|---|
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 215 | P1 | `tasks` 表无人写：Task 只活在内存字典里，重启后 Scheduler 拿不到 priority / tenant / resource | **仍缺** |
+| 217 | P2 | `ChildRunWaker` 只恢复父 Run、不驱动它：跨进程部署下"谁来调 `drive_run`"仍是调用方的事 | **仍缺** |
+| 218 | **P1** | 委派失败/取消被当成 TRANSIENT 可重试 → 真因被 `DELEGATION_NOT_WORKER_EXECUTABLE` 抹掉 | **已闭合**：D-9 / D-10 / D-11 |
+| 219 | **P1** | 子 Run 失败/取消时，父 Run 的**补偿账本不记**那一次委派 —— 子 Run 在失败前若已在外部世界留下状态（工单/订单），那笔副作用无人撤销（S-1 的覆盖缺口） | **仍缺**（新增） |
+| 220 | **P1** | 父 Run 已终态时（`ChildWakeOutcome.PARENT_TERMINAL`），子 Run 的结果与它的副作用一起被丢弃 —— 该分支只 `mark_delivered`，既不进 State 也不进补偿账本 | **仍缺**（新增） |
+
+## 冻结的是什么
+
+> v2.1.19 冻结的是**"凭什么说它回得来"**；
+> v2.1.20 冻结的是**"回来说'没做成'的时候，说的还是不是同一件事"**。
+>
+> 上一轮把结果交回了父 Run，可交回来的若是"失败"或"取消"，
+> 父 Run 会把它当成一次**可重试的瞬时故障** ——
+> 于是那个失败被 Worker 接手、被一句 "DELEGATION_NOT_WORKER_EXECUTABLE"
+> 重新描述一遍，而"子 Run 没做成"这个真因在描述里消失了。
+>
+> 这一轮冻结的是三句话：
+>
+>   **判过的题不判第二遍**（D-9）—— 子 Run 自己的 Kernel 判过了；
+>   **取消不是失败**（D-10）—— 一个该问"为什么没做成"，一个该问"谁叫停的"；
+>   **不可达的兜底要喊出来**（D-11）—— 静默退化是最难查的那一类错。
+>
+> 还有一句是给后来的人的：**不可重试不等于无路可走**。
+> 父 Agent 换一个目标再派一次完全允许 —— 那是新 Task、新 execution_id、
+> 新的一条子 Run。关掉的只是"同一个 Execution 再来一次"。
+
+---
+
+# 70. 变更记录：M32（委派没收成时的账本）落地回写
+
+版本：v2.1.20 → **v2.1.21**　测试：775 → **790**
+
+    单元         727 → 740   （+13：D-12 失败/取消也要登记 · D-13 孤儿不得丢
+                               +5 条控制组）
+    集成（真 PG）  48 → 50    （+2：D-12 / D-13 在真库上落得住）
+
+## 起因：§69 把话说准了，但说完什么都没变
+
+上一轮解决了"回来说'没做成'的时候，说的还是不是同一件事"。
+D-9 / D-10 / D-11 让父 Run **准确地**收到一句"委派失败"或"委派被取消"。
+
+可那句话说完之后，补偿账本上**仍然什么都没多**。
+一次失败的委派在账本上的样子，和它从未发生过的样子，是**同一个样子**。
+
+这就是 §69 末尾登记的空洞 219。它和 220 是同一个根：
+
+> 结果回来了（或回不来），但**没有人为它的副作用负责**。
+
+## 根因：一句对工具调用成立、对委派不成立的判据
+
+`SagaCoordinator.record()` 里有一条判据，从 M10 起就在那里：
+
+> 非 COMPLETED 且非 EXTERNAL_UNKNOWN 的失败 → 认为没产生副作用 → 不登记。
+
+对**单次工具调用**，这条判据大致成立：一次调用没做成，多半真的没改到东西
+（`EXTERNAL_UNKNOWN` 那一档已经单独挑出来记成 UNRESOLVED 了）。
+
+但委派派出的是**一条完整的 Run**。它可以跑七步、建三张工单、改两个系统，
+然后在第八步失败。失败只说明它**没做完**，不说明它**什么都没做**。
+
+于是 S-1 留了一扇门：
+
+> **S-1：** 子 Run 动作是 compensable 的，`action`（含 `compensation`）必须随派生一起落库。
+
+方案落库了。可它只在"成功"那一侧被记进账本 ——
+真正需要撤销的那一侧（失败与取消），一笔都没记。
+**S-1 的覆盖面缺了一半，而且缺的恰好是有用的那一半。**
+
+## 新不变量 D-12：委派以 failed / cancelled 收尾，账本照样要记一条
+
+> **D-12：委派动作（`SKILL_CALL` / `AGENT_DELEGATION`）的子 Run 以 `failed`
+> 或 `cancelled` 收尾时，父 Run 必须登记一条 UNRESOLVED 补偿记录。**
+> 因为"失败 ⟹ 没副作用"这条判据对委派根本不成立 ——
+> 子 Run 是一条完整 Run，父 Run 无从得知它留下了什么。
+
+实现落在 `AgentLoop._finish_child()`。这里有一个容易被漏掉的先后：
+
+`step` / `action` / `task_id` / `execution_id` 必须在**关闸之前**抓下来。
+`_clear_pending_child()` 一执行，`pending_child` 就没了，
+那四个值随之不可达 —— 而 S-1 要求记录说得清"哪条 Task 的哪一步"。
+
+### 为什么是 UNRESOLVED 而不是 PENDING
+
+`CompensationStatus` 对 UNRESOLVED 的定义正好是这一档：
+"撤销不了：永久失败 / 缺参数 / **副作用存疑**"。
+
+- `claim()` 只认领 PENDING，所以它**不会**被自动撤销 —— 这正是 S-15 要的
+  （取消不自动回滚，"到此为止"不等于"撤销它做过的事"）；
+- 它又留在 `unresolved_for()` 里，于是运维看板**看得见**。
+
+两种自动行为（撤销 / 当没发生）在这里都是**猜**。
+账本该做的是把"这里有一笔说不清的副作用"记下来，而不是替人猜。
+
+`args` 恒为空：撤销参数要从正向结果里取，而这里没有可信结果（S-8）。
+不带一个缺失的参数去撤销 —— 那是把一次撤销变成一次新的事故。
+
+### 控制组：不是所有失败都要记
+
+D-12 **只**改委派。一个普通动作失败，判据照旧（不登记）。
+测试里这一条是控制组：它保证 D-12 没有把"失败 = 没副作用"
+这条对工具调用成立的判据一起推翻。
+
+同理：声明了 `compensation` 的委派才记；没声明的，账本不凭空造一条。
+
+## 新不变量 D-13：父 Run 已终态时，副作用不得被静默丢弃
+
+`ChildWakeOutcome.PARENT_TERMINAL` 那条分支（父 Run 已终态 ⟹
+R-3 `rebuild()` 抛 `IllegalTransition`）此前只做一件事：`mark_delivered`。
+
+也就是说：**子 Run 的结果和它的副作用，一起被扔掉了。**
+
+> **D-13：父 Run 已终态、结果交不回去时，该子 Run 的副作用必须登记为
+> UNRESOLVED 孤儿记录，不得静默丢弃。**
+
+父 Run 已终态 ⟹ 没有任何一条 `step()` 会再走 ⟹
+委派那一步永远不会有 `child_completed` / `_finish_child` ⟹
+D-12 也永远不会为它跑。所以这不是 D-12 的重复，是 D-12 **够不到的那一块**。
+
+### `step_id` 为什么留空
+
+说不出来就**留空**，不填一个假的。父 Run 拿不到 Step（`rebuild()` 抛了），
+而 PR-19 那一类错的共同形状就是：**报错说的那件事，和真实发生的那件事不是同一件**。
+填一个"看起来像"的 step_id，比留空糟得多 —— 留空至少看得出来是不知道。
+
+`task_id` 和 `execution_id` 是从子 Run 登记处读来的，**精确**（S-1）。
+
+## `record_unresolved()`：同一个问题不想有四个答案（B-7）
+
+修之前，"怎么登记一条 UNRESOLVED"这个问题有两份答案：
+`record()` 里两处内联的 `CompensationRecord(...)` 构造
+（`EXTERNAL_UNKNOWN` 一处、撤销方案实例化失败一处）。
+
+D-12 和 D-13 再各加一处，就变**四份答案**。
+四份答案的意思是：将来改"UNRESOLVED 长什么样"要改四个地方，
+漏一个就是两条不同的账本。
+
+所以抽出一个 `SagaCoordinator.record_unresolved()`，
+`record()` 的两处与 D-12 / D-13 全部走它。B-7：一个事实，一个定义。
+
+## 真 PG 这一关：`NOT NULL` 不等于非 `NULL`
+
+`compensations.step_id` 是 `TEXT NOT NULL`。而 D-13 的孤儿写的正是**空字符串**。
+
+"空串"和 "NULL" 不是一回事：适配器若把 `""` 翻成 `NULL`，插入会直接失败 ——
+而失败的那一刻，恰恰是"父 Run 已终态、这笔副作用最需要被记住"的那一刻。
+**最该被记住的那一笔，因为一个字段被拒之门外。**
+
+内存版 `InMemoryCompensationStore` 什么都不校验，这类错它永远看不见。
+所以 `DelegationLedgerOnRealPostgresTest` 必须到真库上跑，
+并且直接查 `step_id IS NOT NULL AND step_id = ''`。
+
+顺带在组合根那条测试上补了一句（PR-29）：
+`app.waker.saga.store` 必须是 `PostgresCompensationStore`，
+且它的 `conn` 与栈里那个 store **是同一条连接**。
+否则"唤醒路径记的账"和"执行路径记的账"是两本账 ——
+A-12 的判据下这是**变错**，不是变慢。
+
+## 变红验证
+
+| 回退内容 | 结果 |
+|---|---|
+| D-12（`_record_delegation_unresolved` 直接 return）+ D-13（`_record_orphan` 直接 return） | 单测 13 条里 **8 条变红**，其余 5 条保持绿 |
+| 同上 | 真 PG 集成 2 条 **全红** |
+
+保持绿的那 5 条**全部是控制组** —— 这正是想要的形状：
+
+- 没声明逆操作 → 账本不凭空造一条（D-12 / D-13 各一条）
+- D-12 只改委派，没推翻"普通动作失败 = 没副作用"
+- 成功路径没被 D-12 改成 UNRESOLVED
+- 父 Run 还活着 → 走正常路径，**没有**孤儿记录
+
+不是全红（说明测的不是一个开关），也不是全绿（说明测的确实是这两条）。
+
+## 空洞编号（续 §69）
+
+| # | 级别 | 空洞 | 现在 |
+|---|---|---|---|
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 215 | P1 | `tasks` 表无人写：Task 只活在内存字典里，重启后 Scheduler 拿不到 priority / tenant / resource | **仍缺** |
+| 217 | P2 | `ChildRunWaker` 只恢复父 Run、不驱动它：跨进程部署下"谁来调 `drive_run`"仍是调用方的事 | **仍缺** |
+| 219 | **P1** | 子 Run 失败/取消时，父 Run 的补偿账本**不记**那一次委派 —— 失败只说明没做完，不说明没留下东西 | **已闭合**：D-12 |
+| 220 | **P1** | 父 Run 已终态时（`PARENT_TERMINAL`），子 Run 的结果与副作用一起被丢弃 | **已闭合**：D-13 |
+| 221 | P2 | AgentOS 目前**没有 Run 级取消入口** —— `AgentLoop` 里没有 `cancel()`，于是"父 Run 已终态"这个状态在测试里只能直接改快照造出来 | **仍缺**（新增） |
+
+空洞 221 值得单独说一句：它不是测试写不出来，是**产品形状上缺一块**。
+一个能派生子 Run 的平台，必须有"把一条 Run 叫停"的入口 ——
+否则取消只能靠 `POLICY_DENIED` 或一个 kill -9 从外部发生，
+而 D-13 处理的那种"父已终态、子在跑"的局面，只会越来越多。
+
+## 冻结的是什么
+
+> v2.1.19 冻结的是**"凭什么说它回得来"**；
+> v2.1.20 冻结的是**"回来说'没做成'的时候，说的还是不是同一件事"**；
+> v2.1.21 冻结的是**"'没做成'之后，留在外部世界的那些东西算谁的"**。
+>
+> 一句"失败 ⟹ 没副作用"，对一次工具调用是常识，对一条子 Run 是**错觉**。
+> 子 Run 是一条完整 Run：它可以做了很多事，然后没做完。
+> 把它的失败当成"什么都没发生"，不是漏记一笔账，
+> 是让一个真实存在的外部副作用在系统里**查无此人**。
+>
+> 这一轮冻结的是两句话：
+>
+>   **没做完 ≠ 没做过**（D-12）—— 失败和取消都要在账本上留痕；
+>   **交不回去的也要记账**（D-13）—— 父 Run 终了不是丢弃副作用的理由。
+>
+> 还有一句是给实现者的：**说不出来就留空，不要填一个像的**。
+> 空串看得出来是不知道；假的 step_id 看不出来。
+
+---
+
+# 71. 变更记录：M33（Run 级取消入口）落地回写
+
+版本：v2.1.21 → **v2.1.22**　测试：790 → **822**
+
+    单元         740 → 767   （+21：B-8 入口 · B-9 级联 · B-10 终态
+                               +6 契约层 `POST /runs/{id}/cancel`）
+    集成（真 PG）  50 → 55    （+5：取消在真库上停得住、停得干净、留得下）
+
+## 起因：§70 自己登记的那句话
+
+> 221（P2）：AgentOS 目前**没有 Run 级取消入口** —— `AgentLoop` 里没有 `cancel()`，
+> 于是"父 Run 已终态"这个状态在测试里只能直接改快照造出来。
+
+写这句话的时候它只是"测试不方便"。把它读完才发现它说的是另一件事：
+
+**一条 Run 在 AgentOS 里根本不能被叫停。**
+
+取消只能从外部发生 —— kill -9、手工改库、把策略改成 REQUIRE_APPROVAL 再驳回。
+于是"把一条正在跑的 Run 停下来"这个动作的实现者是**运维**，不是系统。
+它能派生子 Run（M25）、能挂起等人审批（M18）、能记账（M10/M32）、
+能活过重启（M26），唯独没有"算了，别跑了"。
+
+而 D-13 处理的那种局面 —— 父已终态、子在跑 ——
+恰恰是取消缺位时**唯一**会发生的局面。
+一个洞（221）是另一个机制（D-13）唯一的应用场景，这件事本身就是答案。
+
+## 三层落点
+
+取消不是一个函数，是三层：
+
+| 层 | 落点 | 它负责什么 |
+|---|---|---|
+| Runtime | `AgentLoop.cancel(reason=, by=)` | 关闸门、判死 Execution、声明终态、落快照、记账 |
+| 派生器 | `ChildRunSpawner.cancel_child()` | 叫停**它派出去**的那条子 Run（含递归） |
+| 契约层 | `POST /runs/{id}/cancel` | 把"叫停"暴露成一个能被 HTTP / 页面调用的动作 |
+
+外加控制台上的一个按钮 —— 因为**没有页面的系统，第一次被看见的时候就是出事的时候**。
+
+### 为什么取消不是 `step()` 的一个分支
+
+走 `step()` 意味着要经过 Decision → Policy → Action 那条链。
+而取消恰恰必须绕开它：一条被 Policy 拦住的 Run，
+每次 `step()` 都卡在同一个闸门上 —— 于是它永远取消不掉。
+
+取消不是"再走一步"，是**不走了**。
+
+### 为什么用 `kernel.cancel()` 而不是 `kernel.fail()`
+
+那条 SUSPENDED 的 Execution 没有失败，它只是**不必再发生**了。
+判成 FAILED 会让排障的人去找"它为什么失败" ——
+PR-19 那一类错的共同形状：报错说的那件事，和真实发生的那件事不是同一件。
+
+### 为什么撤销审批而不是驳回它（A-9）
+
+驳回说"不准做"，撤销说"不用做了"。
+并成一个状态之后，审计回答不了**"有没有人真的审过它"** ——
+而这正是审计存在的理由。
+
+## 新不变量 B-8：取消是 Run 级动作，必须说得清谁叫停、为什么
+
+> **B-8：一条 Run 必须能被调用停；`reason` 与 `by` 都必填。**
+
+`by` 必填是 A-8 同款：匿名审批进不了审计，
+匿名取消同样进不了。一条查不到是谁的 `cancelled`，
+等于取消这件事**没有发生过** ——
+事后看到它的人无从判断是用户点的、策略拦的，还是系统崩了。
+
+`reason` 必填同理：说不出为什么 = 事后没人回答得了这一条为什么跑了一半。
+
+## 新不变量 B-9：取消必须级联，且叫停之后要结掉
+
+> **B-9：取消一条正在等子 Run 的 Run，必须连带叫停那条子 Run；
+> 顺序是**先子后父**；叫停之后必须把它结掉（`mark_delivered`）。**
+
+### 不级联 = 停一半
+
+父 Run 判了 CANCELLED，子 Run 还在跑：继续花钱、继续产生外部副作用，
+而它的结果再也交不回来（父已终态 ⟹ 唤醒路径只能记一条 D-13 孤儿）。
+**用户按的是"停止"，得到的是停止了一半。**
+
+### 为什么必须先子后父
+
+反过来（先宣布自己终态，再回头叫停子 Run）中间崩一次，
+留下的残局是"父已终态、子还在跑" —— 而那正是 D-13 必须存在的理由，
+也就是**必须有人来看一眼**的那一类残局。
+
+先子后父崩在同一个位置，留下的是"父还活着、子已取消"：
+父 Run 会被正常唤醒，拿到 `cancelled`，走 D-12 记账。
+两种残局系统都收得住，但只有后者**不需要人来判断**。
+
+### 第三半：叫停之后必须结掉（慢泄漏）
+
+这一半是写测试的时候才量出来的。级联之后若不 `mark_delivered`：
+
+    子 Run 已终态（cancelled）但没交付
+      ⟹ 它永远留在 `undelivered()` 里
+      ⟹ 兜底扫每一轮都把它捞出来一次
+      ⟹ 父 Run 已终态 ⟹ 每一轮记一条 D-13 孤儿
+
+取消的次数越多，sweep 越慢；账本上多出一堆"孤儿"，
+而其实每一条都已经被处理过了。**这不是立刻出错，是一条慢慢长大的尾巴。**
+
+这里不是"跳过交付"，是**交付了**：父 Run 已经处置了它的结果
+（就是"不必再要了"），D-7 要的那个前提（先有结果）也满足。
+
+### 叫不停就必须喊出来
+
+`spawner` 没有 `cancel_child` = 它起得出却停不了。
+静默跳过会返回一个"取消成功"，而那条子 Run 还在跑。
+所以把它**写进 `ChildRunSpawner` 端口**，并在碰不到时抛 ——
+PR-26 同款：兜底不能是主要保证，而"碰不到就跳过"比没有兜底更糟。
+
+## 新不变量 B-10：终态不可取消；取消之后必须落终态快照
+
+> **B-10：终态 Run 不可取消（B-3 的另一半）；取消之后必须落一份终态快照。**
+
+静默返回"取消成功"比推进更骗人：调用方以为自己**按停了**一条 Run，
+而那条 Run 其实早就停了 —— 而且可能是 COMPLETED。
+
+**取消之后必须落快照（R-1）** 这一半差点漏掉。少了它，取消只改了内存：
+重启后恢复出来的是一条 RUNNING 的 Run（快照还停在挂起那一帧），
+它会被继续推进 —— **取消等于没发生，而且没有任何报错**。
+
+这也正是 M32 里"父 Run 已终态"只能手工造出来的原因：
+不是没有那个状态，是那个状态从来没人写进去过。
+
+## 真 PG 这一关
+
+取消这条路径上有**三个**判据是 SQL 谓词，不是 Python 判断：
+
+1. `undelivered()` 的 `WHERE completed_at IS NOT NULL AND delivered_at IS NULL`
+   —— B-9 的第三半全靠它。内存版是用 `is_finished` / `is_delivered` 过滤的，
+   **这个谓词此前一行都没被执行过**。
+2. `child_runs_outcome_consistent`（D-6）：终态 ⟺ `completed_at` 非空。
+   级联取消往里写的是 `cancelled` —— 与 `failed` / `completed` 同一个 CHECK。
+3. `run_snapshots` 的 `latest()` 按 `created_at DESC, snapshot_id DESC` 排序。
+   取消之后落的那份终态快照必须真的排在挂起那一帧**后面**。
+
+三条全是"只有真库才执行得到"的东西。
+
+## 变红验证
+
+| 回退内容 | 结果 |
+|---|---|
+| B-9（`_cancel_pending_child` 直接 return）+ B-10（允许取消终态） | 32 条里 **11 条变红** |
+| 只回退 B-9 | 26 条里 **13 条变红**（强化两条之后） |
+
+保持绿的是 B-8 那一组（入口存在、`reason`/`by` 必填、State/Trace 留痕、
+闸门 Execution 被判死、S-15 不回滚、终态快照、R-3 不可恢复）——
+正是想要的形状：**测 B-9 的会红，测 B-8 的不会**。
+不是全红（说明测的不是一个开关），也不是全绿。
+
+### 顺带抓到两条"空过"的测试
+
+第一次变红验证时，这两条**回退之后仍然是绿的**：
+
+- `test_the_child_is_closed_out`
+- `test_the_sweep_finds_nothing_after_a_cancellation`
+
+原因：它们只断言"扫不出来"，而 `undelivered()` 只捞"已终态未交付"的 ——
+**压根没级联时，子 Run 根本没终态，自然也不在里面**。
+那是空过，不是通过，而空过比红更危险：它给了一个假的绿。
+
+修法是先钉住"它确实终态了且已交付"，再钉住"扫不出来"。
+**凡是"不该出现"这类断言，都要配一句"该出现的确实出现了"。**
+
+## 空洞编号（续 §70）
+
+| # | 级别 | 空洞 | 现在 |
+|---|---|---|---|
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 215 | P1 | `tasks` 表无人写：Task 只活在内存字典里，重启后 Scheduler 拿不到 priority / tenant / resource | **仍缺** |
+| 217 | P2 | `ChildRunWaker` 只恢复父 Run、不驱动它：跨进程部署下"谁来调 `drive_run`"仍是调用方的事 | **仍缺** |
+| 221 | **P2** | 没有 Run 级取消入口：一条 Run 只能被推进，不能被叫停 | **已闭合**：B-8 / B-9 / B-10 |
+| 222 | **P1** | 跨进程下"子 Run 收到取消"没有通道：目前只能把登记处判成 `cancelled`，而那条子 Run 在自己进程里还在跑（无人告诉它）。Kernel 的 `request_cancel` 是 **Execution 级**的，不是 Run 级的 | **仍缺**（新增） |
+| 223 | P2 | `POST /runs/{id}/cancel` 没有幂等键：第二次提交会拿到 409 `RUN_TERMINAL`。它如实报了（不是静默成功），但按 A-3 的规矩写操作应当支持幂等键 | **本轮闭合（M44 / §82）** |
+
+空洞 222 值得单独说。本轮在**进程内**做到了递归级联
+（子 Run 被调自己的 `cancel()`，于是孙 Run 一起停）；
+跨进程那条路只走了一半：登记处被判死了，可**跑在另一个进程里的那条 Run
+并没有人告诉它**。它还会继续跑完，只是结果没人要了。
+
+要补它需要一件新东西：一个 **Run 级的取消信号**
+（Kernel 现有的 `cancellation_requested` 挂在 Execution 上，而子 Run 是 Run），
+加上子 Run 侧在安全点去读它。这是下一轮最该做的一件事。
+
+## 冻结的是什么
+
+> v2.1.19 冻结的是**"凭什么说它回得来"**；
+> v2.1.20 冻结的是**"回来说'没做成'的时候，说的还是不是同一件事"**；
+> v2.1.21 冻结的是**"'没做成'之后，留在外部世界的那些东西算谁的"**；
+> v2.1.22 冻结的是**"一条 Run，能不能被叫停"**。
+>
+> 一个能派活、能等人、能记账、能活过重启的平台，
+> 唯独不能"算了别跑了" —— 于是"停"这个动作的实现者是 kill -9。
+> 而 D-13 处理的那种局面，恰恰是取消缺位时唯一会发生的局面。
+>
+> 这一轮冻结的是三句话：
+>
+>   **叫停必须说得清是谁、为什么**（B-8）—— 说不出的取消进不了审计；
+>   **取消不是停一半**（B-9）—— 先子后父，且叫停之后要结掉；
+>   **终态就是终态**（B-10）—— 不可再取消，且必须落成快照。
+>
+> 还有一句是给写测试的人的：**"不该出现"这类断言，都要配一句"该出现的确实出现了"**。
+> 本轮有两条测试在回退之后仍然绿着 —— 那不是通过，是空过。
+
+
+---
+
+# 72. 变更记录：M34（跨进程取消的通道）落地回写
+
+版本：v2.1.22 → **v2.1.23**　测试：822 → **857**
+
+    单元         767 → 791   （+21：安全点 · R-7 顺序 · R-8 结清 · R-9/R-10 Sweeper
+                                     · 意图本体 · 011 的 DB 约束 · 契约层跨进程
+                               +3 组合根：`cancellations` 必须是 PG 版且父子同一份）
+    集成（真 PG）  55 → 66    （+11：upsert 不复活 · pending 谓词 · rowcount 判胜负
+                                      · 跨进程认领 · Sweeper 从 PG 捞 · 两条 CHECK）
+
+## 起因：§71 自己登记的空洞 222
+
+> 222（P1）：跨进程下"子 Run 收到取消"没有通道 —— 目前只能把登记处
+> 判成 `cancelled`，而那条子 Run 在自己进程里还在跑（无人告诉它）。
+
+这句话真正的形状不是"少了个通知"，是**系统里同时存在两条互相矛盾的事实**：
+
+```text
+父侧事实：这条子 Run 的结果我不要了   （child_runs.status = cancelled）
+子侧事实：我还活着，我还在跑         （那条 Run 自己说的）
+```
+
+两件都是真的，而它们说的东西相反。用户按的是"停止"，得到的是**停止了一半**。
+
+"停一半"比"不停"更难发现：
+页面上显示已取消（没有报错），账单上还在花钱（也没有报错）。
+唯一会说话的是 D-13 —— 而它要等到父 Run 已经终态、子 Run 终于跑完
+交不回结果时才喊，那时候钱早就花完了。
+
+## 为什么 Kernel 现有的取消补不上这个洞
+
+Kernel 有一套完整的取消：`cancellation_requested` 落 PG、
+Redis 走快速信号、Worker 在安全点检查 Token。三段式、判据都对。
+
+但它挂的是 **Execution**。一条子 Run 不是一条 Execution：
+
+* 它有**自己**的一堆 Execution（它也要调模型、调工具、派生孙 Run）；
+* 它在等孙 Run 的时候，**手上根本没有活的 Execution** ——
+  那条因为闸门而 SUSPENDED 的 Execution 是"它在等"的证据，
+  不是"它在跑"的证据。往它上面写 `cancellation_requested`
+  等于**取消一次等待**，而等待结束之后它还会继续往下走。
+
+所以必须新增 **Run 级**这一层。这不是重复实现，是**粒度根本不同**：
+Execution 级的信号没有地方挂。
+
+## 三段式（与 Kernel 同构，不是替代）
+
+```text
+Durable Intent   PostgreSQL `run_cancellations`（唯一事实来源）
+Safe Point       `AgentLoop._step()` 顶部：协作式，读到就自己停
+Sweeper          `RunCancellationService.sweep()`：系统级兜底
+```
+
+**Safe Point 兜不住的那些才是这套东西存在的理由。**
+一条停在 `WAITING_CHILD` 的 Run 不会调 `step()` —— 它在等别人。
+它这一辈子可能再没有第二个安全点。而它恰恰是最该被叫停的那一条：
+它在等一个因为父 Run 被取消而**永远不会再有价值**的结果。
+
+## 新增不变量
+
+```text
+R-7   取消**意图**必须先于取消**宣告**落库。
+      顺序反了会留下一个窗口：Run 对外已经是 CANCELLED 了，
+      而"有人要求停它"这件事还没持久化。窗口里崩一次，
+      重启后它就是一条普通的 RUNNING。与 X-3 同款形状
+      （两件事实必须同事务），只是这里的两件是"我要停"与"我停了"。
+
+R-8   被叫停的 Run 认领意图之后必须把它**结掉**（`settle`）。
+      不结的话 Sweeper 每轮都会再叫停它一次 —— 第一轮是真的取消，
+      之后每一轮都是撞 B-10 的抛。一个每轮都抛的后台进程，
+      比一个不干活的后台进程更难发现：它把日志刷满，
+      而真正的故障淹没在里面。
+
+R-9   Sweeper 遇到"已经终态"的 Run 不是失败，是**已经完成**。
+      `rebuild()` 抛 `IllegalTransition`（R-3），在这里那正是
+      想要的结果：这条 Run 已经停了，只是不是被这条意图停的。
+      所以：结掉它，继续下一条，不报错。
+
+R-10  `settled_at` 是"这条 Run **确实停了**"的证据，
+      不是"取消被请求过"的证据。
+```
+
+R-10 是本轮唯一一条**在写的过程中被自己推翻**的不变量，值得单说。
+
+第一版 `sweep()` 里我写的是：
+
+```python
+except LookupError:
+    self.store.settle(request.run_id)   # 没有快照 = 没有可恢复点，也结掉
+    continue
+```
+
+理由是"否则每轮都要为一个根本不存在的 Run 重建一次"。
+这句话错在把 `LookupError` 读成了"这条 Run 不存在"。
+
+快照只在**挂起**时拍（R-1）。一条正在往前跑、从没挂起过的 Run
+**也没有快照** —— 它活得好好的。所以 `LookupError` 的真实含义是
+"我不知道"，而不是"它没了"。
+
+在那里结掉意图，等于在系统里写下"我取消了它"而它还在跑（PR-19），
+而且从此**再没有人**会去叫停它 —— 意图已经不在 pending 里了。
+按 A-12 判：那是"变错且没人知道"。
+
+改成"什么都不做、让它继续 pending"之后，代价是一条永远没人认领的
+意图会一直留在 `idx_run_cancellations_pending` 里 ——
+那是"**变慢且看得见**"。两害相权，后者好得多。
+
+## 契约层：装载不了 ≠ 不存在
+
+M33 的 `cancel_run()` 走 `_must_stack()`，找不到就 404。
+而一条正在**别的进程**里跑的 Run 没有快照（R-1），于是：
+
+```text
+控制台看得到这条 Run（另一个接口给的）
+点"叫停" → 404 RUN_NOT_FOUND
+```
+
+"停"这个动作在跨进程下又交回给了运维 —— 回到 M33 之前的形状。
+
+所以这一轮把它改成两段：
+
+1. 装载得回来 → 照旧调 `AgentLoop.cancel()`；
+2. 装载不了 → 落一条**持久意图**，返回 `RunView.cancel_requested=True`。
+
+关键是第 2 条**不许谎报"已取消"**。返回体里 `status` 在有快照时用快照上的
+状态、没有就写 `unknown`（不猜一个 `running`），
+`cancel_requested=True` 明说"只是请求，它还没停"。
+控制台据此显示"已请求叫停 —— 它现在**还没停**"。
+
+没有配置通道时（`cancellations is None`）退回老行为报 404 ——
+因为那时"不存在"和"在别处"**无法区分**，猜一个比如实说不知道更糟。
+生产一定有通道：组合根的 `_REQUIRED_EXTRAS["cancellations"]` 收不下就装载失败。
+
+## 真 PostgreSQL 验了什么
+
+四条判据全是 SQL 谓词，内存版一行都跑不到：
+
+1. `request()` 的 upsert 最后那句 `WHERE run_cancellations.settled_at IS NULL`
+   —— **不复活**。写反了 / 漏了，内存版完全看不见（它是一行 Python `if`）。
+2. `pending()`：`WHERE settled_at IS NULL ORDER BY requested_at LIMIT %s`
+   —— Sweeper 的入口。谓词写反（写成 `IS NOT NULL`）内存版照样绿。
+3. `settle()` 靠 `cur.rowcount` 判胜负，不是"先读再写"。
+   at-least-once 语义下"读出来判一下"永远慢一拍。
+4. 两条 CHECK：`run_cancellations_attributed`（B-8）、
+   `run_cancellations_settled_after_request`（R-7）。
+
+## 变红验证
+
+回退新钉的不变量，看有多少条真的会红：
+
+| 回退什么 | 红 |
+|---|---|
+| `_step()` 顶部的安全点 | 3 |
+| `_cancel_pending_child` 里给子 Run 写意图 | 3 |
+| `run()` 在 `CANCELLED` 上不停 | 1 |
+| R-10（LookupError 也结掉） | 1 |
+| R-7（意图挪到宣告之后） | 1 |
+
+每条都红了 —— 没有一条是空过的。
+
+## 空洞编号（续 §71）
+
+| # | 级别 | 空洞 | 现在 |
+|---|---|---|---|
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 215 | P1 | `tasks` 表无人写：Task 只活在内存字典里，重启后 Scheduler 拿不到 priority / tenant / resource | **仍缺** |
+| 217 | P2 | `ChildRunWaker` 只恢复父 Run、不驱动它 | **仍缺** |
+| 223 | P2 | `POST /runs/{id}/cancel` 没有幂等键 | **本轮闭合（M44 / §82）** |
+| 222 | **P1** | 跨进程下"子 Run 收到取消"没有通道 | **已闭合**：R-7 / R-8 / R-9 / R-10 + `011_run_cancellations.sql` + `apps/run_cancellation_sweeper` |
+| 224 | P1 | 取消与完成**赛跑**：父 Run 把跨进程的子 Run 在登记处判成 `cancelled` 之后，那条子 Run 可能在读到意图之前先跑完了 → 它写 `completed` 时会撞 B-3 的 `InvariantViolation`（响，但是个真 bug）。要修它得给 handle 一个"已请求取消、结果待定"的中间态 | **仍缺**（新增） |
+| 225 | P2 | 对一条**根本不存在**的 Run 请求取消，会留下一条永远 pending 的意图（R-10 不让 Sweeper 结掉它，于是它一直留在索引里）。可见、不污染正确性，但是会一直被扫 | **仍缺**（新增） |
+
+## 冻结的是什么
+
+> v2.1.19 冻结的是**"凭什么说它回得来"**；
+> v2.1.20 冻结的是**"回来说'没做成'的时候，说的还是不是同一件事"**；
+> v2.1.21 冻结的是**"'没做成'之后，留在外部世界的那些东西算谁的"**；
+> v2.1.22 冻结的是**"一条 Run，能不能被叫停"**；
+> v2.1.23 冻结的是**"它被叫停的时候，是不是真的停了"**。
+>
+> 前一轮把"叫停"这个动作从运维手里拿了回来；
+> 这一轮要回答的是按下那个按钮之后，到底有没有人去执行它。
+> 一个只能在本进程里生效的取消，等于一个**只在运气好的时候生效**的取消。
+>
+> 这一轮冻结的是四句话：
+>
+>   **意图先于宣告**（R-7）—— 崩在中间也不能让"我要停"消失；
+>   **认领完了要结掉**（R-8）—— 不结就有一个每轮都抛的后台进程；
+>   **已经终态不是失败**（R-9）—— 那是想要的结果；
+>   **`settled_at` 是"停了"的证据，不是"请求过"的证据**（R-10）。
+>
+> 还有一句是给写这一层的人的：**"读不出来"不等于"它没了"**。
+> 快照只在挂起时拍，于是"没有快照"最常见的含义恰恰是
+> "它正在跑" —— 把这两个读成同一件事，会让系统在最该停的那一刻
+> 写下"已取消"，然后撒手不管。
+
+
+---
+
+# 73. 变更记录：M35（取消与完成赛跑）落地回写
+
+版本：v2.1.23 → **v2.1.24**　测试：857 → **896**（v2.1.24 的收尾线）
+
+版本：v2.1.24 → **v2.1.25**　测试：896 → **934**
+
+    单元         791 → 819   （+27：脸 A · 脸 B · 进程内控制组 · request_cancel 本体
+                                     · PG 版 request_cancel · 012 的 DB 约束
+                               +1 脸 A 的判据：`CancellingWithoutTheChildInMemoryTest`
+                                  里那条"登记处被判死"改成"请求被写进去"）
+    集成（真 PG）  66 → 77    （+11：请求落 PG · 另一条连接看得到 · 条件写判胜负
+                                      · 两条 CHECK · 赛跑端到端 · 孤儿点名赛跑）
+
+## 起因：§72 自己登记的空洞 224
+
+上一轮在 §72 末尾写下这么一句：
+
+> 父 Run 把跨进程的子 Run 在登记处判成 `cancelled` 之后，
+> 那条子 Run 可能在读到意图之前先跑完了 →
+> 它写 `completed` 时会撞 B-3 的 `InvariantViolation`（响，但是个真 bug）。
+> 要修它得给 handle 一个"已请求取消、结果待定"的中间态。
+
+方向是对的（"中间态"确实是最后落地的东西），但这句话**只说了一半**。
+同一个洞有两张脸，而它点名的那张是会响的那张。
+
+## 脸 A 与脸 B：同一个错误的两次发作
+
+**脸 A（取消赢）** —— 父先写 `cancelled`，子后跑完：
+
+    子 Run 跑完那一刻调 mark_finished('completed')
+      → 撞 B-3：already 'cancelled'; it cannot become 'completed'
+      → 子 Run 进程抛异常
+      → 它的**真实结果**（含 S-1 补偿要用的撤销参数）从此丢失
+      → 而父 Run 那边显示"已取消"，看起来一切正常
+
+**脸 B（完成赢）** —— 子先跑完，父才取消：
+
+    cancel_child 见它已终态，原样返回
+      → _cancel_pending_child 见 status != 'cancelled'，跳过 D-12
+      → 但它**照样** mark_delivered()（原 B-9 第三半）
+      → 于是这条"已经产生、却从未被任何人看过"的结果被记为已交付
+      → 唤醒路径再见它时只说 ALREADY_DELIVERED
+      → D-13 孤儿永不登记
+      → 子 Run 留在外部世界的副作用从账本里**静默消失**
+
+按 A-12（丢了之后是变慢还是变错），**脸 B 比脸 A 严重**：
+脸 A 至少会喊，脸 B 什么都不喊。而 §72 只登记了脸 A。
+
+## 为什么"多判一次"补不上，必须换作者
+
+两张脸看起来是两处 bug，其实是**同一个错误**的两次发作：
+
+> 父 Run 替一条它看不见的 Run 宣告了终态。
+
+进程内这句话无害 —— 父 Run 握着子 Run 的对象，叫停之后是**子 Run 自己**
+写终态，父侧读回来的是同一份事实，写与读之间没有缝隙。
+跨进程下它是在为一个看不见的对象**作证**（PR-19：说的和发生的必须是同一件事）。
+
+所以修法不是在两处各加一次判断，而是把**作者**换掉：
+
+    mark_finished   只有子 Run 自己能调 —— 它知道它跑到哪一步了
+    request_cancel  只有父 Run 能调     —— 它只知道"我不要这个结果了"
+
+两者合成一个方法，就等于允许父 Run 替一个看不见的对象作证。
+把它们分成两个方法，是这个洞唯一的结构性修法。
+
+## 新增不变量
+
+**D-14　取消请求不是终态。** 父侧级联只登记请求，绝不替子 Run 写终态。
+终态只有一个作者：那条子 Run 自己（`AgentLoop._emit_child_run_outcome`）。
+父 Run 看不见子 Run 跑到第几步，替它写 `cancelled` 是为看不见的对象作证。
+
+**D-15　终态一旦写下就是事实，取消请求改不动它。**
+取消只能拦住"还没产生的结果"；已经产生的结果必须进账本（D-13），
+不能因为"叫停过"就当成没发生过。
+所以 `cancel_requested_at` **不**参与 `child_runs_outcome_consistent` ——
+"有请求"同时"有终态"是合法而且**常见**的，那正是赛跑的正常结局。
+
+**D-16　赛跑的两种结局，负责人不同。**
+
+| 结局 | 谁记 | 记什么 |
+|---|---|---|
+| 它读到请求后自己停了 → `cancelled` | 父侧 `_cancel_pending_child` | D-12 UNRESOLVED |
+| 它没读到、先跑完了 → `completed` | 唤醒路径 `ChildRunWaker` | D-13 孤儿，且理由**点名赛跑** |
+
+第二条为什么要单独说一句：赛跑留下来的孤儿，责任方是**取消的人**；
+普通孤儿的责任方是**崩掉的那条 Run**。排障要找的人不一样，
+而账本理由里不写，运维只能靠猜。
+
+**D-17　因果序：请求必须早于终态。**（`cancel_requested_at <= completed_at`）
+真正的保证是**条件写**（两个 UPDATE 各带 `WHERE completed_at IS NULL` /
+`WHERE cancel_requested_at IS NULL`），这条 CHECK 是 PR-26 的兜底 ——
+兜底不能是主要保证，但主要保证漏了它必须喊出来。
+
+## 012 与 011 的分工（B-7：一个事实一处定义）
+
+两张表都写了"叫停"，必须说清它们不是同一件事：
+
+| 表 | 回答的问题 | 生命周期 |
+|---|---|---|
+| 011 `run_cancellations` | **谁要求停这条 Run** | 动作侧：会被 `settle()` 结掉 |
+| 012 `child_runs.cancel_requested_at` | **这次派生的结局，是不是发生在被叫停之后** | 事实侧：永不清除 |
+
+两个问题不同，生命周期也不同：一条 Run 可以被叫停十次（011 十条记录），
+而"这条派生曾经被叫停过"只有一个是非（012 一格）。
+把 012 也做成可结算的，赛跑的结果就永远查不到了 ——
+而"哪些委派撞上了赛跑"正是运维要看的第一张清单。
+
+B-7 说的是**同一个问题**不许有两个答案，不是"任何两处都不许提到叫停"。
+
+## 真 PostgreSQL 验了什么
+
+1. **D-15 的判据是条件写，不是 CHECK。**
+   有一条测试故意让 CHECK 站不住：把 `completed_at` 设到未来、
+   请求的时刻设到过去，`cancel_requested_at <= completed_at` 成立，
+   `child_runs_cancel_before_outcome` 不会拦 ——
+   这时还能拦住它的只有 `UPDATE ... WHERE completed_at IS NULL`。
+   若这一条绿着只因为 CHECK 在拦，那它说的就不是"条件写"这件事（PR-23）。
+2. **两条 CHECK 在真 PG 上求值**：`child_runs_cancel_attributed`（B-8）、
+   `child_runs_cancel_before_outcome`（D-17）。
+3. **赛跑端到端**：父（本进程）叫停 → 请求落 PG → 子 Run 在"另一个进程"里
+   已经跨过最后一个安全点、正在写终态 → 不许撞 B-3，
+   且结果带着"它是在被叫停之后才跑完的"这条痕迹。
+4. **另一条连接看得到** —— 生产里"另一个进程"就是另一条连接。
+
+## 变红验证
+
+回退新钉的不变量，看有多少条真的会红：
+
+| 回退什么 | 红 |
+|---|---|
+| `cancel_child` 恢复成替子 Run 写 `mark_finished('cancelled')` | 7 |
+| `_cancel_pending_child` 恢复无条件 `mark_delivered`（脸 B 的成因） | 3 |
+| `request_cancel` 去掉幂等与终态保护 | 2 |
+| `_race_note` 关掉赛跑判据 | 1 |
+| 012 拿掉 `child_runs_cancel_before_outcome` CHECK | 1 |
+| PG 条件写去掉 `AND completed_at IS NULL` | 2 |
+
+每条都红了 —— 没有一条是空过的。
+其中第 2 行是本轮**最贵**的一条：它红的那 3 条，正是"副作用静默消失"那一支。
+
+## 空洞编号（续 §72）
+
+| # | 级别 | 空洞 | 现在 |
+|---|---|---|---|
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 215 | P1 | `tasks` 表无人写：Task 只活在内存字典里，重启后 Scheduler 拿不到 priority / tenant / resource | **仍缺** |
+| 217 | P2 | `ChildRunWaker` 只恢复父 Run、不驱动它 | **仍缺** |
+| 223 | P2 | `POST /runs/{id}/cancel` 没有幂等键 | **本轮闭合（M44 / §82）** |
+| 225 | P2 | 对一条**根本不存在**的 Run 请求取消，会留下一条永远 pending 的意图 | **仍缺** |
+| 224 | **P1** | 取消与完成赛跑：脸 A（子 Run 撞 B-3 抛异常、真实结果丢失）与脸 B（结果被结掉、副作用静默消失） | **已闭合**：D-14 / D-15 / D-16 / D-17 + `012_child_run_cancel_request.sql` |
+| 226 | P2 | 一条子 Run 被叫停之后**再也没有终态**（它的进程彻底没了）：取消请求永久 pending，且孤儿永远不登记。可见（索引里躺着），但账本缺一格 —— **没人负责的那笔副作用连"没人负责"都没写下来** | **仍缺**（新增） |
+| 227 | P2 | `ChildRunWaker.sweep()` 只把 `DELIVERED` 计入返回值：`PARENT_TERMINAL` 也结掉了交付、也记了孤儿，却算作 0。于是"这一轮扫到并处理了一条"与"这一轮扫到 0 条"同时为真 | **仍缺**（新增） |
+
+## 冻结的是什么
+
+> v2.1.20 冻结的是**"回来说'没做成'的时候，说的还是不是同一件事"**；
+> v2.1.21 冻结的是**"'没做成'之后，留在外部世界的那些东西算谁的"**；
+> v2.1.22 冻结的是**"一条 Run，能不能被叫停"**；
+> v2.1.23 冻结的是**"它被叫停的时候，是不是真的停了"**。
+>
+> 这一轮要回答的是下一个问题：**它跑完了，算不算停了**。
+> 按下"停止"之后那条子 Run 可能已经做完了一切 ——
+> 工单建了、邮件发了、它自己的子 Run 也派出去了。
+> 那些是**既成事实**，取消改不动它们；取消只能拦住还没发生的事。
+>
+> 所以这一轮冻结的是四句话：
+>
+>   **终态只有一个作者**（D-14）—— 父 Run 不许替一条它看不见的 Run 作证；
+>   **取消改不动既成事实**（D-15）—— 取消只拦还没产生的结果；
+>   **赛跑的两半各有负责人**（D-16）—— 它停了记 D-12，它跑完了记 D-13，且必须点名；
+>   **请求必早于终态**（D-17）—— 主要保证是条件写，CHECK 只是兜底。
+>
+> 还有一句是给排障的人的：**"静默消失"比"抛异常"贵得多**。
+> 本轮两张脸里，会响的那张在 §72 就被登记了，
+> 而什么都不喊的那张直到把代码写完才浮出来 ——
+> 因为它唯一的症状是账本上**少一行**，而没人会去数一本本该有几行的账。
+
+---
+
+# 74. M36 · Task 落库：让"没有 Task 的 Execution"不可能存在
+
+> 这一轮的话题是**一张建好了很久、却从来没人往里写一个字的表**。
+> 它带来的不是一个报错，是一个**会自己退避然后退出**的 worker 进程。
+
+## 74.1 起因
+
+`infrastructure/postgres/001_kernel.sql` 从 M15 起就建好了 `tasks`：
+
+```sql
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id             TEXT PRIMARY KEY,
+    run_id              TEXT NOT NULL,
+    step_id             TEXT NOT NULL,                 -- E-11：可溯源到 Step
+    task_type           TEXT NOT NULL,
+    executor_type       TEXT NOT NULL,
+    payload             JSONB NOT NULL DEFAULT '{}'::jsonb,
+    priority            INTEGER NOT NULL DEFAULT 0,
+    tenant_id           TEXT,
+    resource_requirement JSONB NOT NULL DEFAULT '{}'::jsonb,
+    retry_policy        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    timeout_seconds     INTEGER NOT NULL DEFAULT 60,
+    version             INTEGER NOT NULL DEFAULT 1,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Scheduler 的热路径：按状态无关，全靠 executions 的 status 索引驱动
+```
+
+13 个列、2 个索引、一行注释。到 M35 结束为止，**没有任何一行代码写它**。
+
+Task 真正的家是 `ExecutionKernel._tasks` —— 一个 `dict[str, Task]`，
+键是 `execution_id`，只有 `submit()` 会往里放东西。
+
+## 74.2 空洞的形状：一个会自己退避然后退出的进程
+
+于是"进程重启后把活捡起来"这条能力，在真 PostgreSQL 上是断的：
+
+    PENDING 的 Execution 好端端躺在库里
+    Scheduler 选中它 → kernel.task_of() → KeyError: 'exe_xxx'
+
+如果这就是全部，那它至少还是**响**的。但它不是全部 ——
+`apps/_runtime.py` 的 `ProcessRuntime` 有个 `except Exception`，
+它把异常吞掉、计一次 consecutive_failure、按 `error_sleep` 退避，
+到 `max_consecutive_failures` 之后**整个 worker 进程退出**。
+
+日志里只有一行 `KeyError: 'exe_xxx'` ——
+**指着一个症状，不是原因**（PR-19）：
+它没说"这条 Execution 的 Task 没落库"，它说的是"字典里没这个键"。
+
+## 74.3 真正要防的不是那个 KeyError，是"修掉它的那种修法"
+
+最自然的修法是：`task_of()` 找不到就给个默认 Task。一行代码，红变绿。
+
+那样 `priority` / `tenant_id` / `resource_requirement` / `payload`
+全部变成**编造值**。而那四样不是加速信息，是**正确性输入**：
+
+| 字段 | 它决定的东西 | 编造之后的后果 |
+|---|---|---|
+| `priority` | 谁先跑 | 高风险活与低风险活混排 |
+| `tenant_id` | 配额（**多租户隔离边界**） | `max_concurrency_per_tenant` 静默失效，一个租户吃满集群 |
+| `resource_requirement` | 能不能派给这个 worker | 需要 GPU 的活派给 CPU worker → `EXECUTOR_NOT_FOUND`（PERMANENT，不重试） |
+| `payload` | 到底要干什么 | 执行器拿到空载荷 → `BAD_PAYLOAD` |
+
+按 **A-12**（丢了之后是变慢还是变错）判，这是**变错**，所以它是 P1。
+
+而它的失败形态里最坏的一条是：**一个调度错误伪装成一个载荷错误**。
+`PERMANENT` 是不重试的 —— 于是一条本来该换个 worker 就成功的活，
+被永久判死，而日志说的是"载荷有问题"。
+这正是 **PR-20**（能力声明要有 `executors` + `task_types` 两个维度）
+修过的那次病，这次在**持久层**复发。
+
+## 74.4 新增不变量
+
+| 编号 | 内容 |
+|---|---|
+| **E-26** | Task 必须落库。重启之后 Scheduler / Worker 仍然拿得到 `priority` / `tenant_id` / `resource_requirement` / `payload` —— 那是**正确性输入**，不是加速信息（A-12）。E-4 的 Task 版。 |
+| **E-27** | 一个 Execution 不得无 Task 而存在。数据库层由 `executions.task_id → tasks.task_id` 外键兜底；代码层读不到就**拒绝**，绝不编造。 |
+| **E-28** | Task 只在 `submit()` 里落一次，之后不可改写。它是交棒那一刻的**输入**，不是可变状态 —— 所以 `PostgresTaskRepository` 里**没有 UPDATE**，那不是还没实现。 |
+
+以及一条判据：
+
+> **PR-34　补一个"查不到就给默认值"的兜底之前，先问它保护的是性能还是正确性。**
+> 判据用 A-12：这个字段丢了以后是**变慢**还是**变错**？
+> 变慢 → 可以给默认值；变错 → 必须报错。
+> `priority` / `tenant_id` / `resource_requirement` / `payload` 属于后者。
+
+## 74.5 为什么是外键，不是又一条 CHECK
+
+E-19 只说了半句话：
+
+```sql
+CONSTRAINT uq_executions_task UNIQUE (task_id)   -- Task : Execution = 1 : 1
+```
+
+它约束的是"一个 Task 最多开一个 Execution"（防重跑）。
+它没有约束另一半：**一个 Execution 必须真的有一个 Task**。
+
+半句话的约束挡不住另一半 —— 于是库里可以躺着一条谁也不知道要干什么的 Execution。
+
+补另一半为什么不能用 CHECK？因为**"Task 存不存在"这件事不在 executions 这一行里**。
+CHECK 只能看自己这一行的列，它没法知道 `tasks` 表里有没有那一行。
+跨行的事实只能由外键来钉 —— 按 **PR-23**（不变量钉在真正约束它的那一层），
+外键是唯一能约束它的那一层。
+
+`013_task_persistence.sql` 只有一句 DDL：
+
+```sql
+ALTER TABLE executions
+    ADD CONSTRAINT fk_executions_task
+    FOREIGN KEY (task_id) REFERENCES tasks (task_id);
+```
+
+定向 `executions → tasks` 顺手把**写序**也钉死了：先 Task，后 Execution，
+且两者必须在同一事务里 —— 这正是 **X-3** 想要的形状。
+不设 `ON DELETE`：Task 是交棒那一刻写下的输入，交棒之后不该被删；
+想删的人必须先想清楚那条 Execution 怎么办。
+
+## 74.6 替身做不到的那件事，要说出来（PR-26）
+
+sqlite 的 `ALTER TABLE` 能加 `CHECK`，**加不了 `FOREIGN KEY`**
+（`near "FOREIGN": syntax error`）。所以 `tests/unit/sqlite_shim.py`
+把这句整句丢掉，并且**明确记录代价**：
+
+```python
+_ALTER_ADD_FK_RE = re.compile(
+    r"ALTER\s+TABLE\s+[\w.\"]+\s+ADD\s+CONSTRAINT\b[^;]*?\bFOREIGN\s+KEY\b[^;]*;",
+    re.IGNORECASE | re.DOTALL,
+)
+```
+
+于是分层是：
+
+    unit（sqlite 替身）  验**代码路径**：submit 写两行、重启读得回、读不到就拒绝
+    integration（真 PG）验**数据库判定**：外键真的拒绝、JSONB 真的往返
+
+按 PR-23 的判据（换掉测试替身，测试还会红吗），E-27 只能钉在集成层 ——
+而且 `tests/unit/test_task_persistence.py` 里有一条测试
+**专门断言 sqlite 确实没有这根外键**，防止有人误以为那一层覆盖了 E-27。
+
+反过来，真 PG 上这根外键做成了一件更彻底的事：
+插不进去（`INSERT` 拒绝）、也删不掉（`DELETE` 拒绝），
+于是 `task_of()` 里那条 E-27 报错在**生产上是不可达的**。
+它是给"没有这根外键的后端"留的（sqlite 替身、013 之前的库），不是主要保证。
+主要保证是外键本身。
+
+## 74.7 顺手修掉的一件事：Scheduler 不能变成 N+1
+
+Task 落库之后，`Scheduler.select()` 对每个候选都要看
+`priority` / `tenant` / `resource`。候选一批最多 100 个，
+逐个 `task_of()` 就是 100 次往返，`_running_for_tenant` 还要再来一轮。
+
+所以端口里加了 `get_many(task_ids)`，Scheduler 一次取回，
+Kernel 按 `execution_id` 缓存。这不是优化 ——
+001 的注释自己写着"Scheduler 的热路径"，
+不批量就把"Task 落库"这件正确的事做成了慢查询制造机。
+
+`SchedulerPrefetchTest` 钉住的是"一次批量读，不是十次单读"，
+且它必须**从一个新进程出发** —— 同一个 Kernel 内 `submit()` 已经把 Task
+放进内存缓存了，那时一次都不用查，测不到要测的那条路径。
+
+## 74.8 真 PG 验了什么
+
+`tests/integration/test_task_persistence_real_pg.py`（15 条）：
+
+- 外键**指名道姓**地拒绝没有 Task 的 Execution（断言点到 `fk_executions_task`，
+  而不只是"抛了" —— 否则一句 SQL 语法错误就能让测试变绿，PR-19）
+- 对照组：先插 Task 行，同一句 `INSERT INTO executions` 被接受
+- Task 行**删不掉**（证明 E-27 的代码分支在生产上不可达）
+- 换一个 Kernel 对象（共享同一个库）之后：`priority` / `tenant_id` /
+  `task_type` / `timeout` 全都在
+- 真 JSONB 的 `payload` 与 `resource_requirement` 往返
+  （PG 的 JSONB 读回来是 dict 还是 str 取决于驱动 loader，`_load_mapping` 两种都认）
+- 重启后的 Scheduler 仍然选得到 PENDING 的 Execution（修复前是 `KeyError`）
+- 重启后的 Worker 仍然拿到原来的 `payload`
+- 重启后**租户配额仍然生效**、**resource labels 仍然过滤**
+- `ON CONFLICT (task_id) DO NOTHING`：重演不改原件
+
+## 74.9 变红验证
+
+六次回滚，每一次都必须真的把测试打红（PR-32：一条测试绿着不代表它还在说真话）：
+
+| # | 回滚 | unit | integration |
+|---|---|---|---|
+| 1 | `submit()` 不写 `tasks` | 16 红 | 13 红 |
+| 2 | 批次里缺 Task 时编造/跳过而不是拒绝 | 1 红 | — |
+| 3 | 读回来退化成默认值（`priority=0` / `tenant_id=None`） | 3 红 | 3 红 |
+| 4 | `tasks_for()` 退回逐个 `task_of()` | 2 红 | — |
+| 5 | 去掉 013 的外键 | — | 2 红 |
+| 6 | 去掉 `ON CONFLICT (task_id) DO NOTHING` | 2 红 | 2 红 |
+
+没有一次是"回滚了但还是绿的"。
+
+## 74.10 空洞编号表
+
+| 编号 | 优先级 | 内容 | 状态 |
+|---|---|---|---|
+| 215 | P1 | `tasks` 表无人写：Task 只活在内存字典里，重启后 priority / tenant / resource 全丢 | **本轮闭合** |
+| 226 | P2 | 子 Run 被叫停后再也没有终态 → 请求永久 pending、孤儿永不登记 | 仍缺 |
+| 227 | P2 | `ChildRunWaker.sweep()` 只把 `DELIVERED` 计入返回值，`PARENT_TERMINAL` 也算 0 | 仍缺 |
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 217 | P2 | `ChildRunWaker` 只恢复父 Run、不驱动它 | 仍缺 |
+| 223 | P2 | `POST /runs/{id}/cancel` 没有幂等键 | **本轮闭合（M44 / §82）** |
+| 225 | P2 | 对一条根本不存在的 Run 请求取消，会留下一条永远 pending 的意图 | 仍缺 |
+| **228** | P2 | Execution 级取消意图只有 `executions.cancellation_requested` 一个布尔位，没有"谁叫停、为什么" | **本轮登记** |
+
+> 228 是在这轮里看出来的：`run_cancellations` 有 `reason` / `requested_by`（B-8），
+> `child_runs` 有 `cancel_reason` / `cancel_requested_by`（012），
+> 唯独最底层的 Execution 级取消只有一个布尔位 ——
+> 叫停过它的人是谁、为什么，重启之后无从考证。
+> 与 215 是同一类病：**库里有地方放，但没人往里写。**
+
+## 74.11 冻结的是什么
+
+> v2.1.22 冻结的是**"一条 Run，能不能被叫停"**；
+> v2.1.23 冻结的是**"它被叫停的时候，是不是真的停了"**；
+> v2.1.24 冻结的是**"它跑完了，算不算停了"**。
+>
+> 这一轮冻结的是：**"它到底要干什么，这件事存在哪里"**。
+>
+> 所以这一轮冻结的是三句话加一条判据：
+>
+>   **Task 必须落库**（E-26）—— 重启之后那四样正确性输入一个都不能丢；
+>   **Execution 不得无 Task 而存在**（E-27）—— 跨行的事实只能由外键钉；
+>   **Task 写一次之后不改**（E-28）—— 它是交棒的输入，不是可变状态；
+>   **补"查不到就给默认值"之前，先问它保护的是性能还是正确性**（PR-34）。
+>
+> 还有一句是给排障的人的：
+> **"修掉一个报错"和"修掉一个错误"不是同一件事。**
+> 给 `task_of()` 兜一个默认 Task，报错没了，错误还在 ——
+> 它只是换了一身衣服，变成一条永远不生效的配额，
+> 和一个以 `PERMANENT` 终态的、看起来像业务坏了的调度事故。
+
+# 75. M37 · 取消意图的等待上限（空洞 226）
+
+> 版本：v2.1.25 → **v2.1.26**　测试：934 → **968**（+25 单元 / +9 集成）
+
+## 75.1 起因：R-10 那句"变慢且看得见"只算了一半
+
+M34（v2.1.23）给跨进程取消通道立下 R-10 的时候，写过这样一句：
+
+> 所以这里**什么都不做**，让它继续 pending。它会被下面两条路接住：
+> 正在跑 → 它自己下一个安全点读到（`AgentLoop._step()`）；
+> 挂起了 → 快照出现，下一轮 sweep 就能重建。
+> 代价是一条永远没人认领的意图会一直留在 pending 里 ——
+> 那是"变慢且看得见"，比"变错且没人知道"好（A-12）。
+
+这个判断的**前提没有被写出来**：上面那两条路必须**真的存在**。
+
+    正在跑  ⟹ 还会有下一个安全点
+    挂起了  ⟹ 还会再拍一次快照
+
+两条路的共同前提是"那条 Run 还在往前走"。
+**进程彻底没了的时候，两条都不通** ——
+它永远不会有下一个安全点，也永远不会再拍一次快照。
+
+而"什么都不做"在这个前提下不再是等待，是**永久占着队首**。
+
+## 75.2 真正的形状：`LIMIT` 被永不结算的队首吃光
+
+单看一条僵尸意图，R-10 的判据成立：它只是占了一个位置，看得见，
+运维想查随时能查。问题出在 `pending()` 是个**有窗口**的查询：
+
+    WHERE settled_at IS NULL ORDER BY requested_at LIMIT %s
+
+- `ORDER BY requested_at` —— 僵尸的 `requested_at` 最老，它**永远排第一**
+- `LIMIT 64` —— 每一轮只有窗口里那 64 条会被处理
+
+于是：
+
+    第 1 轮  捞出 [僵尸1, 僵尸2, ... 僵尸64]  全部 continue  返回 0
+    第 2 轮  捞出 [僵尸1, 僵尸2, ... 僵尸64]  全部 continue  返回 0
+    ...
+    第 N 轮  用户按了"停止" → 新意图排在第 65 位 → **永远进不来**
+
+那一刻 `sweep()` 每轮返回 0。运维看到的是"没有待处理的取消"，
+真实情况是**跨进程取消通道停止服务**：用户按了停止，系统装作没听见。
+
+按 A-12 重判：这不再是"变慢"，是"变错"。
+而且它什么都不喊 —— 按 012 里那张脸谱，这是**脸 B**。
+
+> 这条洞登记的时候写的是"请求永久 pending、孤儿永不登记"。
+> 写的时候把两件事并列了，其实它们不是同一量级：
+> pending 一条是**看得见**的（R-10 已经接受），
+> **把整条通道堵死**才是这一轮必须治的那一半。
+
+## 75.3 为什么只能靠"上限"，不能靠"检测死亡"
+
+一个很自然的想法：查一下那条 Run 的进程还在不在，不在就判它死了。
+
+系统里确实有类似的东西 —— Kernel 的**租约**（`leases.lease_expires_at`）。
+但租约过期在 Kernel 的语义里是 `LEASE_EXPIRED`，而它**可重试**：
+
+> "这个 worker 不续约了，换一个 worker 接着来"
+
+它的意思是"**驱动者**换了"，不是"这条 Run 没了"。
+拿它当死亡证明，会误杀一条正在被 Recovery 救活的 Run ——
+那正是租约机制存在的理由被它自己否定掉。
+
+而一条 **Run** 除此之外没有任何活性证据：
+
+    没有心跳列          （Run 级没有，只有 Execution 级有租约）
+    快照只在挂起时拍     （R-1）—— 正在往前跑的 Run 在 PG 里什么都不写
+    没有"最后活跃时间"   （加了就得有人写，而写它的那个进程就是可能没了的那个）
+
+所以：
+
+> **没有死亡检测器。只有等待上限。**
+
+这不是凑合。前提是上限到期后的动作必须被**诚实地**记成"不知道"
+—— 见下面 R-11 与 R-12。把"我们不知道"写成"它停了"，
+才是真正的凑合，而且是会骗人的那种。
+
+## 75.4 R-11：等待必须有上限，放弃 ≠ 认领
+
+    R-11  每一条取消意图都带一个等待上限（`abandon_after`），
+          在 **request 那一刻**固化。到点仍无结局 ⟹ 系统**放弃等待**
+          （`abandoned_at`）。放弃是"**我们不知道**它停没停"，
+          不是"它停了"，所以放弃**不得**写终态、不得写 `settled_at`。
+
+两列回答两个**不同**的问题（B-7）：
+
+| 列 | 回答什么 | 侧 |
+|---|---|---|
+| `settled_at` | 那条 Run **确实停了** | 事实侧（R-10 的证据） |
+| `abandon_after` | 我们承诺等到什么时候 | 策略侧（写入时固化） |
+| `abandoned_at` | **我们**何时不再等了 | 决策侧 |
+
+**为什么不能用 `settled_at` 兼任"放弃"**
+
+R-10 的原话：`settled_at` 是"这条 Run 确实停了"的证据。
+放弃等待的时候我们**恰恰不知道**它停没停 ——
+把它记成 settled 等于在系统里写下"我取消了它"而它可能还在跑（PR-19），
+而且从此**再没有人**会去叫停它。
+
+**为什么 `abandoned_at` 与 `settled_at` 允许同时有值**
+
+见 R-14。刻意**没有**加 `settled_at IS NULL OR abandoned_at IS NULL`
+那条互斥约束 —— 它们是两件独立的事，抹掉一个就是在改写历史。
+
+**为什么上限在写入那一刻固化**
+
+"这条请求当初承诺过多久"是审计的一部分。
+事后把策略调长，不该追溯地改写一条已经提交的老意图 ——
+所以 `grace` 挂在 **store** 上（`request()` 是唯一写它的地方），
+不挂在 service 上。
+
+## 75.5 R-12：放弃必须记账，而且理由要点名"不知道"
+
+    R-12  放弃一条**子 Run** 的等待时，若其父 Run 已终态，
+          必须补记一条 D-13 孤儿，理由必须点名"结局未知"，
+          不能冒充"已取消"。
+
+为什么必须记：这条子 Run **已经跑过了**。
+它可能建了工单、发了邮件、派生了它自己的子 Run。
+而父 Run 已终态 ⟹ 没有任何一步会再去管那笔副作用；
+我们再放弃等待 ⟹ 从此**连唤醒路径都不会来**。
+那笔副作用就永久地、静默地消失了。
+
+为什么理由必须点名"不知道"：那张补偿记录是它**唯一**留下的痕迹。
+写成 `cancelled`，运维看到的是"已取消，无副作用" ——
+而它可能已经把工单建好了。
+
+> 一张说谎的账本，比一张写着"不知道"的账本坏得多。
+
+**三条提前返回，三种不同的局面**（`_book_abandonment`）
+
+1. 登记处查不到它 ⟹ 它是一条**根 Run**，没有"父"承接这笔账。
+   放弃**照样发生**（让路不能因为没账可记就不做），只是没得记。
+2. 父 Run 还没终态 ⟹ 那不是孤儿，是"**父还在等一个不会来的结果**"
+   —— 那是另一件事（空洞 229），本轮不治，但**不能**在这里冒充孤儿记一笔：
+   D-13 的前提是"父已终态、没有任何一步会再去管"，这里不成立。
+
+**为什么缺了账本要抛而不是静默跳过**
+
+```python
+if self.child_registry is None or self.saga is None:
+    raise RuntimeError("R-12: ... abandoning without booking the orphan ...")
+```
+
+一个把队列腾干净、却把账本留空的进程，
+比一个堵住的进程**更难发现** —— 它看起来是健康的。
+
+**放弃之后真相才到来怎么办**
+
+先放弃（记"结局未知"的孤儿）→ 后来它跑完了 → 唤醒路径走到 D-13 →
+`record_unresolved` 撞 **S-2**（同一 `execution_id` 已有记录）返回 `None`。
+账本里不会多出一条自相矛盾的记录。
+
+代价是账本留着的是"未知"那条，而真相其实已经查得到了。
+这是**可接受**的：两种情形要运维做的事是同一件 —— 去看一眼那条子 Run。
+
+## 75.6 R-13：让路的落点是**索引的谓词**
+
+    R-13  放弃过的意图必须**退出 pending 队列**。
+          否则"让路"根本没发生：它照样排队首、照样占槽位。
+
+这一条最容易漏。`pending()` 的谓词原本是 `settled_at IS NULL`，
+而放弃过的意图 `settled_at` **仍然是 NULL**（我们不知道它停没停）——
+所以加了 `abandoned_at` 那一列，如果不动索引，它照样留在部分索引里。
+
+于是 014 把那个索引**重建**了：
+
+```sql
+DROP INDEX IF EXISTS idx_run_cancellations_pending;
+CREATE INDEX idx_run_cancellations_pending
+    ON run_cancellations (requested_at)
+    WHERE settled_at IS NULL AND abandoned_at IS NULL;
+```
+
+> 代码里的 `is_pending` 与 SQL 里的谓词是**同一个判断的两处**，
+> 但只有 SQL 那一处决定"谁进扫描窗口"。
+> 所以它必须被真 PostgreSQL 验过 —— 单测验的是"文件里写着这句话"，
+> 那是源码，不是数据库（`DROP INDEX` 少写一句，文件里照样有那句话）。
+
+另外补了一个 `idx_run_cancellations_expiring`（按 `abandon_after` 排序）：
+最该被放弃的是最早**到点**的那条，不是最早请求的那条。
+
+## 75.7 R-14：放弃不是撤回
+
+    R-14  放弃**不是撤回**。那条 Run 后来若撞上安全点，仍应停下来 ——
+          用户按的"停止"不因为我们等累了就作废。
+
+所以 `AgentLoop._pending_cancellation()` **不**因为 `is_abandoned` 就返回 `None`：
+它只因为 `is_settled`（它确实停了）才停手。
+
+而那条 Run 真的停下来之后，`cancel()` 末尾照样 `settle()` ——
+于是 `settled_at` 与 `abandoned_at` 可以同时有值，
+意思是"我们等累过，后来它确实停了"。两件独立的事实，都留着。
+
+## 75.8 为什么 `sweep()` 先放弃、后认领
+
+```python
+abandoned = self._abandon_expired(limit)
+settled   = self._adopt_pending(limit)
+```
+
+顺序不能反：**先让路，同一个 tick 里腾出来的槽位立刻就能用上**。
+反过来则要让新意图多等一轮 —— 在通道已经堵死的那一刻，
+多等一轮就是多等一轮没人知道。
+
+而 `_abandon_expired` 内部是**先落账、再让路**（PR-33）：
+
+```python
+self._book_abandonment(request)            # 先记账
+if self.store.abandon(request.run_id):     # 再说"我让路了"
+```
+
+反过来（先 abandon 后记账）崩在中间，那条意图已经退出扫描窗口，
+**再也不会有人**回来补这一笔 —— 孤儿从此永久消失。
+
+## 75.9 孤儿记账现在有两个调用方（B-7）
+
+"孤儿怎么记"此前只有一个调用方：`ChildRunWaker._record_orphan`。
+空洞 226 带来第二个（放弃路径）。抄成两份之后，
+"`step_id` 填什么、`args` 为什么恒空、S-2 判重做没做、理由里要不要点名赛跑"
+就会有**两个答案**。
+
+所以抽成 `packages/agent_runtime/orphans.py`，两边共用一份定义：
+
+    record_child_orphan(saga, handle, *, headline)
+
+`headline` 是调用方说的那一句（**两种情形说的不一样，排障要找的人也不一样**）：
+
+    唤醒路径  "父 Run 已终态，结果无处可交"  ← 知道结局
+    放弃路径  "叫停之后等不到回音，结局未知" ← 不知道结局
+
+尾部两段是公共的、且不由调用方决定：
+`step_id` 为什么是空的（否则调用方会顺手填一个），
+以及这条孤儿是不是赛跑的产物（D-16）。
+
+## 75.10 真 PostgreSQL 验了什么
+
+| 判据 | 为什么替身不算数 |
+|---|---|
+| `idx_run_cancellations_pending` 的谓词 | 单测验的是 SQL **文件**；真库验的是 PG **真的建出来了** |
+| `idx_run_cancellations_expiring` 存在 | 同上；缺了它放弃扫描就是全表扫 |
+| `run_cancellations_deadline_required` | 生产报的是 PG 的约束名，运维拿它去查 |
+| `run_cancellations_abandon_after_deadline` | 同上 |
+| **回填以 `requested_at` 为起点** | `requested_at + interval '15 minutes'` 是 PG 方言，sqlite 替身是**翻译**成 `datetime()` 跑的 —— PG 原文从没被验过 |
+| 跨进程可见 | 两个**连接**写/读同一张表，不是在一个连接里自问自答 |
+| 孤儿在 PG 补偿账本里读得回来 | 单测验"记了没有"，真库验"运维看板读得到" |
+
+替身侧补了一条翻译规则：`col + interval 'N unit'` →
+`strftime(..., datetime(col, '+N units'))`，并且特意用 `strftime` 对齐
+`'%Y-%m-%d %H:%M:%S.%f'` 格式 —— 否则 `datetime()` 返回的不带小数秒，
+两种格式混在同一列里，虽然字典序仍正确，
+但"替身与真库是同一条约束"这句话就**需要解释**了。对齐掉就不需要解释。
+
+## 75.11 变红验证
+
+每一条都真的回退过、真的红了，没有一条是空跑：
+
+| # | 改回什么 | 红了什么 |
+|---|---|---|
+| 1 | `pending()` 用 `not is_settled` 而不是 `is_pending` | 2 条（R-13 让路没发生） |
+| 2 | `_book_abandonment` 跳过 `record_child_orphan` | 1 条（孤儿没记） |
+| 3 | `abandon()` 顺手把 `settled_at` 也写上 | 2 条（冒充"它停了"） |
+| 4 | `_pending_cancellation` 因 `is_abandoned` 返回 `None` | 2 条（放弃变成撤回） |
+
+## 75.12 空洞编号表
+
+| # | 级别 | 形状 | 状态 |
+|---|---|---|---|
+| **226** | P2 | 子 Run 被叫停后再也没有终态 → 队首堵死整条通道、孤儿永不登记 | **本轮闭合** |
+| **229** | P2 | 父 Run 挂在 `WAITING_CHILD` 等一条死掉的子 Run —— **永远挂着** | **本轮登记** |
+| 227 | P2 | `ChildRunWaker.sweep()` 只把 `DELIVERED` 计入返回值 | 仍缺 |
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 217 | P2 | `ChildRunWaker` 只恢复父 Run、不驱动它 | 仍缺 |
+| 223 | P2 | `POST /runs/{id}/cancel` 没有幂等键 | **本轮闭合（M44 / §82）** |
+| 225 | P2 | 对不存在的 Run 请求取消，留下永远 pending 的意图 | 仍缺 |
+| 228 | P2 | Execution 级取消意图只有布尔位，没有"谁叫停、为什么" | 仍缺 |
+
+> **229 是本轮"治了一半"的那一半，必须写清楚。**
+>
+> 226 治的是**取消通道**：那条意图不再永久堵住队首。
+> 但"父 Run 还在等一条死掉的子 Run"这件事本轮**没有**治 ——
+> 父 Run 会一直挂在 `WAITING_CHILD`，界面上是"等待子 Agent"，一切正常。
+>
+> 它需要的是另一个机制：**父 Run 的等待也要有界**。
+> 那是"挂起"的语义，不是"取消"的语义 ——
+> 混进这一轮就会让同一个 `abandon_after` 同时承担两件事（B-7）。
+>
+> 它比 226 更难看：226 堵的是"新的取消请求进不来"，
+> 229 卡的是**那条父 Run 永远不会结束**，而且没有任何报错。
+
+## 75.13 冻结的是什么
+
+> v2.1.23 冻结的是"**跨进程取消的通道**"；
+> v2.1.25 冻结的是"**一条 Run 要干什么，这件事存在哪里**"。
+>
+> 这一轮冻结的是：**"等到什么时候为止"**。
+
+    R-11  等待必须有上限；放弃 = "我们不知道"，不是"它停了"
+    R-12  放弃必须记账，理由必须点名"结局未知"
+    R-13  放弃过的必须退出队列 —— 落点是索引的谓词
+    R-14  放弃不是撤回 —— 用户按的停止不因为我们等累了就作废
+
+还有三句是给后面几轮的：
+
+**一、一条"永远不动"的记录，代价不在它自己身上，在它挡住的那条身上。**
+R-10 只算了前者。凡是带 `LIMIT` 的扫描，都要问一句
+"队首那条会不会永远不动"。
+
+**二、"不知道"是一等公民。**
+没有死亡检测器的时候，唯一诚实的答案就是承认不知道。
+把"不知道"写成"已取消"，账本就从"缺一格"变成"**错一格**" ——
+后者会主动误导排障的人（PR-19）。
+
+**三、让路之前先记账。**
+先腾队列、后补账，崩在中间就是永久丢失 ——
+而且那时队列是干净的，没人会知道少了什么。
+
+---
+
+# 76. M38 · 一次派生的等待上限（空洞 229）
+
+> 版本：v2.1.26 → **v2.1.27**　测试：968 → **1014**（+37 单元 / +9 集成）
+
+## 76.1 起因：M35 自己写下的那句话的另一半
+
+§73 立 R-7 的时候写过一句：
+
+> 一条停在 `WAITING_CHILD` 的 Run 不会调 `step()` —— 它在等别人。
+> 它这一辈子可能再没有第二个安全点。
+
+那句话当时的用途是论证"**取消**必须有一条 Run 级通道"。论证成立，
+M35 也照它做出来了。但那句话里还藏着另外一件事，而那件事比它要论证的
+那件更难看：
+
+    派得出去、认得回来 —— 前提是它**会回来**。
+
+子 Run 的进程没了（节点掉了、Pod 被驱逐、OOM 被杀），
+它既没有终态，也没有人替它写终态（D-14：取消请求不是终态，
+只有子 Run 自己能宣告自己的终态）。而这条没有终态的派生，
+会把它的父 Run 钉死在 `WAITING_CHILD` 上。
+
+## 76.2 形状：三个"没人算"
+
+"我等了多久"这件事，**没有任何一个组件在计算**：
+
+```text
+父 Run          D-5：一见 pending_child 就返回 WAITING_CHILD
+                → 它不跑，于是它没有机会算时间
+
+ChildRunWaker   扫 completed_at IS NOT NULL
+                → 这条子 Run 没有终态，永远扫不到
+
+undelivered()   同一个谓词
+                → 同上
+```
+
+于是那条父 Run **永远挂着**。界面显示"在等子 Agent"，
+没有报错，没有任何计数器会动，日志干净得像一切正常。
+
+**它比 226 更静。** 226 那一侧至少还有一条每 tick 被捞起、
+又被 `continue` 掉的请求 —— 那是看得见的空转，运维还能问一句
+"为什么天天是 0"。229 这一侧连空转都没有：
+没有人会去看一条"正在等待"的 Run，因为它本来就该在等。
+
+## 76.3 为什么只能靠旁观者，以及 D-21
+
+超时这件事**挂在父 Run 身上是没有用的**：
+判超时的代码要跑起来才判得了，而父 Run 正等着，它不跑。
+
+所以判据必须落在一个**旁观者**身上：
+
+```text
+ChildRunWaitExpirer.sweep(now)
+    ├─ registry.overdue(now, limit)        读队首（D-18 的那一队）
+    ├─ recovery.rebuild(parent_run_id)     把父 Run 装载回来（R-1 / R-3）
+    ├─ loop.child_wait_expired(...)        交回父 Run 自己走完这一步
+    ├─ snapshots.save(loop.capture(...))   D-8：落新的可恢复点
+    └─ registry.mark_wait_expired(...)     PR-33：先落库，后说"处置完了"
+```
+
+而这条链路的边界是 **D-21**：
+
+    **D-21　旁观者只决定"不再等"；"不再等之后干什么"归父 Run 自己。**
+
+旁观者替父 Run 写终态，就是把"策略失败之后怎么办"从 Intelligence
+手里拿走 —— 它会让"等不到"变成"这一整条 Run 失败了"，
+而那是策略问题，不是运行时问题。
+
+## 76.4 新增不变量
+
+```text
+D-18  一次派生自带一个等待上限 `wait_until`，在第一次 `bind()` 那一刻
+      冻结。它与"确认它停没停"的上限（`abandon_after`）是**两个数**：
+      一个问"它的结果还来不来"，另一个问"它到底停没停"。
+      两个问题、两个答案、两个默认值（30 分钟 / 15 分钟）。
+
+D-19  "等不到结果"是 `EXTERNAL_UNKNOWN`，不是失败。
+      没有死亡检测器的时候，唯一诚实的答案是承认不知道。
+      写成 `failed` / PERMANENT，排障的人会去查一个
+      可能压根没发生的失败（PR-19）。
+
+D-20  到期**不是终态**。`wait_expired_at` 只让这一行退出"等不到"那一队，
+      不把它从 `undelivered()` 里摘走 —— 那条子 Run 万一路回来了，
+      唤醒路径照样认它。
+
+D-21  旁观者只决定"不再等"；下一步归父 Run 自己。
+      旁观者不得替父 Run 写终态。
+```
+
+### D-18 为什么必须是**另一列**
+
+| | `abandon_after` | `wait_until` |
+|---|---|---|
+| 问的是 | 我请你停，你到底停没停 | 我派出去的活，结果还来不来 |
+| 语义 | **取消** | **派生 / 挂起** |
+| 默认 | 15 分钟（`DEFAULT_CANCELLATION_GRACE`） | 30 分钟（`DEFAULT_CHILD_WAIT_TIMEOUT`） |
+| 到期的动作 | 放弃等待，记账"不知道" | 停止等待，交回父 Run |
+| 谁在等 | Run 级取消通道 | 父 Run |
+
+合成一列就是把 B-7 拆掉：同一个格子同时回答两个问题，
+于是没法各自调参，也没法在账本上区分"叫停没回音"和"派出去没回音"。
+
+## 76.5 D-19：第四种结局，不是"失败"的一个分支
+
+`AgentLoop` 多了一个**独立入口**，而不是给 `child_failed` 加一个分支：
+
+```
+child_succeeded(child_run_id, result)
+child_failed(child_run_id, error)
+child_cancelled(child_run_id)
+child_wait_expired(child_run_id, reason="")     ← 新增
+```
+
+理由：`child_failed` 这个名字说出来的是"它失败了"。
+"等不到"和"失败了"是两件不同的事，而**名字就是契约**（PR-19）。
+
+落到事实上的三处：
+
+| 落点 | 值 | 为什么 |
+|---|---|---|
+| 错误码 | `CHILD_WAIT_EXPIRED` | 不是 `CHILD_RUN_FAILED` |
+| 失败类别 | `EXTERNAL_UNKNOWN` | 不是 PERMANENT —— 它是"不知道"，而 PERMANENT 说的是"不会再好了" |
+| Observation kind | `child_run.unknown` | 不是 `child_run.finished` —— 它并没有结束 |
+
+第三处最容易被漏掉：Observation 会进 State，
+于是 State 里会留下一条"子 Run 结束了"的记录 —— 而**我们没有这个知识**。
+
+## 76.6 D-20：到期不是终态
+
+`wait_expired_at` 这一格，语义上更接近"我们不再等了"，
+而不是"这次派生结了"：
+
+    delivered_at     结果交回去了（父 Run 收到了）
+    completed_at     它跑完了（有终态）
+    wait_expired_at  以上两件事**都没发生**，发生的是"我们不再等了"
+
+所以它**不**把这一行从 `undelivered()` 里摘走（`undelivered()` 的谓词里
+没有这一列）。那条子 Run 万一在到期之后才写完结果，
+唤醒路径照样认它 —— 迟到的结果比没有结果好。
+
+## 76.7 R-13 的同款：让路的落点是**索引的谓词**
+
+`overdue()` 是 `ORDER BY wait_until LIMIT %s`。
+一条处置过却没退出队列的行，`wait_until` 永远最小 —— 它永久占着队首，
+攒够 `LIMIT` 条之后，新到期的一个也进不来。这跟 226 是**同一个形状**。
+
+所以让路的落点仍然写在索引里，不写在 Python 的 `if` 里：
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_child_runs_overdue
+    ON child_runs (wait_until)
+    WHERE delivered_at IS NULL
+      AND completed_at IS NULL
+      AND wait_expired_at IS NULL;      -- ← 这一行就是"让路"
+```
+
+集成测试读的是 PG 自己记的 `pg_indexes.indexdef`，不是源文件文本 ——
+漏了 `DROP INDEX` 那句，文件里照样有这段文本（PR-23）。
+
+## 76.8 PR-13：`now` 必须贯穿 —— 这条 CHECK 真的抓到过一次
+
+判"有没有到期"和写"什么时候处置的"必须是**同一个数**。
+否则同一轮里会出现"判它到期用的是 09:51:00、
+写进去的处置时刻是 09:50:59"这种**处置早于到期**的行。
+
+这件事不是靠自觉，是靠一条 CHECK：
+
+```sql
+CHECK (wait_expired_at IS NULL OR wait_expired_at >= wait_until)
+```
+
+它在开发过程中真的抓到过一次：`expire()` 拿扫到的 `now` 判到期，
+却用 `datetime.now()` 写处置时刻。1 秒的上限下两者必然前后脚，
+于是 6 条集成用例全红，而报错说的是"处置早于上限"。
+修法是把 `now` 一路传进去：`expire(child_run_id, *, now)` →
+`mark_wait_expired(child_run_id, expired_at=now)`。
+
+## 76.9 真 PostgreSQL 验了什么
+
+`015_child_wait_deadline.sql` 加两列、三条 CHECK、一个部分索引，
+并对历史行做回填 `spawned_at + interval '30 minutes'`。
+
+集成层（`tests/integration/test_child_wait_deadline_real_pg.py`，9 条）验的
+是替身说不清的三件事：
+
+1. **部分索引的谓词真的在 PG 里。** sqlite 恰好也支持部分索引，
+   于是单测那句"谓词存在"是**碰巧通过**（与 008 那批同一个陷阱）。
+   而谓词是 R-13 的唯一落点。
+2. **三条 CHECK 由 PG 自己判定**，不是由 Python 的 `if` 判定。
+3. **回填从 `spawned_at` 起算**，不是从迁移那一刻起算 ——
+   后者会让"三天前派出、早该到期"的派生再白等 30 分钟，
+   而它等的那条子 Run 多半连进程都没了。
+
+外加端到端那一条在真库上重跑：内存版里"登记处"和"快照"是同一个进程的
+两块内存；真 PG 上它们落在不同的表里，而 D-20 要求"到期不写终态"
+这句话同时被 `child_runs` 与 `run_snapshots` **两边**都承认。
+
+## 76.10 变红验证
+
+每一条都真的回退过、真的红了，没有一条是空跑：
+
+| # | 改回什么 | 红了什么 |
+|---|---|---|
+| 1 | `is_overdue` 不再排除已处置的 | 3 条（R-13 让路没发生） |
+| 2 | 到期之后不落新快照 | 5 条（父 Run 重建出来还在等，D-8） |
+| 3 | 到期的 Observation 也写成 `child_run.finished` | 1 条（State 里留下不成立的事实，D-19） |
+| 4 | 到期的 error 写成 `CHILD_RUN_FAILED` / PERMANENT | 1 条（D-19） |
+| 5 | 父已终态时不记孤儿 | 1 条（R-12 / D-13） |
+| 6 | 处置时刻不写 tick 的 `now` | 9 条集成全红（PR-13） |
+| 7 | 015 的索引谓词少了 `wait_expired_at` | 6 条集成红（真 PG 上队首堵死） |
+
+第 1 条是被测试**抓出来的真 bug**，不是我事后想出来的一条：
+`is_overdue` 当初漏了 `not self.is_wait_expired`。
+
+## 76.11 顺手修掉的两件事
+
+**一、集成层不能两个进程同时推平 schema。**
+
+A 刚 `CREATE SCHEMA public`，B 的 `DROP SCHEMA ... CASCADE` 就把它抹了。
+第一次发作时 A 死在
+
+    InvalidSchemaName: no schema has been selected to create in
+
+这句报错说的是"没有 schema 可选"，真凶却是"有人在我脚下抽走了 schema" ——
+跟被测代码一点关系都没有（PR-19）。
+
+更糟的是**只锁"推平"那一刻根本不够**：A 推完平去跑用例，
+B 的推平又把 A 脚下的表抽走。实测两个进程同时跑同一套 110 条：
+**87 条红 / 90 条红**，报错从"表不存在"到各种随机失败，
+没有一条指向真凶 —— 那是一份彻底的假红，比它掩盖的问题还贵。
+
+所以锁的粒度是**整场运行**：进程第一次推平时拿一把 PG 咨询锁，
+一直攥到进程结束，第二个进程在自己的第一次 `real_pg()` 上排队。
+等待比互相拆台好 —— 至少红灯是真的。
+
+**二、M37 的里程碑行漏登记了。**
+
+里程碑表里 M36 之后直接跳到 M11 —— M37 那一行从来没写进去。
+本轮补上，并一起写进 M38。
+
+## 76.12 空洞编号表
+
+| # | 级别 | 形状 | 状态 |
+|---|---|---|---|
+| **229** | P2 | 父 Run 挂在 `WAITING_CHILD` 等一条死掉的子 Run —— **永远挂着** | **本轮闭合** |
+| **230** | P2 | `wait_until` 只有全局默认（30 分钟），**没有按次派生覆盖的入口**：长研究型子 Agent 会在半路被判"等不到" | **本轮登记** |
+| **231** | P2 | 到期之后迟到的结果回来了：`undelivered()` 还认它，但父 Run 已经走出 `WAITING_CHILD`，账本上那行 UNRESOLVED 也没有人改回来 | **本轮登记** |
+| 227 | P2 | `ChildRunWaker.sweep()` 只把 `DELIVERED` 计入返回值 | 仍缺 |
+| 217 | P2 | 唤醒器只恢复父 Run、不驱动它 —— M38 证明**到期器同款**：解开之后谁来接着跑，仍然没有答案 | 仍缺 |
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 223 | P2 | `POST /runs/{id}/cancel` 没有幂等键 | **本轮闭合（M44 / §82）** |
+| 225 | P2 | 对不存在的 Run 请求取消，留下永远 pending 的意图 | 仍缺 |
+| 228 | P2 | Execution 级取消意图只有布尔位，没有"谁叫停、为什么" | 仍缺 |
+
+> **230 与 231 都是"治了一半"的那一半，必须写清楚。**
+>
+> 本轮买到的是：**那条父 Run 不再永远挂着**。
+> 没买到的是：等**多久**算太久（现在是全局一刀切 30 分钟），
+> 以及"等不到"这个结论被后来的事实推翻时，谁来改账。
+
+## 76.13 冻结的是什么
+
+> v2.1.25 冻结的是"**一条 Run 要干什么，这件事存在哪里**"；
+> v2.1.26 冻结的是"**等到什么时候为止**"。
+>
+> 这一轮冻结的是：**"等不到的时候，谁来把它解开"**。
+
+    D-18  一次派生自带等待上限，且与"确认停没停"的上限是**两个**数
+    D-19  "等不到结果"是 EXTERNAL_UNKNOWN，不是失败
+    D-20  到期不是终态 —— 它路回来了照样认
+    D-21  旁观者只决定"不再等"，下一步归父 Run 自己
+
+还有三句是给后面几轮的：
+
+**一、"被等的那个人"没有能力给自己计时。**
+凡是形如"X 在等 Y"的结构，都要问一句"如果 Y 永远不给回音，
+谁手上有钟"。答案从来不会是 X —— X 正等着，它不跑。
+
+**二、"不知道"要一直说到底，不能说到一半改口。**
+这一轮里它出现在四个地方：错误码（`CHILD_WAIT_EXPIRED`）、
+失败类别（`EXTERNAL_UNKNOWN`）、Observation kind（`child_run.unknown`）、
+账本理由（`WE DO NOT KNOW`）。任何一处改口成"失败"，
+账本就从"缺一格"变成"**错一格**"（PR-19）。
+
+**三、解开不等于接上。**
+本轮把父 Run 从 `WAITING_CHILD` 上解下来了，
+但"解开之后谁来驱动它往下走"仍然没有答案（217）。
+这两件事分开做是对的 —— 混在一起就会有人在"解开"的名义下
+替父 Run 决定"接下来干什么"（D-21）。
+
+---
+
+# 77. M39 · 迟到的结果（空洞 231）
+
+> 版本：v2.1.27 → **v2.1.28**　测试：1014 → **1032**（+12 单元 / +6 集成）
+
+## 77.1 起因：D-20 只说了一半
+
+M38 立 D-20 的时候承诺过一句：
+
+> 到期不是终态 —— 它路回来了照样认。
+
+**前半段**有实现：`undelivered()` 的谓词里没有 `wait_expired_at` 这一列，
+于是到期过的派生一旦有了结果，唤醒路径确实还能扫到它。
+
+**后半段没有**。"照样认"认完之后要干什么，当时没有人回答过。
+补上这段之前，先跑一遍看现状（真跑起来的父子世界，不是手搓的 handle）：
+
+```text
+child:    run_27481a0924f243fc
+expire:   WaitExpiryOutcome.EXPIRED
+undelivered: ['run_27481a0924f243fc']     ← D-20 的前半段：还在队里
+wake outcome: ChildWakeOutcome.ALREADY_DELIVERED
+ledger rows: 1
+  status: CompensationStatus.UNRESOLVED
+  reason: ... WE DO NOT KNOW whether it is still running ...
+```
+
+## 77.2 两张脸
+
+跟空洞 224 那次一样，它有两张脸，而且两张都不响：
+
+**脸 A —— 返回值在撒谎。**
+`wake()` 走的是 `pending is None` 那一支，返回 `ALREADY_DELIVERED`。
+这名字说的是"已经交过了"。真实发生的是"**从来没有人接过它**"（PR-19）。
+
+**脸 B —— 账本从"缺一格"变成"错一格"。**
+到期那一刻写下的 "WE DO NOT KNOW whether it is still running" 是一句**实话** ——
+但它只在"还没有真相"的时候成立。真相到了（它其实 `completed` 了），
+那句话就变成了错的。
+
+而**错一格比缺一格坏得多**：缺一格会让运维去看一眼，
+错一格会让运维**不去看**。这正是 §75 那条教训的第二个副本。
+
+## 77.3 新增不变量
+
+```text
+D-22  等待已声明结束之后回来的结果**不交付**（等它的人已经不等了），
+      但它必须**记账并让出队列** —— 不登记交付，这一行就永久占着
+      `undelivered()` 的队首（R-13 同款）。
+
+D-23  一条写着"不知道"的账本行，在真相到达时必须被**收回**。
+      只补**还开着**的账（`status='unresolved'`）；
+      已经处置过的是历史，不是草稿（S-14 同族）。
+      收回的是"不知道"这三个字，**不是**那笔副作用 ——
+      它仍然 UNRESOLVED（S-15）。
+
+D-24  迟到的结果必须**看得见**：`late` 与 `delivered` 是两个计数器。
+      并成一个之后，一个正在持续丢结果的系统看起来和一切正常的系统
+      一模一样 —— 而"看得见"正是这一整条链路要买的东西。
+```
+
+## 77.4 D-22：为什么"不交付"却仍然要 `mark_delivered`
+
+这两件事看起来矛盾，其实问的是两个问题：
+
+    mark_delivered 说的是"**这条派生我已经处理过了**"
+    delivery       说的是"**结果交到了等它的人手上**"
+
+第一个问题的答案必须是"是"：`undelivered()` 也是 `ORDER BY ... LIMIT`，
+一条永远不动的行会永久占着队首，后面所有迟到的结果**全进不来**。
+
+第二个问题的答案必须是"否"：父 Run 已经被解开过，
+它可能已经换了个目标重新派了一次。把旧结果插回去，
+等于让一个已经往前走过的人收到一条他不再期待的消息 ——
+而 D-1 的派生键决定了他不会认这条。
+
+所以它的返回值是 `LATE`，不是 `ALREADY_DELIVERED`：
+**"处理过了"和"交到了"必须分开说。**
+
+## 77.5 D-23：只补还开着的账
+
+改的**只有理由**，不动状态。判据在 SQL 的 WHERE 里：
+
+```sql
+UPDATE compensations
+   SET reason = %s, updated_at = %s, version = version + 1
+ WHERE execution_id = %s AND status = 'unresolved'
+```
+
+`status = 'unresolved'` 这一半是**判据本身**，不是"顺手加个条件"：
+
+    · 人工已经把它拉回 PENDING 并撤销掉了 → 那是历史，改它就是涂改昨天的账
+    · 没有这一行（Action 没声明逆操作）  → 没有可改的，且不新建行（S-2）
+
+与 S-4 / A-11 同一形状：判胜负靠 `rowcount`，不靠"先读一下状态"。
+
+## 77.6 一个副作用：新理由**不许**引用旧措辞
+
+第一版写的是"this record previously said WE DO NOT KNOW ... that is now
+WITHDRAWN"。测试立刻红了三条 —— 因为断言查的是"理由里不该再出现
+`WE DO NOT KNOW`"。
+
+这不是测试太严，是它挡住了一件真事：运维找"还没查清楚的那些"，
+最自然的动作是
+
+    WHERE reason LIKE '%WE DO NOT KNOW%'
+
+而一条**引用**了旧措辞的记录会被它命中 —— 于是"已经查清楚的那条"
+继续出现在"还不知道的那些"里。收回了，却仍然搜得到，等于没收回
+（PR-19：说的和**能被查到的**必须是同一件事）。
+
+所以新理由改用小写且不完整的措辞回顾它（"the outcome was UNKNOWN"），
+审计线索交给 `version` 与 `updated_at`。
+
+## 77.7 D-24 / 空洞 227：`sweep()` 不再返回一个数
+
+`ChildRunWaker.sweep()` 原来返回 `int`，只把 `DELIVERED` 计进去 ——
+那就是空洞 227 登记的那件事。本轮把它换成
+`ChildWakeSweepResult(delivered / late / parent_terminal)`，
+与 M38 的 `WaitExpirySweepResult` 同款形状（B-7：两条队列一个答案）。
+
+`apps/child_run_consumer` 的 `health()` 现在分三行报：
+
+    delivered_total   结果交到了等它的人手上
+    late_total        结果到了，但等它的人早就不等了（D-22）
+    orphan_total      没人会再要这个结果，记了一笔孤儿
+
+## 77.8 真 PostgreSQL 验了什么
+
+1. **"只改 UNRESOLVED"这件事由 PG 判定。** 内存版是自己 `if` 出来的；
+   真库上那一句是 SQL 的 WHERE。
+2. **改完之后能被另一条连接原样读出来**（status 仍是 `unresolved`，
+   `version` 从 1 变成 2）—— 同连接读自己刚写的证明不了任何事。
+3. **端到端**：派生 → 进程没了 → 到期 → 它后来跑完了 → `wake()` 返回 `LATE`
+   → 账本那行不再有 `WE DO NOT KNOW`，且仍然是 `unresolved`。
+4. **让出队列**：`undelivered()` 空了，第二次 sweep 的 `total` 是 0。
+
+## 77.9 变红验证
+
+7 条真红 + 1 条对照组（对照组**应当**保持绿）：
+
+| # | 改回什么 | 红了什么 |
+|---|---|---|
+| 1 | `wake()` 不判等待已到期 | 5 条（脸 A 回来了） |
+| 2 | 迟到不改账本 | 3 条（脸 B 回来了） |
+| 3 | 真 PG 的 UPDATE 不限定 `status` | 1 条集成（改到历史头上） |
+| 4 | 迟到不登记交付 | 1 条（R-13 队首被占住） |
+| 5 | `sweep()` 把 `late` 并进 `delivered` | 1 条（D-24） |
+| 6 | 内存版不检查状态 | 1 条 error（替身比真库宽） |
+| 7 | 新理由里原样引用 `WE DO NOT KNOW` | 3 条（收回了却仍搜得到） |
+| 对照组 | 去掉迟到分支 | **保持绿**：正常唤醒路径不受影响 |
+
+第 6 条最值得留着：内存版一旦比 PG 版宽，"过了单测"的代码在真库上
+行为就不同 —— 而替身比真的松，是最坏的一种替身。
+
+## 77.10 空洞编号表
+
+| # | 级别 | 形状 | 状态 |
+|---|---|---|---|
+| **231** | P2 | 到期后迟到的结果：返回值撒谎（`ALREADY_DELIVERED`）+ 账本那句"不知道"永远不被收回 | **本轮闭合** |
+| **227** | P2 | `ChildRunWaker.sweep()` 只把 `DELIVERED` 计入返回值 | **本轮闭合**（D-24） |
+| **232** | P2 | D-23 的更正**没有事件**：PG 改了，Kafka 下游（Read Model / 审计）永远看不到这次改口（X-3 同族） | **本轮登记** |
+| **233** | P2 | 迟到的结果让 S-8 的前提**不再成立**（现在有可信结果了），但账本仍停在 `args={}` —— 没人把它升级成可撤销 | **本轮登记** |
+| 230 | P2 | `wait_until` 只有全局默认（30 分钟），没有按次派生覆盖的入口 | 仍缺 |
+| 217 | P2 | 唤醒器只恢复父 Run、不驱动它（到期器同款） | **已被 M42 闭合（v2.1.31）**：解开阻塞的两条路径都自己把父 Run 推下去（D-27）；本表当初没回写 |
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 223 | P2 | `POST /runs/{id}/cancel` 没有幂等键 | **本轮闭合（M44 / §82）** |
+| 225 | P2 | 对不存在的 Run 请求取消，留下永远 pending 的意图 | 仍缺 |
+| 228 | P2 | Execution 级取消意图只有布尔位，没有"谁叫停、为什么" | 仍缺 |
+
+## 77.11 冻结的是什么
+
+> v2.1.26 冻结的是"**等到什么时候为止**"；
+> v2.1.27 冻结的是"**等不到的时候，谁来把它解开**"。
+>
+> 这一轮冻结的是：**"弄清楚了，就要把'不知道'三个字收回去"**。
+
+    D-22  迟到不交付 —— 但必须记账，且必须让出队列
+    D-23  "不知道"必须被收回 —— 只补还开着的账
+    D-24  迟到必须看得见 —— 不能并进"已交付"那个数
+
+还有三句是给后面几轮的：
+
+**一、一句实话会过期。**
+"我们不知道"在写下的那一刻是诚实的，在真相到达的那一刻就变成了谎话。
+凡是写下"不知道"的地方，都要同时写下"**谁来把它改回来**" ——
+否则诚实只是延迟的谎言。
+
+**二、"处理过了"和"办成了"是两个计数器。**
+凡是兜底扫，返回值都要能回答"这一轮到底办成了几件、
+又有几件是**不得不**处理掉的"。合成一个数之后，
+一个正在持续失败的系统和一切正常的系统长得一模一样。
+
+**三、改账本的时候，想想运维会怎么搜它。**
+这一轮的埋雷点不是逻辑，是措辞：新理由引用了旧措辞，
+于是"已经查清楚的"继续出现在"还没查清楚的"搜索结果里。
+**能被查到的，才算真的改了。**
+
+---
+
+# 78. M40 — 账本的每一次变化都要有事件（空洞 232）
+
+> 版本：v2.1.28 → **v2.1.29**　测试：1032 → **1078**（+37 单元 / +9 集成）
+
+## 78.1 起因：232 那条登记**说窄了**
+
+M39 收尾时登记的是：
+
+> **232**　D-23 的更正没有事件：PG 改了，Kafka 下游永远看不到这次改口
+
+把 `compensations` 表上的写入路径列一遍，实际的情况是：
+
+| 写路径 | 状态变化 | 之前有没有事件 |
+|---|---|---|
+| `SagaCoordinator.record()` | （新行）PENDING | 没有 |
+| `SagaCoordinator.record_unresolved()` | （新行）UNRESOLVED | 没有 |
+| `store.claim()` | PENDING → RUNNING | 没有 |
+| `compensate()` 成功 | RUNNING → COMPENSATED | 没有 |
+| `compensate()` 失败 | RUNNING → UNRESOLVED | 没有 |
+| `release()` | PENDING → NOT_NEEDED | 没有 |
+| `reopen()` | UNRESOLVED → PENDING | 没有 |
+| `amend_reason()`（D-23） | UNRESOLVED（只换 reason） | 没有 |
+
+**一条都没有。** 232 不是"改口那一处漏了"，是整张表**从来没接上过事件流**。
+
+## 78.2 判据：这是 X-3 的同一族错误
+
+X-3 的原话是"状态变更与事件写入必须同一事务"，它要防的是
+"两件事实写进了两个事务"。这一轮的形态是它的**退化版**：
+
+    一件事实写进了 PG，另一件事实**根本没有写**。
+
+后果是一样的：下游那一本账与 PG 那一本账说的不是同一件事。
+而"这个 Run 到底留下了几笔没人管的副作用"是看板第一个要问的数 ——
+这个数在下游**恒等于 0**。
+
+## 78.3 第一件事：只补改口那一处是不够的（X-15）
+
+如果只给 `amend_reason()` 加一条 `compensation.amended`，下游收到的
+第一条关于这条账的消息就是一句**更正通知**：
+
+    "那句'不知道'被收回了。"
+
+收回的是哪句？什么时候写的？被谁写的？—— 无从判断。
+一条能独立读懂的事件流，必须让每一条消息都能在自己的上下文里成立。
+
+> **X-15：事件流必须能独立读懂。**
+>
+> 一条事件不能依赖"下游已经从别处知道了前半段"。
+> 凡是会**被引用**的变化（更正、撤回、补偿），它引用的那个事实
+> 必须在同一条流里**先出现过**。
+
+所以这一轮的发射点是账本的**全部**写路径（见 78.1 那张表的右列），
+七个事件类型：
+
+    compensation.recorded      记下一笔新账（PENDING）
+    compensation.unresolved    记下一笔**存疑**的新账 / 撤销不掉
+    compensation.claimed       某个 Coordinator 抢到了认领（RUNNING）
+    compensation.compensated   已经撤销完了
+    compensation.not_needed    S-16：副作用按预期保留
+    compensation.reopened      人工从"撤销不了"拉回"待撤销"
+    compensation.amended       D-23：那句"不知道"被真相顶掉
+
+## 78.4 为什么按**迁移**命名，不按**落地后的状态**
+
+一开始的设计是按"这一行现在是什么状态"映射事件类型：
+
+    PENDING      → recorded
+    UNRESOLVED   → unresolved
+    COMPENSATED  → compensated
+    NOT_NEEDED   → not_needed
+
+这个映射在 `reopened` 上会**塌掉**：UNRESOLVED → PENDING 落地之后，
+那一行也是 PENDING，于是它会被叫成 `recorded`。
+
+而下游对这两者的反应正好相反：
+
+    recorded   "新出现一笔待撤销" —— 加一
+    reopened   "早就登记过的那一笔，人工决定再试一次" —— 不加
+
+一个按 `compensation_id` 去重的 Read Model 拿到两条 `recorded`，
+要么把重试当成新账（待撤销笔数凭空翻倍），要么因为 id 已存在
+而把这次重试**整个丢掉**。
+
+所以事件名回答的是"**刚才发生了什么**"，不是"这一行现在写着什么"。
+后者在 payload 的 `status` 里，谁都能看。
+
+## 78.5 为什么"状态真的变了才发"
+
+`save()` 是通用写回通道。`touch()` 只动 `attempts` / `updated_at`，
+账本说的事实没有变 —— 那样也发一条 `compensated`，
+下游会以为"撤销了三次"等于"出现了三笔副作用"。
+
+判据落在**存储边界**上（E-25 同款：不信任调用方自己记的）：
+
+* PG 实现：`SELECT status ... WHERE compensation_id = %s AND version = %s`
+  取改之前那一行的状态，紧接着 `UPDATE ... WHERE version = %s`。
+  两次都按**同一个 `version`** 取值，而版本号只增不回退 ——
+  读到了版本 X、UPDATE 又**成功**匹配到版本 X，中间就不可能有人改过。
+  并发不是靠"读得早"挡住的，是靠 `WHERE version = ?` 挡住的
+  （改过就匹配 0 行 → 抛 E-13 → 不发事件）。
+* 内存实现：自己记一本 `_status[id]`。
+  ⚠️ **不能**靠"读一眼字典里那条" —— 字典里存的是**同一个对象**，
+  调用方 `transition()` 之后再 `save()`，此刻读到的已经是新状态了。
+
+## 78.6 B-7：两个实现，一个发射模块
+
+`PostgresCompensationStore`（生产）与 `InMemoryCompensationStore`（测试 /
+单进程）落在两个模块里。抄两份之后，"认领算不算一次变化"、
+"`amended` 的 payload 带不带 reason"就会有两个答案 ——
+而下游只有一个消费者。
+
+所以发射逻辑收进 `packages/agent_runtime/compensation_events.py`：
+一张 `TRANSITION_EVENTS` 表、一个 `compensation_event()`、一个 `emit()`。
+两个 store 只负责"在正确的时机调用它"。
+
+并且有一条测试是**同一段剧本跑两遍**（`TheTwoImplementationsAgreeTest`）：
+内存版与 PG 版必须得到**同一串**事件类型。
+
+## 78.7 X-3：同一个 conn，同一个事务
+
+事件落点必须是**账本那一条连接上**的 `PostgresOutboxStore`。
+传另一条连接上的 outbox，等于把"这一行改了"和"通知下游"放进两个事务：
+
+    · 账本提交、事件回滚 → 下游永远不知道这笔副作用（本轮要闭合的空洞）
+    · 账本回滚、事件提交 → 下游会去撤销一个**根本没登记过**的副作用
+
+两种都必须是**不可能**出现的，所以 §78 的集成层里有两条对照测试
+（一起提交 / 一起回滚），外加一条"另一条连接上会是什么样"的反例。
+
+组合根那一侧收成一个函数（空洞 214 的形状：四个 `build_*` 各写一遍
+就会有四个漏掉 `events=` 的机会，而漏掉**不报错**）：
+
+```python
+def pg_compensation_store(conn):
+    return PostgresCompensationStore(conn, events=PostgresOutboxStore(conn))
+```
+
+## 78.8 落点
+
+| 文件 | 改了什么 |
+|---|---|
+| `packages/agent_domain/events/event.py` | 七个 `COMPENSATION_*` 事件常量（含 `reopened` 为什么不能复用 `recorded`） |
+| `packages/agent_runtime/compensation_events.py` | **新文件**：`TRANSITION_EVENTS` / `compensation_event()` / `emit()`，两个 store 共用（B-7） |
+| `packages/agent_runtime/saga.py` | `InMemoryCompensationStore(events=...)`；`add` / `claim` / `save` / `amend_reason` 四处发射；`_status` 记账 |
+| `packages/agent_runtime/adapters/postgres.py` | 同上四处；`SELECT_COMPENSATION_STATUS_AT` 取改前状态；`save()` 不匹配就抛 E-13 |
+| `packages/agent_runtime/assembly.py` | 内存栈的账本与 Kernel 共用**一个** `InMemoryOutbox` |
+| `apps/_bootstrap.py` | 新增 `pg_compensation_store(conn)`，四处构造点全部改走它 |
+| `tests/unit/test_compensation_events.py` | **新文件**，37 条 |
+| `tests/integration/test_compensation_events_real_pg.py` | **新文件**，9 条 |
+
+## 78.9 变红验证
+
+10 条真红 + 1 条对照组（对照组**应当**保持绿）：
+
+| # | 改回什么 | 红了什么 |
+|---|---|---|
+| 1 | PG 账本登记不发事件 | 8 条 |
+| 2 | PG 账本认领不发事件 | 5 条 |
+| 3 | PG 账本写回不发事件 | 7 条 |
+| 4 | PG 账本改口（D-23）不发事件 | 3 条 |
+| 5 | 内存账本登记不发事件 | 5 条 |
+| 6 | 内存账本写回不发事件 | 6 条 |
+| 7 | 人工重试被当成记一笔新账（`reopened` → `recorded`） | 3 条 |
+| 8 | 没变状态也发一条（`touch` 也算变化） | 3 条 error |
+| 9 | 组合根没把 outbox 递给账本 | 1 条 + 1 条 error |
+| 10 | 组合根递的是**另一条**连接上的 outbox | 1 条 + 1 条 error |
+| 对照组 | payload 多带一个字段 | **保持绿** |
+
+第 9 条一开始**没有变红** —— 集成测试自己构造 store，绕过了组合根。
+那不是测试写错了，是**少了一条测试**：组合根有没有把 outbox 递进去，
+没有任何断言（与空洞 214 同一个形状）。于是补了
+`TheCompositionRootWiresItTest`，它现在钉住 `store.conn is store.events.conn`。
+
+## 78.10 空洞编号表
+
+| # | 级别 | 形状 | 状态 |
+|---|---|---|---|
+| **232** | P2 | 账本的每一次变化都没有事件：PG 改了，Kafka 下游永远看不到（X-3 同族） | **本轮闭合** |
+| **233** | P2 | 迟到的结果让 S-8 的前提**不再成立**（现在有可信结果了），但账本仍停在 `args={}` —— 没人把它升级成可撤销 | 仍缺 |
+| 230 | P2 | `wait_until` 只有全局默认（30 分钟），没有按次派生覆盖的入口 | 仍缺 |
+| 217 | P2 | 唤醒器只恢复父 Run、不驱动它（到期器同款） | **已被 M42 闭合（v2.1.31）**：解开阻塞的两条路径都自己把父 Run 推下去（D-27）；本表当初没回写 |
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 223 | P2 | `POST /runs/{id}/cancel` 没有幂等键 | **本轮闭合（M44 / §82）** |
+| 225 | P2 | 对不存在的 Run 请求取消，留下永远 pending 的意图 | 仍缺 |
+| 228 | P2 | Execution 级取消意图只有布尔位，没有"谁叫停、为什么" | 仍缺 |
+
+## 78.11 冻结的是什么
+
+> v2.1.26 冻结的是"**等到什么时候为止**"；
+> v2.1.27 冻结的是"**等不到的时候，谁来把它解开**"；
+> v2.1.28 冻结的是"**弄清楚了，就要把'不知道'三个字收回去**"。
+>
+> 这一轮冻结的是：**"账本改了，就得让人知道"**。
+
+    X-15  事件流必须能独立读懂 —— 发射点覆盖全部写路径，
+          不能给下游寄一张没有前文的更正通知
+
+还有三句是给后面几轮的：
+
+**一、"没发事件"不会报错，所以它不会自己暴露。**
+这一次是查 D-23 才顺手发现的 —— 如果不是那一处需要引用前文，
+整张表可能一直静默到有人问"为什么看板上一个副作用都没有"。
+凡是"PG 写了"的地方，都要问一句"**事件流写了没有**"。
+这两个问题的答案不同步，就是 X-3。
+
+**二、事件名回答"发生了什么"，不是"现在是什么"。**
+按落地后的状态命名，会在"返回同一个状态的不同路径"上塌掉
+（`reopened` 与 `recorded` 都落在 PENDING）。
+payload 里那句 `status` 已经回答了"现在是什么"，
+事件类型该回答的是另一问。
+
+**三、装配参数漏了不报错。**
+`PostgresCompensationStore(conn)` 与
+`PostgresCompensationStore(conn, events=outbox)` 都能构造成功，
+区别只是后者才发事件。四个 `build_*` 各写一遍就有四个漏的机会
+（空洞 212/213/214 是同一个形状）。
+所以凡是"多了一个必需参数"的装配，都要收成**一个函数**，
+并给那个函数写一条断言。
+
+---
+
+# 79. M41 — 迟到的结果让账本变得可撤销（空洞 233）
+
+> 版本：v2.1.29 → **v2.1.30**　测试：1078 → **1105**（+19 单元 / +8 集成）
+
+## 79.1 起因：D-23 收回的是"不知道"，没收回收不回"撤销不了"
+
+M39 立 D-23 的时候，账本上那句话是：
+
+    "我们不知道它还在不在跑，这笔副作用撤销不了。"
+
+它其实**是两句**：
+
+| 半句 | 真相到达之后还成立吗 | M39 有没有收回 |
+|---|---|---|
+| "我们不知道它还在不在跑" | 不成立 —— 它跑完了 | ✅ 收回了 |
+| "这笔副作用撤销不了" | **不成立** —— 撤销参数现在拿得到了 | ❌ **没动** |
+
+第二句在真相到达的那一刻同样失效：子 Run 真的跑完了 ⟹
+副作用确实发生了 ⟹ 那笔账撤销得掉。
+
+## 79.2 探针实录：三句谎话叠在一起
+
+（真跑起来的父子世界：派生 → 子 Run 进程没了 → 到期 → 它**后来**跑完了）
+
+    status : unresolved          ← 仍然说"撤销不了"
+    args   : {}                  ← 撤销参数还空着
+
+    --- 人工点"重试"之后 ---
+    payload: {'tool': 'cancel_ticket', 'args': {}}
+    outcome: compensated=1       ← **报成功**
+
+    1. 行上说"撤销不了" —— 其实撤销得掉
+    2. 撤销工具被用**空参数**调用
+    3. 静默成功之后记成 `compensated`（"已经撤销完了"）
+
+第 2 条是会**真的动到外部世界**的那一条。S-8 的原话已经把后果写死了：
+
+> 带着空 id 去调撤销接口，最可能的后果是撤销了别的东西，或者**静默成功**。
+
+它不是显示问题，也不是"少了一个功能"，是一次**指向错误对象的真实写操作**。
+
+## 79.3 D-25：真相让"撤销不了"不再成立
+
+> **D-25：一个可信的结果证明了副作用确实发生 ⟹ 账本必须从
+> "撤销不了"升级为"待撤销"。**
+
+升级之后那一行是 PENDING + 真参数 —— 它重新回到待办队列里，
+由 `compensate()` 按 S-1 跑一条真实 Execution 去撤销。
+
+`reason` 按约定清空（PENDING 不带理由），来龙去脉改由事件承载
+（79.7）。这一步**不动**外部世界：什么时候动、由谁动，是调度问题，
+不是对账问题（S-9）。
+
+## 79.4 撤销参数只能来自 S-8 自己的 `materialize(result)`
+
+升级要补的参数**不许手搓**：
+
+```python
+args = action.compensation.materialize(handle.result)   # S-8 的声明 + 正向结果
+```
+
+理由就是 S-8 存在的理由 —— 撤销参数是正向 Action **提出时**声明的
+（`result_keys` 指明哪些值要从结果里取）。在迟到的结果这里再抄一份
+"大概叫 ticket_id 吧"，等于给同一件事写了第二个定义（B-7），
+而且抄错的那次正是"撤销了别的东西"。
+
+## 79.5 为什么判据是 `args = '{}'::jsonb`，不是"所有 UNRESOLVED"
+
+`args` 空不空，把 UNRESOLVED 分成**两类完全不同的账**：
+
+| `args` | 为什么撤销不了 | 真相到达之后 |
+|---|---|---|
+| 空 | **撤销参数取不到**（没有任何可信结果可取） | 参数补齐 ⟹ 自动升级（D-25） |
+| 非空 | 撤销动作**跑失败了**（S-5 / S-6） | 不许自动重试 |
+
+第二类尤其要挡住：它已经撤销过一次并且失败了，让它自动再试一次，
+等于用一次真实副作用去覆盖一次**已经失败过**的撤销。
+"S-14 唯一例外"是**人工**把行拉回 PENDING —— 真相到达不构成那个理由。
+
+判据钉在两处（PR-23：钉在**真正执行它的那一处**）：
+
+```sql
+WHERE execution_id = %s AND status = 'unresolved' AND args = '{}'::jsonb
+```
+
+```python
+if dict(self.args):
+    raise InvariantViolation("...not UNRESOLVED for lack of undo args...")
+```
+
+两边各有一组测试，变红验证里这两侧是**分开砍**的（79.10 的 2 / 8 / 9 条）。
+
+## 79.6 D-26：升级不了必须说清**是哪一样**挡着
+
+> **D-26：一条仍留在 UNRESOLVED 的账，理由必须点名是哪一样挡着 ——
+> 不许停在"不知道"那句话上。**
+
+| 结局 | 挡着的是什么 | 理由里要点出 |
+|---|---|---|
+| `failed` | 它没做成 ⟹ 副作用发没发生**仍然不知道**（S-11） | `S-11` + `failed` |
+| `cancelled` | 被叫停的那条可能已经做了一半 | `S-11` + `cancelled` |
+| `completed` 但结果里没有撤销要的键 | 撤销参数仍取不到 | `D-26` + **缺哪个键** |
+
+第三支最容易写成"还是撤销不了"。只说这一句，运维还得自己去翻
+子 Run 的结果才知道缺什么 —— 而"缺哪个键"是系统**已经知道**的事
+（`materialize()` 抛的异常里就写着路径）。
+
+## 79.7 为什么 `upgraded` 不能复用 `reopened`
+
+两者是**同一个迁移**（UNRESOLVED → PENDING），按 78.4 那套"按迁移命名"
+的规则它们本该是同一个事件。但下游对两者的反应正好相反：
+
+    reopened   人工决定再试一次      → 重试计数 +1
+    upgraded   它本来就能撤销，现在排上了 → 待撤销笔数 +1
+
+混成一个之后，"待撤销笔数"里会混进根本没迟到过的那些，
+或者"人工重试次数"里混进系统自动做的那些。
+
+所以判据从"按迁移命名"再往下走一格：**事件名要回答"**谁**引起的"**。
+`upgraded` 的 payload 里带着完整理由（D-25 的来龙去脉），
+因为行上的 `reason` 已经清空了。
+
+## 79.8 为什么升级**不**顺手把撤销跑掉
+
+`upgrade_to_compensable()` 只搬账本（UNRESOLVED → PENDING）。
+
+真正去撤销要跑一条真实 Execution（S-1），而"该由谁跑、什么时候跑、
+要不要再过一次审批闸门"是**调度 / 策略**问题。让一次结果对账
+顺手动外部世界，等于把那个决定藏在对账里（S-9）。
+
+## 79.9 落点
+
+| 文件 | 改了什么 |
+|---|---|
+| `packages/agent_domain/events/event.py` | `COMPENSATION_UPGRADED`（含为什么不能复用 `reopened`） |
+| `packages/agent_domain/business/compensation.py` | `CompensationRecord.become_compensable()` —— 领域侧判据（PR-23） |
+| `packages/agent_runtime/saga.py` | `CompensationStore.upgrade_to_compensable`（协议 + 内存实现）；`SagaCoordinator.upgrade_to_compensable` |
+| `packages/agent_runtime/adapters/postgres.py` | `UPDATE_UPGRADE_COMPENSATION` —— 三个条件全在 WHERE 里；`upgrade_to_compensable` 并发靠 rowcount |
+| `packages/agent_runtime/orphans.py` | `reconcile_late_result()` —— "迟到的结果怎么落到账本上"的**唯一**定义（B-7）；`upgraded_result_reason()` |
+| `packages/agent_runtime/child_wake.py` | `_reconcile_late` 改为调用它（不再自己写一遍分支） |
+| `tests/unit/test_child_late_upgrade.py` | **新文件**，19 条 |
+| `tests/integration/test_child_late_upgrade_real_pg.py` | **新文件**，8 条 |
+| `tests/unit/test_child_late_result.py` | M39 的两条断言改到 `failed` 那一支（`completed` 现在归 D-25） |
+| `tests/integration/test_child_late_result_real_pg.py` | 同上 |
+| `tests/integration/test_compensation_events_real_pg.py` | 同上 |
+
+## 79.10 变红验证
+
+13 条真红（含 2 条"该绿的必须保持绿"的特异性断言）+ 1 条对照组：
+
+| # | 改回什么 | 红了什么 |
+|---|---|---|
+| 1 | 迟到结果不再升级（退回 M39 只改口） | 单测 + 集成；`failed` / `cancelled` 两支**保持绿** |
+| 2 | SQL 去掉 `args = '{}'::jsonb` | 单测 + 集成 |
+| 3 | 升级不加版本号（E-25） | 集成（含两条连接竞态那条） |
+| 4 | 领域对象升级时不清空 `reason` | 单测（内存版） |
+| 4b | SQL 升级时不清空 `reason` | 集成（PG 版） |
+| 5 | PG 版事件复用 `reopened` | 集成 |
+| 5b | 内存版事件复用 `reopened` | 单测 |
+| 6 | 升级不发事件（X-15） | 单测 + 集成 |
+| 7 | D-26 不再点名缺哪个键 | 单测 + 集成；D-25 那组**保持绿** |
+| 8 | 内存版比真库宽（不挡 `args` 非空） | 单测 |
+| 9 | 领域对象自己不再挡（PR-23） | 单测 |
+| 10 | 升级仍用空参数（S-8 的那一刀） | 单测 + 集成 |
+| 对照组 | 改一个没人断言的字段 | **保持绿** |
+
+第 4 / 5 条一开始是**一条**，跑出来只有一半红 —— 因为内存版与 PG 版
+各自有一份 emit、各自有一份判据，砍其中一份另一份一个都不红。
+那不是测试写错了，是这条不变量本来就**落在两处**（PR-23 的直接后果）：
+凡是"两个实现各写一遍"的判据，变红验证必须砍**两次**。
+
+## 79.11 空洞编号表
+
+| # | 级别 | 形状 | 状态 |
+|---|---|---|---|
+| **233** | P2 | 迟到的结果让 S-8 的前提**不再成立**，但账本仍停在 `args={}` —— 没人把它升级成可撤销 | **本轮闭合** |
+| 230 | P2 | `wait_until` 只有全局默认（30 分钟），没有按次派生覆盖的入口 | 仍缺 |
+| 217 | P2 | 唤醒器只恢复父 Run、不驱动它（到期器同款） | **已被 M42 闭合（v2.1.31）**：解开阻塞的两条路径都自己把父 Run 推下去（D-27）；本表当初没回写 |
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 223 | P2 | `POST /runs/{id}/cancel` 没有幂等键 | **本轮闭合（M44 / §82）** |
+| 225 | P2 | 对不存在的 Run 请求取消，留下永远 pending 的意图 | 仍缺 |
+| 228 | P2 | Execution 级取消意图只有布尔位，没有"谁叫停、为什么" | 仍缺 |
+
+## 79.12 冻结的是什么
+
+> v2.1.27 冻结的是"**等不到的时候，谁来把它解开**"；
+> v2.1.28 冻结的是"**弄清楚了，就要把'不知道'三个字收回去**"；
+> v2.1.29 冻结的是"**账本改了，就得让人知道**"。
+>
+> 这一轮冻结的是：**"弄清楚了，就得把'撤销不了'这个结论一起改掉"**。
+
+    D-25  可信结果证明副作用确实发生 ⟹ 账本从"撤销不了"变成"待撤销"，
+          撤销参数由 S-8 自己的 materialize(result) 补
+    D-26  仍然撤销不了时，理由必须点名是哪一样挡着（没做完 / 被叫停 /
+          缺哪个键），不许停在"不知道"那句话上
+
+还有三句是给后面几轮的：
+
+**一、"前提失效了，但结论没改"是最难看见的一类错。**
+这一轮的错误不是"写错了"，是"**没跟着改**"——
+D-23 的更正让 UNRESOLVED 的**前提**（没有可信结果）消失了，
+而 UNRESOLVED 本身还在那儿。每一个"因为 X 所以 Y"的结论，
+都要问一句"**X 不在了以后，Y 谁负责改**"。
+
+**二、空参数不是"少传了个值"，是"指向了别的东西"。**
+`cancel_ticket({})` 不会报错，它会成功 —— 撤销别的工单，或者静默成功。
+凡是"取不到就先跑"的地方，都要按 S-8 那一句判：
+不是"要不要补默认值"，是"**不许带着猜的去动外部世界**"。
+
+**三、一个判据两个实现，就要砍两刀。**
+内存版与 PG 版各自写了一遍"能不能升级"。变红验证砍 PG 那一份时，
+内存那侧一条都没红 —— 因为它的判据是**另一份代码**。
+PR-23 要求把不变量钉在真正执行它的那一处，代价就是有 N 处
+就要验 N 次（本轮 4 / 4b 与 5 / 5b 都是这么来的）。
+
+---
+
+# 80. M42 — 解开阻塞的人必须把 Run 推下去（空洞 217）
+
+> 版本：v2.1.30 → **v2.1.31**　测试：1105 → **1129**（+18 单元 / +6 集成）
+
+## 80.1 起因：解开 ≠ 往前走
+
+M30 接通了"派得出去、认得回来"，M38 接通了"等不到的时候谁来解开"。
+两条路径在**解开**父 Run 的地方都停住了：
+
+    ChildRunWaker.wake()          交付结果 → 落快照 → 标记交付 → return
+    ChildRunWaitExpirer.expire()  关闸门   → 落快照 → 标记到期 → return
+
+父 Run 从"在等那条子 Run"变成"**可以被推一步**"。然后就没有然后了 ——
+`child_wait.py` 自己那句注释把这件事写得毫不含糊：
+
+    父 Run 从此可以被推一步 … 把下一步留给 step()
+
+"留给 step()"就是**留给调用方**。而在跨进程部署里那个调用方不存在：
+没有任何一个进程的 tick 会去问"有哪些 Run 刚刚被解开"。
+
+于是真实世界里发生的是：
+
+    子 Run 跑完 → 事件来了 → 唤醒器重建父 Run → 交付 → 落快照 → **扔掉**
+                                                              ↑
+                                          这个 stack 从此没人再碰
+
+界面上仍然显示"运行中"，而它再也不会前进一步。
+与空洞 229（父 Run 永远挂着）是**同一个现象**，
+只是那一次的病因是"没人解开"，这一次是"**解开了没人推**"。
+
+## 80.2 探针实录：一个已经拿到结果却永远走不下去的 Run
+
+真跑起来的父子世界（脚本只有一步委派），`wake()` 之后读最新快照：
+
+    --- D-27 之前 ---
+    status          : running          ← 快照里还是"运行中"
+    pending_child_id: None             ← 闸门确实清了
+    observations    : plan.created, child_run.spawned, child_run.finished
+                                       ↑ 没有 run.finished —— 它没跑完
+
+    --- D-27 之后 ---
+    status          : completed
+    pending_child_id: None
+    observations    : …, child_run.finished, run.finished
+
+三句话合起来是这个洞的全部形状：
+
+    · 闸门清了（"可以被推一步"）
+    · 状态还是 running（"没人在推"）
+    · 不报错（"一切正常"）
+
+而"可以被推一步"**从来不是一种状态** —— 它是把一件必须做的事
+推给了一个不存在的调用方。
+
+再砍一刀看得更清楚：把推进之后那份快照拿掉（D-28），
+PG 里最新那一行是这样：
+
+    status : running
+    reason : 'child run run_34e8… result delivered'
+
+账本那一行的状态停在 `pending` —— 因为 S-16 只在
+`_declare_terminal(COMPLETED)` 那一刻结案，而那一刻**根本没发生**。
+"这个 Run 跑完了"在存储里**不存在**，于是 R-3 被绕开：
+
+    下一次 rebuild() 读最新快照 → 不是终态 → 重建成功
+      → 一条**已经结束**的 Run 被重新装载出来继续走
+
+## 80.3 D-27：谁解开，谁推进
+
+> **D-27：解开一个 Run 的阻塞的人，必须把它推进到下一个阻塞点或终态。**
+>
+> "现在可以被推一步"不是一种状态 —— 它是把一件必须做的事
+> 推给了一个**不存在的调用方**。
+
+## 80.4 为什么是"解开它的人"，不是"另起一个驱动进程"
+
+    · 它手上**已经有**重建好的 RuntimeStack（`rebuild()` 刚跑过）。
+      让别人再重建一次，等于多一次快照读、多一次反序列化，
+      而这两者之间可能已经有人改过那一行。
+    · 更重要的是**责任**：解开与推进一旦分家，
+      "解开了但还没被推进"就变成一个**需要新所有者**的中间态 ——
+      那就要再有一张队列表、再有一个扫队进程、再有第二套判据。
+      而它本来不该存在（与 D-13 那一类"中间态必须由谁接住"是同一个判法）。
+
+推进的**停止条件**不许由驱动方自己数：这里调的是
+`AgentLoop.run()`，而"一个 Run 什么时候该停"的唯一定义就在那里
+（等审批 / 等子 Run / 完成 / 预算耗尽 / 被叫停 / 一直被拒）。
+由驱动方自己调几次 `step()`，等于重写一遍那个集合（B-7）。
+
+## 80.5 D-28：推进之后必须落一个新的可恢复点
+
+`AgentLoop` 只在**挂起**时才自己落快照。跑到终态那条路径
+（`_finish()` / `_declare_terminal()`）**不落**。
+
+于是一个跑完的 Run 在 `run_snapshots` 里的最新一条仍然是挂起时那份 ——
+`snapshot.is_terminal` 是 False。后果不止"看不见它跑完了"：
+
+    下一次有子 Run 的结果要交回来
+      → ChildRunWaker.rebuild() 读最新快照 → 不是终态 → 重建成功
+      → 一条**已经结束**的 Run 被重新装载出来继续走（R-3 被绕开）
+
+所以推进之后必须落一份，而且这份快照的 `reason` 要写明它是推进的产物 ——
+终态快照是"这个 Run 结束了"这件事在存储里的**唯一**证据。
+`reason` 写成 `driven` 等于什么都没说（PR-19 那一类），
+所以它是 `driven: run stopped at {outcome}`。
+
+## 80.6 D-29：推进排在"标记处置完成"之前
+
+推进是这条链路上**最容易崩**的一步（它在调模型、调工具、动外部世界）。
+把它排在一次"我已经处理完了"的标记之后，崩溃就意味着：
+
+    delivered_at 已经写了 → 兜底扫再也不会碰这条子 Run
+      → 父 Run 停在半路，界面显示"运行中"，一切正常
+
+排对了，崩溃的后果只是"下一轮兜底扫再推一次" —— 变慢，不变错（A-12）。
+真库上验的是这一列：`child_runs.delivered_at` 在崩溃后**是 NULL**，
+于是 `undelivered()` 下一轮还扫得到它；换个进程接着扫，
+它把推进补完、把标记补上 —— 不需要第三遍。
+
+## 80.7 D-30：父 Run COMPLETED ≠ 没人接过
+
+D-13 规定"父 Run 已终态 ⟹ 这条子 Run 的副作用没人认领 ⟹ 记孤儿"。
+D-27 落地之后，这句话出现了一个**例外**：
+
+    · D-5：挂着 `pending_child` 的 Run 走不出 `WAITING_CHILD`，
+      所以它不可能"一边等着这条子 Run、一边自己跑完"
+    · 等待被声明过到期的那一支在上面就走了（D-22 / `LATE`）
+    · 于是剩下的唯一路径是：结果交回去了 → 父 Run 被推进（D-27）
+      → 跑完 → COMPLETED
+    · 而 S-16 已经在那一刻把账本结案成 `NOT_NEEDED`
+
+此时再记一条 D-13 孤儿，账本上会同时写着
+"不需要撤销"与"没人负责这笔副作用" —— 两句互相矛盾的话。
+
+这个分支真正服务的窗口是 D-29 那一瞬间：推进跑完了、
+`mark_delivered` 还没写进去就崩了。下一轮兜底扫会再撞上来，
+而那时**不许**把它说成孤儿。
+
+判据只有一处：`_parent_completed()` 读最新快照的 `status`。
+终态 Run 重建不出来（R-3），所以"它当时是什么终态"只能问存储；
+另外三个终态（`FAILED` / `CANCELLED` / `TIMED_OUT`）都是
+"**没等到就结束了**"，那笔副作用真的没人认领 —— 孤儿照记。
+
+## 80.8 为什么 `RunDriver` 是一个端口，且 `driver` 没有默认值
+
+推进属于四边界里的 **Runtime**（Runtime 驱动 Agent 的循环）：
+不是 Kernel 的事（Kernel 只管把一条 Task 可靠做完），
+也不是契约层的事（契约层只问"在不在"）。
+
+做成端口而不是让 waker 直接 `loop.run()`，是因为"怎么推"
+必须只有一个定义（B-7）：唤醒路径、到期路径、以及将来任何一条
+"解开某个阻塞"的路径都要用同一份。
+
+`driver` **不给默认值**，与 `saga` 同款理由（空洞 212~214）：
+给默认值 = "解开了但没人推"变成一种**合法的装配**，
+而那正是空洞 217 的形状 —— 漏接不报错，只是父 Run 永远不动。
+
+## 80.9 落点
+
+| 文件 | 改了什么 |
+|---|---|
+| `packages/agent_runtime/driving.py` | **新文件**：`RunDriver` 端口、`InProcessRunDriver`、`DriveOutcome` / `DriveResult`；D-27 / D-28 / D-29 的全部理由 |
+| `packages/agent_runtime/child_wake.py` | 新增 `driver` 字段（无默认值）；主交付路径与"已交过"那一支都推一把；`_parent_completed()`（D-30） |
+| `packages/agent_runtime/child_wait.py` | 同上：到期路径的两个分支都推一把 |
+| `apps/_bootstrap.py` | `build_child_run_consumer(driver=...)`；不给就装 `InProcessRunDriver(recovery=recovery)` |
+| `tests/unit/test_run_driving.py` | **新文件**，18 条 |
+| `tests/integration/test_run_driving_real_pg.py` | **新文件**，6 条 |
+| 12 个既有测试文件 | 接上 `driver`（组合根与测试共用同一份推进定义） |
+| 14 条既有测试 | 判据从"重建出来再 `step()` 一次"改成"最新那份快照停在哪" —— 前者证明的是**能力**，后者证明的是**事实** |
+
+## 80.10 变红验证
+
+12 组变异，每组都带"必须红"与"必须保持绿"两侧，共 29 条判据：
+
+| # | 改回什么 | 红了什么 |
+|---|---|---|
+| 1 | 唤醒路径不推进（回到 217） | 单测 4 条；到期那一支与已终态那一支**保持绿** |
+| 2 | 「已经交过」那一支不推进 | 单测；主路径**保持绿** |
+| 3 | 到期路径不推进（第二副本） | 单测；唤醒路径**保持绿** |
+| 4 | 到期路径「已经解开过」那一支不推进 | 单测；到期主路径**保持绿** |
+| 5 | D-28 推进之后不落快照 | 单测 4 条（含"R-3 被绕开"那条） |
+| 6 | D-29 推进排到 `mark_delivered` 之后 | 单测；干净路径**保持绿** |
+| 7 | D-29 到期路径同样排反 | 单测；到期主路径**保持绿** |
+| 8 | D-30 去掉豁免（COMPLETED 也算孤儿） | 单测；取消那一支**保持绿** |
+| 9 | D-30 豁免过头（任何终态都算接过） | 单测；COMPLETED 那一支**保持绿** |
+| 10 | `driver` 给了默认值 | 装配断言；到期器那条**保持绿** |
+| 11 | D-28 在真库上不落终态快照 | 集成；崩溃那条**保持绿** |
+| 12 | D-27 在真库上不推进 | 集成；已终态那一支**保持绿** |
+
+两处一开始判错了，都值得记下来：
+
+**一、"该绿的"选错了一条。** 第 1 组最初把"崩在推进上"那条列为
+必须保持绿 —— 而那条测试的爆炸驱动方**根本不会被调到**（推进那一行
+被砍掉了），于是它自己就红了。判据必须选**不依赖被变异那一行**的。
+
+**二、一条"该红却绿"其实是实现对了。** 第 12 组原本列了
+"父 Run COMPLETED 时不记孤儿"必须红；实际它绿着 ——
+因为那条测试第二次 `wake()` 走的是"已经交过"那一支，
+而那一支**自己也会推进**（D-27 的第二副本），
+于是父 Run 照样跑到 COMPLETED。它钉不住"主路径不推进"，
+放进"必须红"只会让红验证变成自欺，所以拿掉了。
+
+## 80.11 空洞编号表
+
+| # | 级别 | 形状 | 状态 |
+|---|---|---|---|
+| **217** | P2 | 唤醒器只恢复父 Run、不驱动它（到期器同款）—— 跨进程部署下"谁来调 `drive_run`"仍是调用方的事 | **本轮闭合** |
+| 230 | P2 | `wait_until` 只有全局默认（30 分钟），没有按次派生覆盖的入口 | 仍缺 |
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 223 | P2 | `POST /runs/{id}/cancel` 没有幂等键 | **本轮闭合（M44 / §82）** |
+| 225 | P2 | 对不存在的 Run 请求取消，留下永远 pending 的意图 | 仍缺 |
+| 228 | P2 | Execution 级取消意图只有布尔位，没有"谁叫停、为什么" | 仍缺 |
+
+## 80.12 冻结的是什么
+
+> v2.1.28 冻结的是"**弄清楚了，就要把'不知道'三个字收回去**"；
+> v2.1.29 冻结的是"**账本改了，就得让人知道**"；
+> v2.1.30 冻结的是"**弄清楚了，就得把'撤销不了'这个结论一起改掉**"。
+>
+> 这一轮冻结的是：**"解开了，就要把它推到下一个阻塞点或终态"**。
+
+    D-27  谁解开一条 Run 的阻塞，谁就得把它推到下一个阻塞点或终态。
+          "现在可以被推一步"不是一种状态
+    D-28  推进之后必须落一个新的可恢复点 —— 终态那条路径自己不落，
+          少了它 R-3 会被绕开
+    D-29  推进排在"标记处置完成"之前 —— 崩在这一步只等于下一轮再来一次
+    D-30  父 Run COMPLETED ≠ 没人接过 —— S-16 已经结过案了
+
+还有三句是给后面几轮的：
+
+**一、"可以被推一步"是最容易留下来的一类中间态。**
+它不报错、不丢数据、界面上还显示"运行中"——
+它只是把一个**尚未完成**的动作伪装成了一个**状态**。
+凡是写着"留给调用方 / 下一步由 X 决定"的地方，都要问一句：
+**跨进程部署里，X 是哪个进程的哪一次 tick？**
+
+**二、判据要证明"事实"，不是"能力"。**
+这一轮有 14 条老测试原本是"重建出来再 `step()` 一次，看它走得动"。
+那条断言在空洞 217 存在时**一直是绿的** —— 它证明的是能力，
+而洞恰恰是"有能力、没人去做"。改成"最新那份快照停在哪"之后，
+它才真正钉住了这一轮买的东西。
+
+**三、豁免条款要拿控制组钉住两侧。**
+D-30 只豁免 `COMPLETED`。变红验证砍了两次：一次去掉豁免
+（COMPLETED 那一支必须红），一次豁免过头（取消那一支必须红）。
+只砍一侧的话，"一律记孤儿"和"一律不记孤儿"都能让测试全绿 ——
+而两者都是错的。
+
+---
+
+# 81. M43 — 这次派生可以自己说等多久（空洞 230）
+
+> 版本：v2.1.31 → **v2.1.32**　测试：1129 → **1169**（+32 单元 / +8 集成）
+
+## 81.1 起因：一个 1:1 的事实，被塞进了一个 1:N 的格子
+
+M38 给 `wait_until` 定的那句话是"**冻结在 `bind()` 那一刻**"（D-18）。
+冻结点很清楚，可冻结进去的那个**数**只有一个来源：
+
+    ChildRunRegistry(wait_timeout=timedelta(minutes=30))
+                     └── 一个进程一个值，此后每一次派生都用它
+
+而它要回答的那个问题，主语是**这一次派生**：
+
+    "我派出去的是个两小时的深度研究，还是两秒钟的查表？"
+
+只有 Intelligence 知道答案，而它没有可以说话的入口 ——
+`ChildRunRequest` 上没有这个字段，`AGENT_DELEGATION` 的 payload
+被 Loop 原样搬进子 Run，`_suspend_for_child` 从不读任何"像超时"的键。
+于是"这次该等多久"在架构上**只能**由部署时那一行配置回答。
+
+这是一次**基数错配**，与 A-3 那个"第二个 Run"同族：
+不是"少了一个参数"，是"一个 1:1 的事实被挤进了一个 1:N 的格子里"。
+代价是双向的，而且两个方向都很贵：
+
+    ┌─ 调大全局（想让那条两小时的深度研究活满两小时）───────────┐
+    │  **所有**派生跟着一起变长                                  │
+    │  ⟹ 一条真死掉的子 Run 让它的父 Run 多挂两小时              │
+    │  ⟹ 015 / M38 刚买到的"等不到就自己结束"被稀释回去           │
+    └────────────────────────────────────────────────────────────┘
+    ┌─ 不调（保住 M38 买到的东西）───────────────────────────────┐
+    │  那条深度研究在第 30 分钟被判"等不到"                        │
+    │  而它其实马上就要回来了                                      │
+    │  ⟹ 那笔 `EXTERNAL_UNKNOWN` 是**平台编的**（PR-34）：         │
+    │     没有人同意过 30 分钟                                     │
+    └────────────────────────────────────────────────────────────┘
+
+两个方向都错的旋钮，问题不在旋钮上，在**问题的粒度**上。
+
+## 81.2 探针实录
+
+真 PG（`127.0.0.1:5433/agentos_it`，全部迁移跑过一遍）上四问。
+
+**第一问：绕过 Python，直接 INSERT。** 模拟裸 SQL、psql 手工修数、
+以及一个还没升级的旧服务 —— 它们都不经过 `freeze_wait_deadline`：
+
+    == 裸 INSERT（不经过 Python）==
+      + 7h : CheckViolation: ... "child_runs_wait_deadline_ceiling"
+      + 6h : 写进去了
+      - 1s : CheckViolation: ... "child_runs_wait_deadline_after_spawn"
+      + 2h : 写进去了
+
+6 小时（含）进得去，7 小时进不去，早于 spawn 进不去 ——
+与 Python 那一侧的判据**逐条对齐**。
+
+**第二问：同一个登记处（全局默认仍是 30 分钟），三次不同的派生。**
+
+    == 同一个登记处（全局默认 30 分钟），三次不同的派生 ==
+      不声明        : 0:30:00
+      声明 2 小时   : 2:00:00
+      声明 90 秒    : 0:01:30
+
+这就是 D-31 的全部内容：默认还在原地（第一行），
+但每一次派生现在可以**不跟着它**。
+
+**第三问：越界。** 注意它发生在哪一侧：
+
+    == 越界（Python 侧，写库之前）==
+      InvariantViolation: D-32: the requested wait_timeout (7:00:00)
+      is 7:00:00, which is longer than the ceiling 6:00:00; a derivation
+      may ask for a longer wait (D-31), but no derivation may keep its
+      parent suspended for longer than the platform allows — shorten the
+      request, or raise the ceiling in 016_child_wait_ceiling.sql
+      (it is a physical constraint, not a knob)
+      c_d 那一行： 0 行
+
+抛的是 `InvariantViolation` 而不是 `CheckViolation`，
+且**一行都没写进去**（D-33 的两半都在这三行里）。
+
+**第四问：冻结之后，handle 上还剩几个上限。**
+
+    == 冻结之后 handle 上还剩几个上限 ==
+      wait_timeout : None
+      wait_until   : 2026-01-01 02:00:00+00:00
+      库里那一行   : {'wait_until': datetime(2026, 1, 1, 10, 0, +08:00)}
+
+`child_runs` 表**没有** `wait_timeout` 列（这一问第一次跑出来的是
+`UndefinedColumn: column "wait_timeout" does not exist`）——
+它从来不是一条行事实，它是一次派生**在冻结前说的话**。
+
+探针还捎出了一个实现问题，记在 81.9。
+
+## 81.3 D-31：这次派生可以自己说等多久
+
+    D-31  一次派生可以在派生请求里声明"这次要等多久"。
+          没声明，才听登记处的全局默认。
+
+三个落点，缺一个都不成：
+
+    ChildRunRequest.wait_timeout    入口 —— Intelligence 说话的地方
+    ChildRunHandle.wait_timeout     搬运 —— spawner 把它带到冻结点
+    freeze_wait_deadline()          裁决并冻结 —— 唯一一处定义（B-7）
+
+Loop 侧只读**一个**键：`payload["wait_timeout_seconds"]`（B-7）。
+为什么不"任何一个看起来像超时的键都读"：模型输出的 JSON 里
+`timeout` / `wait_for` / `max_wait` / `deadline` 都可能出现，
+挨个猜等于替一次不确定的输出编出一个含义（PR-34）。
+一个键、一个名字、没写就是"没说"（听默认），是唯一不会撒谎的读法。
+
+到期那一笔 Observation 上多了两个字段 —— `agreed_wait_seconds` 与
+`wait_until`。没有它们，"为什么等了这么久才报等不到"答不出来：
+运维看到的是"第 2 小时过 1 秒时判了等不到"，
+而这一次派生**本来**就只被允许等 30 秒 —— 那是两件完全不同的事。
+
+## 81.4 为什么入口与边界是一份设计，不是两个功能
+
+等待上限跨在两条边界上：
+
+    "这次委派大概要跑多久"    → 决策（Intelligence）
+    "父 Run 什么时候不再等"  → 控制（Harness）
+
+前半句确实是决策：只有派出它的那一方知道它派的是个深度研究还是查表。
+后半句是控制：它决定一条挂住的 Run 能挂多久，
+而"挂住的父 Run"正是 M37~M42 连续六轮在治的那个形状。
+
+**只开入口不管边界，比不开更糟。** 不开的时候至少还有全局 30 分钟兜着；
+开了却不管边界，一个幻觉出来的 `wait_timeout_seconds: 99999999`
+就能让父 Run 挂三年，而界面上显示的还是"在等子 Agent，一切正常"。
+
+所以 D-31（可以自己说）与 D-32（说出来的数必须落在 `(0, 6h]` 内）
+是一份设计 —— 拆成两个功能交付，中间那一版就是个可以被幻觉驱动的洞。
+
+## 81.5 D-32：越界是点名拒绝，不是静默处理
+
+    D-32  声明必须落在 `(0, MAX_CHILD_WAIT_TIMEOUT]` 内。
+          越界 = 点名拒绝（会说话的 `InvariantViolation`），
+          不是静默截断、不是静默回退默认。
+
+三种"静默处理"各自更糟，逐一说：
+
+**截断（`min(agreed, maximum)`）是最糟的一种。** 父 Run 会在一个
+**没人同意过的时刻**被判"等不到"：Intelligence 说的是两小时，
+平台替它改成了另一个数，而那笔 `EXTERNAL_UNKNOWN` 上写不出为什么。
+
+**回退默认（越界就当没声明）是一次被吞掉的拒绝。** 调用方拿到的
+是正常返回值，而它要的两小时从来没被采纳。这与"压根没声明"
+在结果上无法区分 —— "到底有没有同意过"从此成了一个谜。
+
+**没有下限（0 / 负数）** —— 015 已经用
+`child_runs_wait_deadline_after_spawn` 说过了：一个在创造出来那一刻
+就已经过期的派生，**连一次被等的机会都没有**（D-18 的另一半）。
+
+判据 `_check_wait_bounds(who, ...)` 有两种被问法：
+
+    the requested wait_timeout (7:00:00)                        提议侧
+    the wait deadline of child run 'c1' (7:00:00 after spawn)   冻结侧
+
+同一个判据、两个被问的人 —— 于是报错能说出是**哪一个**越了界（PR-19）。
+
+归一化里挡掉的那些（`bool` / `str` / `NaN` / `inf`）是同一条规矩的延长：
+`True` 是 `int` 的子类，`timedelta(seconds=True)` 等于"等 1 秒"，
+一次手滑被静默采纳的后果是父 Run 在一秒之后就被判等不到；
+`"3600"` 与 `3600` 是两件事，替它猜一个含义不如让它**带着原因**失败。
+
+## 81.6 D-33：裁决发生在写库之前
+
+    D-33  裁决发生在**写库之前**，抛的是会说话的 `InvariantViolation`；
+          部署的上限只能比平台**更严格**，不能更宽松。
+
+"写库之前"这一半是 PR-19。让 016 那条 CHECK 自己去挡，抛出来的是
+
+    CheckViolation: new row for relation "child_runs" violates
+    check constraint "child_runs_wait_deadline_ceiling"
+
+它说出了**哪条约束**，说不出**是谁要了多少**。而"这条派生为什么
+派生不出来"需要的正是后者。
+
+"部署只能更严格"这一半是 `_resolve_ceiling`：平台上限是 016 的一条
+CHECK（物理的，不是配置），于是部署把它调小（更严）没问题，
+调大只会在写库时被数据库挡回来。提前在**构造登记处时**点名拒绝，
+是为了让那句错发生在启动时，而不是第一次派生时。
+
+## 81.7 D-34：一个 handle 上不许同时挂着两个上限
+
+    D-34  冻结之后，handle 上的 `wait_timeout` 被清掉。
+
+`wait_timeout`（"这次要了多久"）与 `wait_until`（"约定到什么时候"）
+是同一件事的两种写法。冻结之后两个都挂着，就有了**两个上限** ——
+改掉其中一个，另一个立刻变成谎言（B-7）。
+
+清掉之后，"这次派生约定了多久"只有一个答案：`wait_until - spawned_at`。
+探针第四问也顺带看清了它的边界：`child_runs` 表里没有 `wait_timeout`
+这一列，所以 `for_child()` 读回来的 handle 上一定是 `None` ——
+库里没有的东西，不许凭空造一个出来。
+
+## 81.8 为什么上限是物理的（016 的一条 CHECK）
+
+`MAX_CHILD_WAIT_TIMEOUT = timedelta(hours=6)` 在 Python 里，
+`interval '6 hours'` 在 016 里。两边必须相等，
+而"相等"由变红验证第 11 组守着（把 SQL 改成 `'60 hours'` 必须红），
+单测里另有一条用正则把 SQL 那句抠出来对齐。
+
+与 D-1 用 `UNIQUE(parent_execution_id)` 是同款理由：
+**Python 不是唯一的写者**。
+
+    · 裸 INSERT（修数据、导数据）
+    · psql 手工改一行"让它别到期"
+    · 一个还没升级的服务，跑的还是旧代码
+
+这些路径都不经过 Python，于是"6 小时"只写在 Python 里等于没写。
+探针第一问就是照着这条路径走一遍的。
+
+（015 那句 `interval '30 minutes'` 是另一个数：它是**全局默认**，
+不是上限。D-31 之后，默认仍然只是"没说的时候听谁的"。）
+
+## 81.9 落点
+
+| 文件 | 改了什么 |
+|---|---|
+| `packages/agent_runtime/delegation.py` | `MAX_CHILD_WAIT_TIMEOUT`；`_check_wait_bounds` / `_as_wait_timeout` / `_resolve_ceiling` / `freeze_wait_deadline`；`ChildRunRequest.wait_timeout`（入口）、`ChildRunHandle.wait_timeout`（搬运）；登记处新增 `max_wait_timeout`；spawner 把声明带进 handle |
+| `packages/agent_runtime/adapters/postgres.py` | 构造参数 `max_wait_timeout`；`bind()` 走同一个裁决，并**返回冻结后的 handle**（不再返回原 handle） |
+| `packages/agent_runtime/loop.py` | `_suspend_for_child` 读 `wait_timeout_seconds`；`_finish_child` 的 Observation 写 `agreed_wait_seconds` / `wait_until` |
+| `infrastructure/postgres/016_child_wait_ceiling.sql` | **新文件**：`CHECK (wait_until <= spawned_at + interval '6 hours')` |
+| `tests/unit/test_child_wait_budget.py` | **新文件**，32 条（含控制组与 `BudgetWorld` 真跑一遍） |
+| `tests/integration/test_child_wait_budget_real_pg.py` | **新文件**，8 条 |
+| `tests/unit/sqlite_shim.py` | 修 `%%` bug（见下） |
+| `tests/integration/_pg.py` | 新增 `far_enough_deadline()` |
+| 3 个集成测试文件 | 夹具里的 `2099-01-01` → `far_enough_deadline()`（见下） |
+
+两处是这一轮**顺手撞出来**的，都不是 230 的一部分，但不修就红：
+
+**一、`sqlite_shim` 的 `%%` bug。** `_to_sqlite_interval` 里那句
+`strftime('%%Y-%%m-%%d ...')` 的 `%%` 从来不会被折叠 —— 它不是 Python
+的格式串，sqlite 的 `strftime` 收到 `%%Y` 就原样返回一个字面量 `'%Y'`。
+于是 014 的回填在替身上写进去的是**一句格式串**而不是一个时刻，
+016 的 CHECK 在替身上永远判不成（2h / 5h / 7h 全失败）。
+真库上从来没有这个 bug —— 又一处"替身与真库给出两个答案"。
+
+**二、三处夹具写着"等到 2099"。** 015 只要求 `wait_until` 有值且在
+`spawned_at` 之后，于是 `'2099-01-01T00:00:00+00:00'` 是合法的。
+016 之后它不合法了：一次派生不许把父 Run 挂到明年，**哪怕在夹具里**。
+改成 `far_enough_deadline()`（派生后 5 小时）—— 仍在 6 小时之内，
+且在测试跑完之前绝不会到期，语义与 2099 完全一致。
+
+探针还撞出第三处，这次是**实现**问题：手搓一个 `wait_timeout=90`
+的 handle 直接 `bind()`，炸出来的是
+
+    TypeError: unsupported operand type(s) for +:
+               'datetime.datetime' and 'int'
+
+归一化原先只做在 `ChildRunRequest.__post_init__` 里，
+于是"绕过请求对象就绕过了判据"。响是响了，可它没说出**是谁要了多少**
+（PR-19）。挪进 `freeze_wait_deadline()` 之后（PR-23：判据钉在真正
+执行它的那一处），`90` 与 `timedelta(seconds=90)` 是同一个声明，
+`True` / `"3600"` 带着 D-32 的原因失败。
+
+## 81.10 变红验证
+
+15 组变异，每组都带"必须红"与"必须保持绿"两侧：
+
+| # | 改回什么 | 红了什么 |
+|---|---|---|
+| 1 | Loop 不读 payload 里的声明（入口不存在） | 单测 2 个类；控制组与"没声明"那一类**保持绿** |
+| 2 | spawner 不把声明带到冻结点 | 单测 2 个类；控制组**保持绿** |
+| 3 | 登记处不认声明（一律用全局默认） | 单测 D-31 两类 + **D-32**（越界声明一起溜过去）；控制组、"没声明"、上限旋钮那条**保持绿** |
+| 4 | 越界静默**截断**到上限 | 单测 D-32；D-31 **保持绿** |
+| 5 | 越界静默**回退**到全局默认 | 单测 D-32；D-31 **保持绿** |
+| 6 | 没有下限（0 / 负数都能过） | 单测 D-32；D-31 **保持绿** |
+| 7 | PG 登记处不走裁决（回到老写法） | 单测 D-33 + 集成 3 个类；D-31 **保持绿** |
+| 8 | 部署上限可以比平台更宽松 | 单测 D-32 + D-33；D-31 **保持绿** |
+| 9 | 冻结之后不清掉声明（两个上限） | 单测 D-34 + 集成 D-34；D-31 / D-32 **保持绿** |
+| 10 | 016 那条 CHECK 不存在（物理约束消失） | 单测 + 集成各 1 个类；D-31 / D-32 **保持绿** |
+| 11 | SQL 的上限与 Python 不是同一个数 | 单测（正则对齐那条）；D-31 **保持绿** |
+| 12 | `bool` 被静默当成 1 秒 | 单测 D-32；D-31 **保持绿** |
+| 13 | 到期那笔 Observation 不写约定时长 | 单测可查性；D-31 入口 / D-34 **保持绿** |
+| 14 | 重试可以改写已经冻结的上限（D-1 破口） | 单测 D-31；D-32 **保持绿** |
+| 15 | 归一化退回"谁造了这个 handle"那一处 | 单测 2 条手搓路径；走 `ChildRunRequest` 的那条**保持绿** |
+
+三处值得记下来：
+
+**一、"该绿的"选错了两次。** 第 3 组最初把 D-32 列为必须保持绿 ——
+而 D-32 的"越界被拒绝"恰恰**依赖**声明先被采纳：声明被无视之后，
+越界的声明根本到不了判据那儿。第二次换成 `D34OneDeadlinePerDerivationTest`
+又错了（它的 `wait_until - spawned_at == 2h` 同样依赖声明被采纳）。
+最后精确到**方法级**选了那条只守"上限旋钮本身"的
+（`test_the_ceiling_is_the_same_knob_everywhere`）才站得住。
+
+**二、变红脚本自己坑了自己两次。** 第一次：`str.replace("", old, 1)`
+会把 `old` 插到**文件头**（空串在位置 0 就匹配上），两条空串用例把
+生产代码改坏；第二次：还原靠"把 `new` 换回 `old`"，而 `return handle`
+这种行在 `delegation.py` 里有 4 处，断言在 `finally` 里抛出时
+**文件没有还原** —— 生产代码就带着改坏留在磁盘上。
+改成**整文件回填**之后，两种情况都不存在了。
+
+**三、第 15 组是探针撞出来的，不是设计出来的。** 它没有出现在最初的
+14 组里 —— 是"手搓 handle 带 `90`"那次 `TypeError` 把它带出来的。
+凡是"绕过请求对象就绕过判据"的口子，都只在有人真的绕一次时才现形。
+
+## 81.11 空洞编号表
+
+| # | 级别 | 形状 | 状态 |
+|---|---|---|---|
+| **230** | P2 | `wait_until` 只有全局默认（30 分钟），没有按次派生覆盖的入口 —— 一个 1:1 的事实被塞进了一个 1:N 的旋钮 | **本轮闭合** |
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 223 | P2 | `POST /runs/{id}/cancel` 没有幂等键 | **本轮闭合（M44 / §82）** |
+| 225 | P2 | 对不存在的 Run 请求取消，留下永远 pending 的意图 | 仍缺 |
+| 228 | P2 | Execution 级取消意图只有布尔位，没有"谁叫停、为什么" | 仍缺 |
+
+## 81.12 冻结的是什么
+
+> v2.1.29 冻结的是"**账本改了，就得让人知道**"；
+> v2.1.30 冻结的是"**弄清楚了，就得把'撤销不了'这个结论一起改掉**"；
+> v2.1.31 冻结的是"**解开了，就要把它推到下一个阻塞点或终态**"。
+>
+> 这一轮冻结的是：**"一件事是每一次都不同的，就得让每一次自己说。"**
+
+    D-31  这次派生可以自己说等多久；没说才听全局默认
+    D-32  说出来的数必须落在 `(0, 6h]` 内；越界是点名拒绝，
+          不是静默截断、不是静默回退默认
+    D-33  裁决发生在写库之前，抛会说话的错误；
+          部署的上限只能比平台更严格
+    D-34  冻结之后清掉声明 —— 一个 handle 上只剩一个上限
+
+还有三句是给后面几轮的：
+
+**一、先问基数，再问参数。** "少了一个参数"和"一个 1:1 的事实被塞进了
+一个 1:N 的格子"看起来都是"缺个入口"，但前者补一个默认值就完事，
+后者补进去的是一个**每次都要么太松要么太紧**的数。
+A-3（第二个 Run）、空洞 209 / 219 那一族，都是同一个形状。
+
+**二、"开入口"要连着"定边界"一起交付。** 中间那一版 —— 能说、但说什么
+都行 —— 比两个都不做更危险：不做的时候还有一个保守的默认值在兜着，
+做了一半的时候，兜底被绕过了而边界还没建起来。
+凡是"让上游自己填一个数"的入口，都要同时问：
+**这个数被填错的代价由谁承担？**
+
+**三、替身与真库的判据必须同一个来源，而不是"两边各写一遍然后对齐"。**
+这一轮两次撞上同一件事：替身里 `%%` 那个 bug 让 014 的回填写进去一句
+格式串（真库从没这个 bug）；手搓路径绕过归一化炸出 `TypeError`
+（真库路径从来不手搓）。两边共用 `freeze_wait_deadline()` 与
+`_resolve_ceiling()` 之后，"替身过了、真库没过"这类红灯才没有立足之地。
+
+---
+
+# 82. M44 — 叫停也要幂等键（空洞 223）
+
+## 82.1 洞的形状
+
+A-3 写着"`POST /runs` 幂等"，M36 把它做成了真的（`run:<key>` 落 PG）。
+可 `POST /runs/{id}/cancel` 是**同一条规矩下的另一个写操作** —— 它没有键。
+
+于是这样一次客户端重试发生的时候：
+
+    t0  用户点了"停止"
+    t1  服务端真的把它停了，回 200
+    t2  网络抖了一下，客户端没收到
+    t3  客户端重试 —— 拿到 409
+
+## 82.2 探针实录
+
+真 PG 上跑一遍（`probe44.py`，`InProcessControlPlane` +
+`PostgresIdempotencyStore` + `PostgresRunCancellationStore`）：
+
+    == 没有键：客户端重试一顿操作，第二次拿到什么 ==
+      第 1 次 : 200  {'run_id': ..., 'status': 'cancelled', ...}
+      第 2 次 : 409  {'code': 'RUN_TERMINAL',
+                      'message': "run 'run_55aaf1d9' is already cancelled;
+                                  a terminal run cannot be cancelled"}
+
+    == 有键：同一个键发两遍 ==
+      第一次 : 200  replayed=False
+      第二次 : 200  replayed=True
+      两份答案逐字相同 : True
+
+    == 换一个进程（新的 store 对象），键还在不在 ==
+      重启后 : 200  replayed=True  status=cancelled
+
+    == 同一个键，换了个理由 ==
+      422  {'code': 'IDEMPOTENCY_KEY_REUSED',
+            'message': "idempotency key 'cancel-1' was already used for a
+                        different request in the 'cancel' namespace;
+                        replaying the first answer would make this request
+                        look like it happened when it did not — send a new key"}
+
+    == 那条 Run 跑到别的进程去了 —— 它的答案装载不回来 ==
+      第一次 : 200  status=unknown  cancel_requested=True
+      重启后 : 200  replayed=True  status=unknown  cancel_requested=True
+      库里存的那份答案 : {'status': 'unknown', 'cancel_requested': True, ...}
+
+    == 库里那一行 ==
+      cancel:cancel-1          durable=True  有指纹=True  有答案=True
+      cancel:cancel-2          durable=True  有指纹=True  有答案=True
+
+**409 说得没错**（它确实是终态），错在**它是个错误码**。
+
+这不是"报错报得难看"的问题，是**一次成功的叫停被报成了失败**：
+
+    · UI 只能显示"停止失败" —— 而它其实停住了
+    · 更糟的是 409 分不出"被你叫停的"和"它自己跑完了"：
+      客户端要么骗人（写"已停止"，其实它不知道），要么猜
+
+A-3 要的正是"重试拿到第一次的答案"。M36 把这条做在了 `POST /runs` 上，
+而取消漏了 —— 同一条规矩，两个实现，其中一个缺了一半（B-7）。
+
+## 82.3 D-35：取消是写操作，所以它也吃幂等键
+
+    D-35  `POST /runs/{id}/cancel` 接受 `Idempotency-Key`（走 Header，
+          与 `POST /runs` 同款 —— 它是传输语义，不是业务字段）。
+          命中键 ⟹ 返回**第一次的答案**，并带 `replayed=True`。
+
+三个细节：
+
+**一、走 Header，不走 body。** 混进 body 里就会被当成"取消的理由"的
+一部分参与指纹 —— 于是客户端换个 header 值重发，服务端看成一个新理由。
+
+**二、两个命名空间必须分开。**
+
+    run:<key>      建 Run
+    cancel:<key>   叫停
+
+共用一个的后果不是"报错"，是**静默漏掉一次叫停**：
+用户用同一个键先建 Run 再叫停，取消会撞上建 Run 留下的那条记录，
+于是这次叫停**根本没发生**，而客户端拿到 200（因为它拿到了建 Run 的答案）。
+这是"看起来成功但实际没做"—— 全档里代价最高的那一类。
+
+**三、失败不占键。** 只有真的写完才 `put`。不然第一次失败之后，
+同一个键的重试会被永久回放成"成功"（而那次成功从来没发生过）。
+
+## 82.4 D-36：记录里存的是答案，不是指针
+
+    D-36  幂等记录里存的是**答案**（`RunView.to_dict()`），
+          不是一个指向活对象的指针。
+
+这一条与 `start_run` **方向相反**，而这不是矛盾 —— 是保护的东西不同：
+
+    start_run   存指针（{"run_id": ...}）
+                装载不回来 ⟹ 宁可喊 RUN_NOT_RELOADABLE
+                保护的是"不许凭空多出第二个 Run"
+
+    cancel_run  存答案（整份 RunView）
+                装载不回来 ⟹ 照样给
+                保护的是"不许把已经发生的叫停报成失败"
+
+为什么取消必须存答案？看探针最后一段：那条 Run 跑到别的进程去了，
+本进程装载不回来，取消走的是**取消意图**那条路，答案是
+
+    status = "unknown"        cancel_requested = True
+
+而这两个字段恰恰是**从任何活对象上都问不出来的** ——
+`unknown` 的意思是"我把它记下了，但我不知道它现在怎么样"，
+它只存在于**那一次调用的返回值**里。存指针等于把"我停过它"
+这件事记成一个读不出来的记号。
+
+反过来，`start_run` 如果存答案就危险了：装载不回来的时候它会
+把一份旧答案当成"这次的答案"给出去，于是客户端以为创建了一个 Run，
+而库里什么都没有。**两个方向保护的是两件相反的事，所以两条路必须不同。**
+
+## 82.5 指纹：不许用内置 hash()
+
+判断"这两次请求一样不一样"用的是请求体指纹（`run_id` + `reason` + `by`），
+`sha256(json.dumps(..., sort_keys=True))`。
+
+内置 `hash()` **不能用**，这是这一轮最值得单独写下来的一条：
+
+    Python 对 str 的 hash() 带随机盐（PYTHONHASHSEED）
+    ⟹ 重启之后同一个字符串的 hash 不一样
+    ⟹ 重启后的第一次重试，指纹对不上
+    ⟹ 被判成 IDEMPOTENCY_KEY_REUSED（422）
+
+产物是一个**只在重启之后才出现**的假 422 ——
+而单测全部跑在同一个进程里，**全绿**。
+（这一条专门开了两个 `PYTHONHASHSEED` 不同的子进程，比它们的指纹。）
+
+`sort_keys=True` 也不能少：dict 的插入顺序不参与
+"这两次请求一样不一样"的判断，否则同一个 JSON 换个字段顺序就是两个指纹。
+
+## 82.6 落点
+
+| 落点 | 内容 |
+|---|---|
+| `packages/agent_api/idempotency.py`（新） | 键的**唯一一处**定义：`scoped()` / `fingerprint()` / `envelope()` / `answer_of()` / `refuse_if_reused()` |
+| `packages/agent_api/service.py` | `cancel_run(..., idempotency_key="")`；原主体抽成 `_cancel_now()`；`start_run` 补齐复用校验 |
+| `packages/agent_api/dto.py` | `RunView.from_dict()` / `ApprovalView.from_dict()` —— `to_dict()` 的反面（另写一份会静默丢字段） |
+| `packages/agent_api/handlers.py` / `ports.py` | key 透传 |
+| `apps/api/app.py` | `_cancel_run` 读 `Idempotency-Key` header |
+| `tests/unit/test_cancel_idempotency.py`（新，28） | 洞 / D-35 / D-36 / 命名空间 / 指纹 / 键复用 / 路由 / 线上形状 |
+| `tests/integration/test_cancel_idempotency_real_pg.py`（新，5） | 键活得比进程久；`durable=TRUE`；跨进程 `unknown` 答案重启后照原样 |
+
+键的定义只有一个模块（B-7）。两个端点各写一份 ⟹ 两份答案 ⟹
+"`run:` 该分开而 `cancel:` 没分开"这种事没有任何一处会红。
+
+## 82.7 变红验证
+
+13 组变异，每组都带"必须红"与"必须保持绿"两侧（`red44.py`，13/13）：
+
+| # | 改回什么 | 红了什么 |
+|---|---|---|
+| 1 | `cancel_run` 不读键（回到 223） | 单测 D-35 / D-36 各类；控制组（`TheHoleTest`）**保持绿** |
+| 2 | 命中键之后重新推导（D-36 被砍） | 单测 D-36 三类；D-35 **保持绿** |
+| 3 | 回放不打 `replayed` 标记 | 单测 D-35 两类；"逐字相同"那条**保持绿** |
+| 4 | cancel 与 start 共用一个命名空间 | 单测命名空间两类 + 集成；D-35 **保持绿** |
+| 5 | 指纹用内置 `hash()` | 单测指纹三类（含双子进程）；其余**保持绿** |
+| 6 | 指纹不做 `sort_keys` | 单测"字段顺序"那条；其余**保持绿** |
+| 7 | 同一个键换了请求体也放行 | 单测键复用三类；"同体同键不是复用"**保持绿** |
+| 8 | `start_run` 不校验复用 | 单测"start 也拒绝复用"；cancel 侧**保持绿** |
+| 9 | 失败也占键（put 提到工作之前） | 单测失败路径两类；成功路径**保持绿** |
+| 10 | 信封里不存答案（只存指纹） | 单测 D-36 + `answer_of`；D-35 **保持绿** |
+| 11 | `from_dict` 丢掉 `cancel_requested` | 单测线上形状；其余**保持绿** |
+| 12 | 路由不读 `Idempotency-Key` header | 单测路由（AST 扫描）；`_start_run` 同款**保持绿** |
+| 13 | 幂等键不 durable（可以放 Redis 了） | 集成 durability；单测控制组**保持绿** |
+
+两处值得记下来：
+
+**一、第 12 组自己骗过了自己一次。** 最初的断言是文本扫描
+`assertIn("Idempotency-Key", body)`，而 `_cancel_run` 的 **docstring 里
+就写着这四个字** —— 把 header 参数删掉，测试照样绿。
+这正是 PR-22 记过的"docstring 里讲道理不算调用"。
+改成 AST 扫描之后才算数：**剥掉 docstring**，只认字符串常量、
+关键字参数与形参。
+
+**二、AST 扫描又有自己的坑：形参默认值不在 `fn.body` 里。**
+`idempotency_key: str = fastapi.Header(default="", alias="Idempotency-Key")`
+这一整句挂在 `fn.args.defaults` 上。只扫 body 的话，
+一个**真的读了 header** 的路由会被判成"没读" —— 扫出来的字符串只有
+`{'agent_id'}`。于是补了两条：控制组（docstring 提及不算）+
+把 signature defaults 一起扫。
+
+**三、这一层是源码扫描，不是行为测试。** 它是空洞 211 的另一种说法：
+`apps/api` 现在没有真进程冒烟（fastapi 没装），而 PR-22 又明确规定
+"HTTP 语义走真的 handler、不经过 fastapi"（A-7）。它挡得住删漏，
+挡不住"传错了"。真跑一遍要等 211。
+
+## 82.8 空洞编号表
+
+| # | 级别 | 形状 | 状态 |
+|---|---|---|---|
+| **223** | P2 | `POST /runs/{id}/cancel` 没有幂等键 —— 一次成功的叫停被重试报成 409 | **本轮闭合** |
+| 211 | P2 | `apps/api` 真进程冒烟未固化成测试 | **本轮闭合（M45 / §83）** |
+| 225 | P2 | 对不存在的 Run 请求取消，留下永远 pending 的意图 | 仍缺 |
+| 228 | P2 | Execution 级取消意图只有布尔位，没有"谁叫停、为什么" | 仍缺 |
+
+三条仍缺的，这一轮都摸过一遍，都**不是**"顺手就能补"：
+
+- **228** —— `CancellationService.request()` 在生产代码里**没有任何调用方**。
+  加归因列就是 215 那种病（库里有地方放，但没人往里写）。
+- **211** —— 会跟 PR-22 打架（现在刻意"不经过 fastapi"），
+  且 fastapi / httpx 都没装。
+- **225** —— PG 里**没有 runs 表**，没有"这条 Run 存不存在"的答案；
+  快照只在挂起时拍。所以"先查存在性再写意图"会误伤
+  "正在别的进程里跑、还没挂起"的活 Run ——
+  正是 222 下半刚修好的形状。
+
+## 82.9 冻结的是什么
+
+> v2.1.30 冻结的是"**弄清楚了，就得把'撤销不了'这个结论一起改掉**"；
+> v2.1.31 冻结的是"**解开了，就要把它推到下一个阻塞点或终态**"；
+> v2.1.32 冻结的是"**一件事是每一次都不同的，就得让每一次自己说**"。
+>
+> 这一轮冻结的是：**"如实报错，不等于把事情说对了。"**
+
+    D-35  取消是写操作，所以它也吃幂等键 ——
+          重试拿到第一次的答案，不是拿到一个 409 去猜
+    D-36  幂等记录里存的是答案，不是指针 ——
+          取消的答案里最要紧的那一半恰恰装载不回来
+
+还有三句是给后面几轮的：
+
+**一、"它如实报了"是最容易骗过审查的四个字。** 409 没有撒谎 ——
+那条 Run 确实是终态。可它把一次成功的叫停**报成了失败**，
+而且报的方式让客户端只能骗人或猜。PR-19 说"错误必须说出真正发生的事"，
+这一轮说的是它的另一半：**连成功也必须说出真正发生的事。**
+凡是"用错误码回答一个其实是成功的问题"的地方，都要回头看一眼。
+
+**二、同一条规矩不许有两个实现 —— 但允许有两个方向。**
+D-36 与 `start_run` 相反，看起来像违反了 B-7。不是：
+B-7 说的是**一个事实一个定义**，而这里两个端点保护的是**两件相反的事**
+（不许多出第二个 Run / 不许把已发生的叫停报成失败）。
+判据不是"写法一样"，是"**它保护的东西是不是同一件**"。
+
+**三、凡是"只在重启后才出现"的 bug，都要专门开子进程去守。**
+`PYTHONHASHSEED` 随机盐那一类 —— 单测跑在同一个进程里**永远全绿**，
+而生产环境每次重启都踩。这一轮的守卫是起两个种子不同的子进程比指纹。
+凡是"进程内状态"参与判断的地方，都要问：**重启一次之后它还成立吗？**
+
+---
+
+# 83. M45 — 把 HTTP 这一层真的跑一遍（空洞 211）
+
+## 83.1 洞的形状
+
+空洞 211 从 M28 挂到现在，原文是"`apps/api` 真进程冒烟**未固化成测试**"。
+它从来不是"没做" —— 它在 M29、M30、M34 各被手工做过一次，
+做法是"起服务、点几下、看一眼、关掉"。手工做过不等于固化：
+
+    手工做过   那一次的结论留在做的人脑子里
+    固化       下次有人改坏了，机器会告诉他
+
+M44 结尾那句把它为什么重要讲清楚了：
+
+    路由有没有把 Idempotency-Key 传下去，目前只能扫源码 ——
+    它挡得住删漏，挡不住"传错了"。真跑一遍要等 211。
+
+## 83.2 为什么"扫源码"不算数
+
+    AST 扫描证明的是  "这句参数声明在文件里"
+    真跑一遍证明的是  "FastAPI 真的把它从 HTTP 头上取下来了"
+
+中间隔着一层**框架绑定**。这不是理论风险 —— 同一个形状 M29 已经踩过一次，
+`pg_connection` 的 docstring 里原话记着：
+
+    `row_factory=dict_row` 缺了会让生产路径走到"挂起等审批"那一步就 500，
+    而**单元测试一直是绿的** —— 替身设了 `sqlite3.Row`，
+    集成层的 `real_pg()` 自己设了 `dict_row`。
+    也就是说：**替身比生产更好用**，而生产那条路径从来没有被跑过一次。
+
+那次的判据放到这里是同一句：**凡是"替身自己补上了生产缺的那样东西"的地方，
+生产那条路径就一定没被验过。**
+
+## 83.3 三层，各验一件事
+
+| 层 | 走什么 | 验的是 |
+|---|---|---|
+| `tests/unit/test_http_api.py` | 真的 handler，**不经过** fastapi（A-7 / PR-22） | 业务语义：给一个 body，handler 给出什么 |
+| `tests/integration/test_api_real_http.py`（新） | 真的 fastapi + TestClient | 传输语义：header / 状态码 / 框架绑定 / 事务边界 |
+| 同上 `TheRealProcessTest` | `python -m apps.api` 起 uvicorn，走 TCP | 装载路径、环境变量解析、真的 socket 与端口 |
+
+第三层不是第二层的重复：TestClient 直接调 ASGI，**进程里**跑完，
+它不覆盖 `apps/api/__main__.py`、不覆盖 `serve()`、不覆盖 PR-16 那次
+"配置从环境变量来"的解析。空洞写的是"真进程冒烟"，所以得有一个用例真的起进程。
+
+## 83.4 连接必须是生产那一款（这一轮最要紧的一处）
+
+`build_api(config)` 不注入 `conn` 时自己调 `pg_connection(config)`，
+那是 **autocommit=False + dict_row**（M29 起）。这一层刻意照抄它，
+而不是把手边那条 `real_pg()` 的 autocommit 连接递进去：
+
+    递 autocommit 连接 ⟹ 写不用 commit 也落库 ⟹
+    事务中间件就算整个不存在，这一层也全绿。
+
+那是把 X-3 / PR-31 在**替身里判成通过**（PR-28），
+而且它恰好落进 83.2 那一格：替身（autocommit）自己补上了生产缺的那样东西
+（真正的提交）。于是这一层专门有一条盯着它：
+
+    test_the_idempotency_row_survives_the_request
+        请求结束之后，**另一个连接**能看见那一行
+
+变红验证第 7 组（把 `_add_transaction_middleware` 换成 `pass`）
+当场让它红 —— 换 autocommit 连接的话，这一组是绿的。
+
+## 83.5 顺手撞到的一件事
+
+`test_the_step_survives_the_request` 里查的是
+`aggregate_type = 'execution'`，**不是** run_id。原因：
+
+    Run 侧目前**唯一**落 outbox 的事件是"子 Run 完成"。
+    走一步落的是 execution / lease / attempt 那几条。
+
+这不是将就 —— 这一条守的是"这一步的写在请求结束之后还在不在"，
+不是"事件挂在哪一个聚合上"。后者正是**空洞 225 至今没有答案**的原因：
+库里没有"这条 Run 存不存在"这一行，所以"先查存在性再写意图"无从查起。
+
+## 83.6 落点
+
+| 落点 | 内容 |
+|---|---|
+| `tests/integration/test_api_real_http.py`（新，13） | `TheProcessServesTest`(3) / `TheHeaderIsReallyReadTest`(5) / `TheWriteReachesPostgresTest`(2) / `ThePageFlowOverHttpTest`(2) / `TheRealProcessTest`(1) |
+| `tests/unit/test_cancel_idempotency.py` | **删掉** `TheRouteReadsTheHeaderTest` 与 `_route_facts`（−3）—— 那段 AST 扫描被真 HTTP 测试完全取代，同一件事不许有两个定义 |
+
+`TheHeaderIsReallyReadTest` 里那三条必须**一起**才成立：
+
+    带键重试     ⟹ 200 replayed=True
+    不带键重试   ⟹ 409          ← 控制组
+    带键换理由   ⟹ 422
+
+少了中间那条，第一条证明不了任何事 ——
+它可能只是"取消本来就返回 200"。
+
+## 83.7 变红验证
+
+9 组变异，每组都带"必须红"与"必须保持绿"两侧（`red45.py`，9/9）：
+
+| # | 改回什么 | 红了什么 |
+|---|---|---|
+| 1 | cancel 路由 **alias 写错**（读错 header） | 取消回放 + 键复用两条；"不带键是 409"控制组**保持绿** |
+| 2 | start 路由 **alias 写错** | 建 Run 回放 + 复用两条；cancel 侧**保持绿** |
+| 3 | 路由读到 header 却传了个空键下去 | 同上；控制组**保持绿** |
+| 4 | 对外报的版本号写错 | `/openapi.json` 版本那条；health / 页面**保持绿** |
+| 5 | 控制台页面不挂载 | 页面那条；health / 取消回放**保持绿** |
+| 6 | 控制台页面被换掉（200 还在，内容没了） | 页面那条；health **保持绿** |
+| 7 | 事务中间件不挂 | 两条"写真的在库里"；health / 取消回放**保持绿** |
+| 8 | cancel 侧键复用校验被短路 | 键复用 422 那条；回放与控制组**保持绿** |
+| 9 | `python -m apps.api` 不真的起服务 | 真进程那条；health / 完整流程**保持绿** |
+
+三处值得记下来：
+
+**一、第 1 / 2 组最初的写法是"把参数删掉"，结果控制组也红了。**
+删掉 `idempotency_key: str = fastapi.Header(...)` 之后，函数体里那句
+`idempotency_key=idempotency_key` 就成了未定义名 —— 整个路由 500，
+于是"不带键应当 409"那条控制组拿到 500 也红。
+**它红得对，但红的原因跟想验的事毫无关系**（PR-19 反过来用：
+红灯必须指向真凶）。改成"alias 写错"之后，模型的是真正想防的那件事：
+**参数还在、也传下去了，只是从错的 header 上读。**
+而那恰恰是 AST 扫描唯一挡不住的一类。
+
+**二、第 6 组最初的写法改的是 `<title>`，改完照样绿。**
+"AgentOS 控制台" 在页面里出现**两处**（`<title>` 与 `<h1>`），
+断言扫的是整个响应体，改掉一处另一处还在。
+改成验 `<h1>` **加**一个控件 id（`id="btn-cancel"`）之后才算数 ——
+因为真正要防的不是"标题变了"，是**"页面在、但里面的东西没了"**，
+而那种坏没有任何人会报警。
+
+**三、第 9 组是这一层唯一会真起进程的用例，所以它最慢。**
+等待方式刻意是**轮询 `/health`** 而不是 `sleep 3`：
+慢机器上睡不够就假红，而假红比真红贵得多 ——
+它会把人引向一个不存在的 bug。
+
+## 83.8 空洞编号表
+
+| # | 级别 | 形状 | 状态 |
+|---|---|---|---|
+| **211** | P2 | `apps/api` 真进程冒烟未固化成测试 —— 手工做过三次，机器从来不知道 | **本轮闭合** |
+| 225 | P2 | 对不存在的 Run 请求取消，留下永远 pending 的意图 | **M47 部分闭合**：原始症状"永远 pending"早已被 M37（R-11 等待上限）治掉，M47 补上了意图三次生命周期变化的事件流；"无法区分不存在 / 跑在别的进程"是架构限制（无 runs 表），见下 |
+| **228** | P2 | Execution 级取消意图只有布尔位，没有"谁叫停、为什么" | **M48 闭合（见 §86）**：真形状是 `_cancel_gate` 跳过请求直接判死，不是"没有调用方" |
+| **234** | P2 | M48 写进 `executions` 的归因（reason / by）**没有任何路径读它** —— 空洞 215「有地方放没人写」的镜像 | **v2.1.38 新登记**：Run 级归因已在 trace payload + 页面渲染可见，且内容相同，故 Execution 级边际价值有限；Run→Task→Execution 可 JOIN，但 service 层无 kernel / task repository，暴露需新增依赖。等真被需要时再给出口 |
+| **231** | P2 | `POST /agents/{id}/runs` **不校验 agent 是否存在** —— 传任何字符串都 201 并照常执行 | **M48 一轮新登记（见下）**：当前架构下 agent_id 只是透传标签、无分派作用，故行为无害；一旦出现"多 agent 按 id 分派"，它会变成"打错 id 静默跑错栈"的真 bug |
+
+> ⚠️ **这一张表本身就是"登记会过期"的活证据**：
+> 228 在这里写的是"没有调用方，加归因就是空转"，
+> 而 M48 实证发现**绕过本身就是调用关系** ——
+> `_cancel_gate` 天天在判死 Execution，只是跳过了"先请求"。
+
+两条曾被认为"仍缺"的，后来的处置分别是：
+
+- **228** —— 见 §86。教训：**空洞登记会过期，先实证再动手**。
+- **225** —— PG 里**没有 runs 表**（83.5 那条刚又撞见一次）：
+  没有"这条 Run 存不存在"这一行，所以"先查存在性再写意图"无从查起；
+  硬查会误伤"正在别的进程里跑、还没挂起"的活 Run ——
+  正是 222 下半刚修好的形状。
+
+### 83.8.1　空洞 231：为什么**登记**而不是现在治
+
+M48 那一轮做"说谎探测器"（构造边界输入撞 API）时撞到的：
+
+    POST /agents/nope/runs  {"user_request": "compute 6*7"}
+    → 201 created，而且那条 Run **能正常推进**（step_count=2，还触发了风险闸门）
+
+实证了两个 stack factory（`demo_stack` / `research_stack`）：
+两者的 `make_stack(agent_id, approvals)` 都**不按 agent_id 分派** ——
+对任何字符串返回同一个栈，agent_id 只是透传给 `AgentRun` 的一个标签。
+全仓检索 `agent-it` / `agent-dd`，只出现在页面 HTML 与测试里；
+代码里**没有任何一处**定义"系统有哪些 agent"。
+
+所以：
+
+- **当前不是功能 bug** —— 系统里就那一个栈，打错 id 跑的还是它，行为正确。
+- **但它是真的抽象缺口** —— 一旦出现"多 agent 共享一个工厂、按 id 分派"
+  （那正是 `agent-dd` 这条路的自然走向），同样的调用就会变成
+  **打错 id 静默跑错栈**，而且界面上没有任何提示。
+
+**为什么现在不治**：治它就得先有一个 agent 注册表，而 factory 目前
+诚实回答不了"我认得哪些 agent"。硬塞一个 set 进去，等于为一个还没到位
+的抽象提前建结构 —— 那是 215 那种病（库里有地方放，但没人往里写）的反面：
+**结构有了，语义还没来**。
+
+所以处置是**先登记**：等真的需要按 id 分派时，这条就是第一张该翻的牌。
+
+## 83.9 冻结的是什么
+
+> v2.1.31 冻结的是"**解开了，就要把它推到下一个阻塞点或终态**"；
+> v2.1.32 冻结的是"**一件事是每一次都不同的，就得让每一次自己说**"；
+> v2.1.33 冻结的是"**如实报错，不等于把事情说对了**"。
+>
+> 这一轮冻结的是：**"替身比生产更好用的时候，绿的是替身不是生产。"**
+
+    · 扫源码能证明"这句声明在文件里"，证明不了"框架真的把它取下来了"
+    · 递一条 autocommit 连接，能让事务边界整个不存在也全绿
+    · 断言整个响应体里"有这个字符串"，会让两处里只改一处照样绿
+
+还有三句是给后面几轮的：
+
+**一、凡是"替身自己补上了生产缺的那样东西"的地方，生产那条路径一定没被验过。**
+M29 的 `dict_row`、本轮的 autocommit，是同一个形状的两次现身。
+每写一个集成用例都要问：**我递进去的这个东西，是不是比生产的那个更能容错？**
+
+**二、"该红的"要挑得比"该绿的"更小心。**
+本轮第 1 组红得对，但红的原因是 `NameError` 500 ——
+跟想验的事毫无关系。一条因为别的原因而红的测试，
+会让"这条不变量有人守着"变成一句假话。
+判据：**红的那条，报错能不能指向你改坏的那一行。**
+
+**三、手工做过 ≠ 固化。**
+`apps/api` 的冒烟在 M29 / M30 / M34 各被手工做过一次，
+每一次都"看了一眼，没问题"。三次之后它仍然是一个空洞 ——
+因为留在人脑子里的结论，不会在第四次有人改坏的时候说话。
+
+---
+
+## §84　M46 · 空洞 B-4 违反：驳回后 Run 停在 suspended 但无 waiting_for
+
+### 84.1　洞的形状
+
+`loop.reject()` 的流程是：
+
+1. `_close_gate(approved=False)` → Kernel 里那条 SUSPENDED 的 Execution 走完（resume → complete），Execution.status 从 SUSPENDED 变成 COMPLETED。
+2. `_apply(Observation(kind=APPROVAL_REJECTED))` → 留下"人驳回了"的事实。
+3. `_clear_pending()` → 把 `pending_approval` 置 None。
+4. `return self._record(StepOutcome.DENIED)`。
+
+**没有 `_sync_after_execution()`。**
+
+Step.status 仍然是 SUSPENDED（没人重新投影），Run.status 仍然是 SUSPENDED。
+但 `pending_approval` 已经是 None 了 —— Run 说"我在等"，但你问它在等谁，
+它说"没等谁"。违反 B-4「SUSPENDED 必须说清楚在等什么」。
+
+`expire_approvals()` 有同样的病：`_close_gate` + `_clear_pending` 后没有重新派生。
+
+### 84.2　为什么"再点一步就正常了"不能算没病
+
+`step()` 里第一个检查是 `pending_approval is not None`——它已经 None 了，
+所以直接跳过，继续走决策引擎。于是 Step/Run 状态在**下一步的开头**被重新投影。
+但"驳回之后到下一步之前"这个窗口里，Run 是假挂起。
+
+如果在这个窗口里发生了快照（后台进程的 `capture()`），它会撞上 R-1/R-6 的断言
+（SUSPENDED 但没有 `pending_*_id`）—— InvariantViolation。
+也就是说，这个洞不只是"界面骗人"，是"快照落不下来"。
+
+### 84.3　修法
+
+新增不变量 **B-11**（B-4 的操作细则）：
+
+> **关掉闸门后必须立刻重新派生 Step/Run 状态。**
+> "立刻" = 在同一个方法里，不依赖调用方记得再调一次。
+
+落地：在 `reject()` 和 `expire_approvals()` 的 `_clear_pending()` 之后
+调 `_sync_after_execution()`。`_close_gate` 已经把 Execution 从 SUSPENDED
+走完到 COMPLETED，重新派生后 Step 从 SUSPENDED 变成 COMPLETED，
+Run 随之退出 SUSPENDED（变成 RUNNING 或 QUEUED，取决于是否还有别的活）。
+
+### 84.4　变红验证
+
+| # | 变异 | 红的测试 |
+|---|---|---|
+| 1 | 去掉 `reject()` 里的 `_sync_after_execution()` | `test_reject_leaves_suspended_with_no_waiting_for` + `test_reject_refixes_step_status` |
+| 2 | 去掉 `expire_approvals()` 里的 `_sync_after_execution()` | `test_expire_leaves_suspended_with_no_waiting_for` + `test_expire_refixes_step_status` |
+| 3 | 拍快照测试（R-1/R-6 断言会炸） | `test_snapshot_after_reject_is_consistent` |
+
+### 84.5　测试
+
+单元 1047 → **1052**（+5，新增 `tests/unit/test_reject_redrives.py`）。
+
+### 84.6　冻结
+
+> v2.1.34 冻结的是"替身比生产更好用的时候，绿的是替身不是生产"。
+>
+> 这一轮冻结的是：**"关掉了闸门，就要把状态一起带走 —— '关了'不等于'走了'。"**
+
+另一句：**B-4 说"SUSPENDED 必须说清楚在等什么"；B-11 补的是
+"不说在等什么的时候，就别让它停在 SUSPENDED"。两者是一条规矩的两半。**
+
+---
+
+## §85　M47 · 空洞 225（修正版）：run_cancellations 表上没有事件流
+
+### 85.1　洞的形状
+
+`run_cancellations` 表上的三条写路径（`request` / `settle` / `abandon`）
+**全部不发事件**。与 M40 治过的 `compensations` 是同一族病（X-3）：
+
+> PG 里的事实改了，而事件流这条事实没有改。
+
+一条取消意图被**请求**、被**结掉**（那条 Run 确实停了）、
+被**放弃**（我们不等了）—— 下游（Read Model / 审计 / 看板）
+一个字都看不到，因为 Kafka 那边从来没有对应的消息。
+
+空洞 225 的原始登记说"**永远** pending，R-10 不让 Sweeper 结掉它"。
+但 M37（R-11 等待上限）之后这个描述已经**过期了**：
+僵尸意图会在 15 分钟后被放弃、退出 pending 队列。
+实证确认：放弃后 `pending` 窗口 0 行、`compensations` 账本 0 笔 ——
+**队列腾空了，什么都没留下**。
+
+所以真正的洞不是"永远 pending"，而是：**取消意图的三次生命周期变化
+（出现 / 结掉 / 放弃）在事件流里一条都没有**。改了 PG、没发事件。
+
+### 85.2　修法
+
+照 M40 的模式（`compensation_events.py` + `emit()`）：
+
+1. **三个事件常量**（`event.py`）：
+   `cancellation.requested` / `cancellation.settled` / `cancellation.abandoned`
+
+2. **`cancellation_events.py`**：事件的发射逻辑集中在一个文件里，
+   两个 store 实现（内存 + PG）调同一份 —— 不许抄两份。
+
+3. **写路径全接上**：`InMemoryRunCancellationStore` 和 `PostgresRunCancellationStore`
+   的 `request` / `settle` / `abandon` 全部在写入后调 `emit()`。
+   `None` = 不发（显式选择，不是"忘了传"）。
+
+4. **不复活 = 不发**：已 settled/abandoned 的意图再 request 不复活，
+   也不发事件（这件事没有变化）。
+
+5. **幂等 = 不发**：对已 settled 的意图再 settle（rowcount=0）不发事件，
+   对已 abandoned 的意图再 abandon 同理。
+
+### 85.3　为什么是三个而不是一个 `cancellation.changed`
+
+和 compensation 同一条理由：
+
+    requested   有人要停它          → 取消通道收到一条新请求
+    settled     那条 Run 确实停了   → 正常收尾，账清了
+    abandoned   我们不知道它停没停   → 要人去看，账上记着"未知"
+
+三种变化要的人不一样、要去做的事也不一样。合成一个类型之后，
+这个区别只能在 payload 里找，而没有人会去找。
+
+### 85.4　变红验证
+
+去掉 `InMemoryRunCancellationStore` 的三条 `emit()` 调用 → **3 fail + 2 error**。
+修复后 **9/9 绿**。无误报。
+
+### 85.5　规模与测试
+
+| 指标 | 值 |
+|---|---|
+| Python 源文件 | 88 |
+| Python 源行 | ~14.7k |
+| 单元测试 | 1052 → **1061**（+9，新增 `tests/unit/test_cancellation_events.py`） |
+| 新增模块 | `packages/agent_runtime/cancellation_events.py` |
+
+### 85.6　冻结
+
+> v2.1.35 冻结的是"关掉了闸门，就要把状态一起带走"。
+>
+> 这一轮冻结的是：**"改了 PG 就要发事件 —— '改了没人知道'比'没改'更危险，
+> 因为它看起来像'改了'。"**
+
+另一句：**M40 给补偿账本补了事件流（X-15），M47 给取消意图补了同款的事件流。
+两张表、同一个病、同一套治法 —— 一次性把'事实改了事件没改'这条线全治完。**
+
+---
+
+## §86　M48 · 空洞 228（真形状）：Execution 级取消跳过意图直接判死
+
+### 86.1　洞的形状（实证得到的，不是照登记抄的）
+
+对一条挂在闸门上的 Run 叫停，库里那条 Execution 的变化是：
+
+    status                   SUSPENDED → CANCELLED
+    cancellation_requested        False → **False**（从头到尾没被写过）
+
+**它绕过了"请求"这一步，直接判死。**
+
+`AgentLoop._cancel_gate()` 调的是 `kernel.cancel(execution_id)`，
+而 Kernel 的规矩是 X-11 / R-7：Harness 只能**请求**取消，
+真正的生命周期归 Kernel —— 先写意图，再判死。
+
+绕过的后果是三件事同时成立：
+
+    1. `executions.cancellation_requested` 是一列**死列**（永远是 False）
+    2. `EXECUTION_CANCEL_REQUESTED` 事件永远发不出来
+    3. B-8 的归因（**谁**叫停、**为什么**）在这条链路上无处可写
+
+第 3 条最要紧，因为它是同一条规矩在不同层上的缺口：
+
+    Run 级        `run_cancellations(reason, requested_by)`          有
+    子 Run 级     `child_runs(cancel_reason, cancel_requested_by)`   有（012 / D-14）
+    Execution 级  只有 `cancellation_requested` 一个布尔位           **没有**
+
+而 Execution 恰恰是这条链路上最贴近"真正干活那一刀"的那一层。
+
+### 86.2　空洞登记为什么会写歪
+
+原始登记说：**"`CancellationService.request()` 在生产代码里没有任何调用方，
+加归因列就是 215 那种病（库里有地方放，但没人往里写）。"**
+
+那句话在写下它的当时是对的：确实没有人调 Kernel 的 `request()`。
+
+但**绕过本身就是一种调用关系** —— `_cancel_gate` 天天在判死 Execution，
+只是它跳过了"先请求"。所以这一轮要补的不是"找个地方放归因"，
+而是**把跳过那一步补回来**。
+
+### 86.3　修法
+
+1. **017 迁移**：给 `executions` 加 `cancellation_reason` / `cancellation_by`，
+   并加 CHECK `executions_cancel_attributed` —— 意图位为真却无归因，库直接拒绝
+   （与 012 的 `child_runs_cancel_attributed` 同一条判据）。
+2. **`request_cancel(reason=, by=)` 必填**：空串按 B-8 / A-8 抛，
+   与 Run 级、子 Run 级同款。
+3. **事件带归因**：`EXECUTION_CANCEL_REQUESTED` 的 payload 带上 `reason` / `by`
+   —— 审计不看 PG 也要能回答（X-15 同款）。
+4. **`_cancel_gate` 先请求再判死**：顺序不能反，反了就是
+   "先宣告它死了，再补一句有人要求它死"，中间崩一次只剩一个说不出缘由的 CANCELLED。
+
+### 86.4　为什么归因跟着**请求**走，不跟着**判死**走
+
+判死（`cancel()`）是 Kernel 的动作，它可能由 Sweeper 发起 —— 那时"为什么"
+已经不是调用方那一句了。而"谁要求停它、因为什么"是**请求那一刻**的事实，
+只有请求的人知道。判死之后归因**不**被抹掉：那正是"它为什么会被判死"的答案。
+
+### 86.5　端到端实证（真服务 + 真 PG）
+
+| | status | `cancellation_requested` | reason | by |
+|---|---|---|---|---|
+| 修复前 | CANCELLED | **False** | `''` | `''` |
+| 修复后 | CANCELLED | **True** | `'user asked to stop'` | `'alice'` |
+
+真库上应用 017 时先查了一次"已有意图为真的行数"：**0 条** ——
+正好印证"那是一列死列"这个诊断。
+
+### 86.6　变红验证
+
+去掉 `request_cancel` 的 B-8 校验与归因落库 → **5 failures**；
+修复后 **8/8 绿**（含两条真跑 017 迁移的测试）。无误报。
+
+### 86.7　规模与测试
+
+| 指标 | 值 |
+|---|---|
+| 单元测试 | 1067 → **1069**（+2 条迁移测试；另有 6 条归因测试 = +8） |
+| 新增迁移 | `infrastructure/postgres/017_execution_cancel_attribution.sql` |
+| 新增测试 | `tests/unit/test_execution_cancel_attribution.py`（8 条） |
+
+### 86.7.1　已知边界：**Run 级看得见，Execution 级读不出来**
+
+M48 治的是"归因**无处可写**"。写完之后的可见性，分两层看——
+**这两层不一样，v2.1.38 那轮实证时才分清楚**：
+
+**Run 级：完全看得见。**
+`AgentLoop.cancel()` 写了 `self._trace(CANCELLED, payload={"by":…, "reason":…})`，
+账本里那条 `run.cancelled` 的 payload 就是归因；控制台的账本视图
+渲染 payload（`renderTrace()`），所以**谁叫停的、为什么，界面上直接看得到**。
+
+**Execution 级：写进库了，但没有任何路径读它**（→ 登记为**空洞 234**）。
+
+- 归因落在 PG 的 `executions` 两列，与 outbox 的
+  `EXECUTION_CANCEL_REQUESTED` 事件里。
+- 11 个 HTTP 端点里，**没有任何一个**暴露 Execution 的取消意图。
+- 要读，现在只能直接查 PG（或用 `tasks` JOIN：
+  `executions.task_id → tasks.task_id → tasks.run_id`，这条线是通的）。
+
+> ⚠️ **v2.1.38 的一处自我修正**：这一节当初写的是"归因还没有出口"，
+> 并把"给它出口"排为下一轮第一张牌。实证后发现**Run 级本来就看得见**，
+> 而 Execution 级的归因与 Run 级在同一个取消链上、内容相同 ——
+> 于是"给出口"的边际价值远小于当时的估计，遂改为**登记**（空洞 234）
+> 而不是硬做一个端点。教训和 §83.8 那条一样：**先实证，再排序**。
+
+所以现在要看归因，只能直接查 PG：
+
+```sql
+SELECT status, cancellation_requested, cancellation_reason, cancellation_by
+  FROM executions WHERE execution_id = ...;
+```
+
+**为什么这一轮没顺手给它出口**：`executions` 表**没有 `run_id` 列**，
+于是"这条 Run 手上那条 Execution"在库里**反查不出来**
+（只能经 trace 里的 execution_id 绕一圈）。
+给归因一个出口，得先有"Run → Execution"这条线 —— 那是另一件事，
+不该混在"补归因"这一轮里做（B-7：一次只闭合一个洞）。
+
+记在这里，是下一轮的第一张牌。
+
+### 86.8　冻结
+
+> v2.1.36 冻结的是"改了 PG 就要发事件"。
+>
+> 这一轮冻结的是：**"判死之前必须先写下'有人要求它死' ——
+> 一个说不出缘由的 CANCELLED，和一个没人认领的取消意图是同一个洞的两半。"**
+
+另一句：**空洞登记会过期，但规矩不会。
+照着旧单子动手会治错地方；先实证，再动手。**
+
+---
+
+## §87　M49 · 登记也会失真：M0~M9 的实证修正与洞 234
+
+### 87.1　起因：一份"全部完成"的任务单，和一份"一半没标"的里程碑表
+
+上一轮把 95 条任务全部标成 completed 之后，回头看里程碑表：
+43 行里有 **14 行没标"落地"**（M0~M9、M11~M14）。
+
+两处登记说的是相反的话，而它们指向同一个代码库。
+按 M48 刚学到的那条（**先实证，再动手**），这 14 条逐条去查了一遍 ——
+结果**推翻了自己上一轮的两个判断**。
+
+### 87.2　实证结果：M0~M9 的真实状态
+
+| 里程碑 | 设计范围 | 实证 | 判定 |
+|---|---|---|---|
+| M0 | Monorepo / Compose / PG / Redis / Kafka / OTel | `infrastructure/` + 三个适配器 | **已落地**（漏登记） |
+| M1 | Agent Domain | `packages/agent_domain/` | **已落地**（漏登记） |
+| M2 | Harness（Context / Memory / Policy / Guardrail / HITL / Cost） | 六项都有 | **已落地**（漏登记） |
+| M3 | Runtime | Loop / Tool Runtime / Scheduler / Worker 有 | **部分**：Skill Runtime 全仓 0 处 |
+| M4 | Connectivity（MCP / A2A / Multi-Agent） | MCP 7 处、A2A 3 处 | **已落地**（漏登记） |
+| M5 | Knowledge（RAG / Hybrid Search / Rerank / Versioning） | 只有 `retrieval.py` | **部分**：Hybrid / Rerank / Versioning 为 0 |
+| M6 | Model Platform | `model_gateway/` | **已落地**（漏登记） |
+| M7 | Production（K8s / HPA / Canary / Rollback / CI-CD） | **全仓 0 处** | **未落地** |
+| M8 | Evaluation | **无评估平台** | **未落地** |
+| M9 | Enterprise（Multi-Tenant / IAM / OPA / Vault / Sandbox） | 仅 `tasks.tenant_id` | **部分** |
+
+> ⚠️ **这一轮推翻的两处自我误判**：
+> ① M4 曾被当成"数据库适配器"判成已完成 —— 而它的设计范围是 **MCP / A2A**，
+> 只是碰巧也确实做了；② **M7 曾被判成"已做"（因为有 `apps/` 进程层）**，
+> 而它的设计范围是 **K8s / HPA / Canary**，`apps/` 是进程层、
+> `docker-compose.it.yml` 只起集成测试用的 PG —— 都不是部署编排，**一处都没有**。
+
+### 87.3　顺带修正：洞 217 早就闭合了
+
+三张空洞表都还写着 217「唤醒器只恢复父 Run、不驱动它」**仍缺**，
+但它早已被 **M42（v2.1.31）** 闭合 —— 解开阻塞的两条路径都自己把父 Run 推下去（D-27）。
+只是那张表没回写。
+
+### 87.4　新登记：洞 234 —— 写进库了，却读不出来
+
+M48 给 `executions` 加了归因两列。写完之后的可见性**分两层**，
+这两层在上一轮被混为一谈了：
+
+- **Run 级：完全看得见。** `AgentLoop.cancel()` 写的
+  `run.cancelled` 带 `payload={"by":…, "reason":…}`，
+  控制台账本视图渲染 payload —— 谁叫停的、为什么，界面上直接看得到。
+- **Execution 级：写进库了，没有路径读它。** 11 个端点没有一个暴露它，
+  现在只能直接查 PG（或 `executions.task_id → tasks.task_id → tasks.run_id` JOIN，
+  这条线是通的、已验证能查出 5 行归因）。
+
+这是**空洞 215（"有地方放，但没人往里写"）的镜像**：有人写了，但没人读。
+
+**为什么登记而不立刻给出口**：
+
+1. Run 级与 Execution 级在**同一个取消链**上，归因内容相同 —— 边际价值有限。
+2. `InProcessControlPlane` 手上**没有** kernel / task repository，
+   要暴露就得给它加依赖，会破坏"进程内控制面"的抽象。
+3. 于是成本不低、收益有限。等真被需要（例如子 Run 跨进程排查）时再给。
+
+### 87.4.1　顺手补掉的回归：控制台页面丢了 h1
+
+M49 跑集成测试时红了一条：
+
+    AssertionError: '<h1>AgentOS 控制台</h1>' not found
+
+这是**上一轮重写控制台页面留下的真回归**：新版把站名做成了
+`div.brand`（文字是 "AgentOS 控制面"），五个视图各有自己的 `<h1>`
+—— 于是整页**没有一个全站主标题**，而 M45 那条测试正是靠它
+证明"页面在、且里面的东西没被换掉"。
+
+修法不是改测试去迁就页面，而是**把页面补对**：
+
+- 品牌名升级为 `<h1>AgentOS 控制台</h1>`（保留 svg 图标，
+  用 `.brand h1{font-size:inherit;…}` 抹平浏览器默认样式，
+  语义是 h1、视觉仍由 `.brand` 说了算）；
+- 五个视图标题 `h1 → h2`，层级才正确（全站 h1 → 各视图 h2）；
+- 选择器跟着改：`.vhead h1` → `.vhead h2`，否则 21px 的标题样式会丢。
+
+> 这条值得一记：重写页面时**"看起来更好了"和"该有的东西还在吗"不是一回事**。
+> 集成测试里那条断言（标题验身份 + `id="btn-cancel"` 验内容）是唯一会报警的地方，
+> 而它确实报了 —— 只是报在下一轮。
+
+### 87.7.1　本节的一处自我修正：M14 其实**已经落地**
+
+写完 87.7 那张表之后回头核 M14，发现判错了：
+
+> 原判：「M14 Contracts | **未落地** | 无 contracts 目录」
+
+而三块契约**全都在代码里**：
+
+| 契约 | 落点 |
+|---|---|
+| Intelligence | `agent_domain/intelligence/` —— Goal / State / Decision / Action / Observation / Plan |
+| Execution | `agent_domain/execution/` —— Execution / Task / Attempt / Lease / Checkpoint / RetryPolicy |
+| Integration | `tool_runtime/protocols.py`、`ports.py` —— Tool / Planner / DecisionEngine / LLMClient |
+
+**"没有单独的 `contracts/` 目录"不等于"契约没落地"** ——
+它们按领域分散在 `agent_domain/` 里，那是更合理的落点（B-7：契约跟着它描述的领域走）。
+
+> ⚠️ 这是同一轮里**第三次**栽在同一类错误上：
+> 用"**有没有某个目录 / 文件**"代替"**能力是否落地**"。
+> 前两次是 M4（当成数据库适配器）与 M7（有 `apps/` 就当成部署编排）。
+> 正确问法永远是：**这条里程碑描述的那件事，代码里做得到吗？**
+
+### 87.5　这一轮没写新代码
+
+M49 没有新增不变量，也没有新增迁移 —— 它改的是**登记本身**。
+理由见下。
+
+### 87.6　冻结
+
+> 前两轮冻结的是"改了 PG 就要发事件"与"判死之前先写下有人要求它死"。
+>
+> 这一轮冻结的是：**"登记不是事实，实证才是。
+> 一份没人核对过的登记表，比没有登记表更危险 —— 它会让人照着它动手。"**
+
+另一句：**推翻自己上一轮的结论不丢人；照着上一轮的错误结论继续做才丢人。**
+
+### 87.7　修正后的未完成清单（供下一轮排序）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| M7 Production | **未落地** | K8s / HPA / Canary / Rollback / CI-CD，0 处 |
+| M8 Evaluation | **未落地** | 无评估平台 |
+| ~~M14 Contracts~~ | **已落地** | 见 87.7.1 —— 三块契约都在，只是没有单独的 `contracts/` 目录 |
+| M11 Developer Platform | 仅 Console | 缺 SDK / Manifest / CLI / GitOps |
+| M12 Intelligence | 仅端口 | Decision Engine / Planner 无实现 |
+| M13 Cognitive Runtime | **未落地** | Router / Verifier / Deep Reasoning，0 处 |
+| ~~M14 Contracts~~ | **已落地**（本节修正） | 三块契约都在：`agent_domain/intelligence/`（Goal / State / Decision / Action / Observation / Plan）、`agent_domain/execution/`（Execution / Task / Attempt / Lease / Checkpoint / RetryPolicy）、`tool_runtime/protocols.py` + `ports.py`（Tool / Planner / DecisionEngine / LLMClient）。**没有单独的 `contracts/` 目录不等于没落地** |
+| M9 Enterprise | 部分 | 仅 tenant_id |
+| M3 / M5 | 部分 | Skill Runtime / Hybrid Search / Rerank |
+
+---
+
+## §88　M50 · 控制面的命令行
+
+### 88.1　起因：控制台是给人点的，脚本没有入口
+
+M45 之后控制面有了五视图控制台，M28 之后有了完整 HTTP API。
+但**脚本没有入口** —— 想在 CI 里开一条 Run、想 cron 里扫一遍待审批、
+想排障时贴一段账本，都得手写 `curl`，并且自己判断 HTTP 码。
+
+手写 curl 的代价不是麻烦，是**每个人自己发明一套退出码语义**：
+有人把 409 当成功，有人把连不上当空结果。于是"流程跑通了"这句话
+在脚本里没有统一定义。
+
+### 88.2　它是什么：HTTP API 的薄壳
+
+`python -m apps.cli` 提供九条子命令，每条对应一个端点：
+
+| 子命令 | 端点 |
+|---|---|
+| `health` | `GET /health` |
+| `start <agent> <request>` | `POST /agents/{id}/runs` |
+| `status <run_id>` | `GET /runs/{id}` |
+| `step` / `drive` | `POST /runs/{id}/step` · `/run` |
+| `cancel --reason --by` | `POST /runs/{id}/cancel` |
+| `approvals` | `GET /approvals` |
+| `decide --approve\|--reject` | `POST .../decision` |
+| `trace <run_id>` | `GET /runs/{id}/trace` |
+
+**它是薄壳，不是第二套逻辑**：屏幕上每个数字都由服务真的回答，
+CLI 不推断、不缓存、不补全。这与控制台页面是同一条规矩的两端。
+
+### 88.3　为什么退出码必须有意义
+
+脚本只看退出码。一个"连不上却返回 0"的 CLI 会让 CI 以为流程跑通了 ——
+而它其实什么都没做。
+
+    0   成功
+    2   服务返回了错误（4xx / 5xx）—— 原因打到 stderr
+    3   连不上服务
+    4   用法错误（缺参数 / 未知子命令）
+
+刻意**不**吞异常：连不上就是连不上，不伪装成空结果。
+
+### 88.4　B-8 在命令行上同样成立
+
+`cancel` 要求 `--reason` 与 `--by`，缺一就拒绝（退出码 4），
+**不替用户编一句"为什么"**。规矩不因为入口从页面换成终端就松动。
+
+同理 `decide` 发的是 `decision: "approve" | "reject"` ——
+不是 `approved: true`。页面当初就是在这里栽的（400），
+CLI 不能重蹈覆辙，这条被单独测住。
+
+### 88.5　踩到的坑：CLI 走了系统代理
+
+第一版用 `urllib.request.urlopen`，本机服务没起时拿到的是
+
+    upstream connect failed: 由于目标计算机积极拒绝，无法连接。
+
+——那是**代理**返回的 502。于是"服务根本没起"被误报成"服务返回了一个错误"
+（退出码 2 而不是 3），而这两种失败的处置完全不同：
+前者是环境问题（该检查部署），后者是业务结果。
+
+修法：`build_opener(ProxyHandler({}))` 显式绕过代理。CLI 连的是本地控制面，
+走代理本身就是错的。
+
+> ⚠️ **这条差点变成一条假绿测试**：最初写的断言是"设一个假代理后连不上返回 0"，
+> 但代理自己也连不上 —— 无论走不走代理结果都是 0，**区分不出来**。
+> 变红验证时它红了 0 条才暴露。改成直接断言"opener 构造时拿到空代理表"才测住。
+
+### 88.6　为什么不用 `apps/_entrypoint.py`
+
+那份样板是给**长驻进程**的（读配置 → 装配 → 信号 → run → 退出码）。
+CLI 是一次性命令，不装配组合根、不接信号，只认一个 HTTP 地址。
+硬套那份样板会让它背上"读 PG 配置"这类与自己无关的前提 ——
+于是"没配数据库"会让一个纯查询命令失败（B-7：前提要匹配）。
+
+### 88.7　零新增依赖
+
+只用标准库 `urllib`。CLI 是排障和自动化的第一件工具，
+它不该因为装不上某个包而不可用。
+
+### 88.8　真跑过什么
+
+真起服务（v2.1.39）逐条跑通：
+
+    start → drive → approvals → decide → trace → cancel     全部 exit=0
+    连不上服务 → exit=3 且说"连不上服务 http://..."
+    不存在的 Run → exit=2 且报 RUN_NOT_FOUND
+    终态再取消 → exit=2 且报 RUN_TERMINAL
+    缺归因 → exit=4（argparse 与 cmd_cancel 双重拦）
+
+### 88.9　变红验证
+
+五个变异逐个改坏，全部真的红、无一假绿：
+
+| 变异 | 红了 |
+|---|---|
+| 连不上伪装成成功 | 1 条 |
+| 改回 `urlopen`（走代理） | 1 条 |
+| opener 不再禁用代理 | 2 条 |
+| `cancel` 不再要求归因 | 3 条 |
+| `decide` 字段名用错（`approved`） | 2 条 |
+
+### 88.10　规模与测试
+
+| 指标 | 值 |
+|---|---|
+| 新增 | `apps/cli/__init__.py` + `__main__.py` |
+| 单元测试 | 1069 → **1085**（+16，新增 `tests/unit/test_cli.py`） |
+
+### 88.11　冻结
+
+> 前几轮冻结的是"改了 PG 就要发事件"、"判死之前先写下有人要求它死"、
+> "登记不是事实，实证才是"。
+>
+> 这一轮冻结的是：**"退出码是 CLI 说的话里最要紧的一句 ——
+> 一个连不上却返回 0 的命令，会让整条流水线相信一件没发生过的事。"**
+
+另一句：**测不到就别写；写了测不住的断言（假绿）比不写更坏，
+它让人以为那里有人守着。**
+
+---
+
+## §89　M51 · 同一个事实，不许给两个错误码
+
+### 89.1　怎么撞到的
+
+并发探测（同一条 Run 同时发 6 个 `drive`）时发现的：
+
+    单线程：Run 已 completed → 再 drive   → 409 RUN_TERMINAL
+    并发  ：两个线程同时 drive，一个先跑完，
+            另一个推到一半才发现已终态   → 422 INVARIANT_VIOLATION
+
+**同一个事实**（这条 Run 已经终态了，推不动了），给了**两个状态码**。
+
+调用方要判断"是不是终态"，就得同时匹配 409 和"422 且消息里有 B-3 字样"——
+而后者是靠**错误消息里的字**判断的，消息一改就断。
+
+### 89.2　根因：B-3 的异常类型归类错了
+
+`packages/agent_api/errors.py` 的映射表把两者分得很清楚：
+
+| 异常 | 码 | 语义 |
+|---|---|---|
+| `IllegalTransition` / `TerminalStateError` | **409** | 资源存在、状态明确，只是这个转换不允许 |
+| `InvariantViolation` | **422** | 请求本身不合法 —— 改请求就有用 |
+
+而 B-3「终态不可变」一直是拿 `InvariantViolation` 抛的（`run.py:136`）。
+
+B-3 明明是**前者**：Run 确实存在、状态确实明确（completed），
+只是"已经 completed 就不能变成 suspended"这个转换不被允许。
+报成 422 等于告诉调用方"你的请求写得不对，改改再来" ——
+而它改一万次结果都一样：那条 Run 已经终态了。
+
+### 89.3　修法：只改异常类型，不改消息
+
+```python
+- raise InvariantViolation(
++ raise IllegalTransition(
+      f"B-3: run {self.run_id} is already {self.status.value}; "
+      f"cannot become {new_status.value}"
+  )
+```
+
+消息一句没动 —— 它说清了"现在是什么、想变成什么"（PR-19），是有用的。
+
+### 89.4　真跑过什么（真服务 v2.1.40）
+
+并发 6 个 `drive` 打同一条 Run：
+
+    修复前：{200: 4, 422: 2}
+    修复后：{200: 4, 409: 2}     ← 422 消失
+
+### 89.5　已知边界：错误码字符串还没完全统一
+
+状态码统一成 409 了，但**错误码字符串**仍有两种：
+
+    单线程路径（`_assert_advancable`）→ 409 `RUN_TERMINAL`
+    并发路径（B-3）                  → 409 `ILLEGAL_TRANSITION`
+
+两者都是 409 冲突类，调用方按**状态码**分支就够了 ——
+这是本次修复解决的主要问题。字符串暂不强行统一：
+`RUN_TERMINAL` 是"入口就发现它终态了"，`ILLEGAL_TRANSITION` 是
+"推到一半才发现它终态了"，**起因不同**，合并会丢掉这个区别
+（与 `CHILD_RUN_CANCELLED` 不并进 `child_run.failed` 同一条理由）。
+
+### 89.6　变红验证
+
+把 B-3 改回 `InvariantViolation` → **红了 3 条**（新增 2 条 + 原有 1 条）。
+修复后 1088 条全绿。
+
+顺带更新了 `test_business.py::test_b3_terminal_is_immutable` ——
+它原本断言 `InvariantViolation`，改类型后必须跟着改，并补上消息断言。
+
+### 89.7　规模与测试
+
+| 指标 | 值 |
+|---|---|
+| 单元测试 | 1085 → **1088**（+3，新增 `tests/unit/test_b3_error_code.py`） |
+| 改动文件 | `packages/agent_domain/business/run.py`（一处异常类型） |
+
+### 89.8　冻结
+
+> 上一轮冻结的是"退出码是 CLI 说的话里最要紧的一句"。
+>
+> 这一轮冻结的是：**"同一个事实只能有一个状态码。
+> 让调用方去错误消息里找字才能判断发生了什么，等于没有错误码。"**
+
+另一句：**并发是把"看起来没问题"的设计打出原形的那盏灯 ——
+单线程下一切自洽，两条路同时走就露馅了。**
+
+---
+
+## §90　M52 · M8 评估平台
+
+### 90.1　它评什么，不评什么
+
+**评行为轨迹，不评答案对不对。**
+
+一次 Run 在账本里留下的可断言事实是：
+
+| 事实 | 来源 |
+|---|---|
+| 终态 / outcome / step_count | `run.finished` |
+| 走过的动作 | `task.submitted.action_type` |
+| 有没有经过审批、谁批的 | `approval.requested` / `approval.decided` |
+| 调了什么工具、什么副作用 | `served.tool` / `side_effect` |
+| **模型有没有降级** | `served.degraded` / `fallback_count` |
+
+账本里**没有**答案文本（demo 的 `llm_call` 结果不进 trace）。
+
+这对**回归**而言够了，而且更稳：答案文本会随模型波动，
+而"两步完成、经过闸门、调了 note.write"这条路径不该随便变。
+
+### 90.2　为什么必须打真服务
+
+评估结果只有在**真起 Run、真推进、真查账本**时才成立。
+一个用假回应喂出来的"全部通过"比没有评估更坏 ——
+它会在真正出事的时候给出一个绿色的句号。
+
+### 90.3　失败归因（Failure Attribution）
+
+刻意按**机制**命名，回答"卡在哪一步"：
+
+| 归因 | 含义 |
+|---|---|
+| `start_failed` | 发起就失败（环境问题） |
+| `never_terminated` | 推到上限还没终态 —— 卡住 / 挂起等人 |
+| `unexpected_status` / `unexpected_outcome` | 终态不是期望的 |
+| `approval_mismatch` | 该经过闸门的没经过（或反之） |
+| `missing_action` / `missing_tool` | 期望的动作 / 工具没出现 |
+| `model_degraded` | 模型降级了 —— **最难发现的一类**，它不报错，只是悄悄换了个模型 |
+
+### 90.4　一处要紧的设计：两次都失败算 unchanged
+
+回归比的是同一条用例的前后两次：
+
+    regressed   上次通过 → 这次不通过      ← 唯一必须报警的一类
+    improved    上次不通过 → 这次通过
+    unchanged   都一样（含"两次都不通过"）
+
+**"两次都不通过"归为 unchanged 而不是 failed**：一条一直失败的用例是
+**backlog**，不是回归。把它报成回归，
+"每轮 3 条红、其实 0 条新问题"会让人不再看回归报告 ——
+那等于把这个信号废掉。
+
+### 90.5　用法
+
+```bash
+python -m apps.eval run tests/eval/smoke.json                 # 真跑
+python -m apps.eval run tests/eval/smoke.json --out base.json # 存基线
+python -m apps.eval run ds.json --against base.json           # 报回归
+```
+
+退出码：`0` 通过 / `1` 有用例失败或有回归（CI 该红）/ `2` 环境错误。
+失败与回归**都是 1** —— 对 CI 而言它们都是"别发"；
+而"连不上服务"是 2，那是要人去修环境，不是代码问题。
+
+### 90.6　真跑过什么
+
+    3 条用例全部通过，事实提取准确：
+      actions=[llm_call, tool_call]  approvals=1  approved_by=[evaluator]
+      tools=[note.write]  degraded=false  status=completed  step_count=2
+
+**回归检测**（人为把一条用例改成断言一个不存在的工具）：
+
+    regressions: [{"case_id":"happy-path","before":true,"after":false,
+                   "attribution":"missing_tool","kind":"regressed"}]
+    exit=1
+
+### 90.7　变红验证（4/4 全成立，无假绿）
+
+| 变异 | 红了 |
+|---|---|
+| 吞掉 status 断言 | 1 条 |
+| 吞掉 degraded 断言 | 1 条 |
+| 空数据集不再拒绝 | 1 条 |
+| 两次都失败被误报成回归 | 1 条 |
+
+### 90.8　规模与测试
+
+| 指标 | 值 |
+|---|---|
+| 新增 | `packages/agent_evaluation/`（3 个文件）、`apps/eval/`、`tests/eval/smoke.json` |
+| 单元测试 | 1088 → **1103**（+15，新增 `tests/unit/test_evaluation.py`） |
+
+### 90.9　冻结
+
+> 上一轮冻结的是"同一个事实只能有一个状态码"。
+>
+> 这一轮冻结的是：**"评估必须打真服务，且失败要说清卡在哪一步 ——
+> 一个只会说'不通过'的评估，等于让人自己再排一遍查。"**
+
+另一句：**回归信号是稀缺资源。把 backlog 混进来报，
+就是在花掉它 —— 花完了，真正退步的那天没人会看。**
+
+---
+
+## §91　M53 · S-2 / S-4 的保证，到底住在哪
+
+### 91.1　一个结构性缺口
+
+盘点子 Run / 补偿账本时发现：
+
+| 模块 | 单测 | 真 PG |
+|---|---|---|
+| `test_saga`（S-1~S-14） | ✅ | ❌ **没有** |
+| `test_delegation_compensation` | ✅ | ❌ **没有** |
+| `test_compensation_events` | ✅ | ✅ |
+
+而 S-2 与 S-4 **恰恰是 PG 物理保证**：
+
+> **S-2**（一条副作用一条记录）—— 靠 `compensations.execution_id` 上的 `UNIQUE`。
+> 内存字典上"重复插入"只是一次覆盖，没有任何东西会拒绝它。
+>
+> **S-4**（原子认领）—— 靠 `UPDATE ... WHERE status='pending'` 的 rowcount。
+> 与 A-11 完全同源：**"先读一下是不是 PENDING 再写"在两个进程同时到达时
+> 两边都会通过**。内存里 `claim()` 是同步的，两个协程根本抢不起来。
+
+**所以在内存里绿了，只说明"逻辑写了"，不说明"这两个保证成立"。**
+这正是 M45 冻结过的那个陷阱（替身比生产更好用的时候，绿的是替身不是生产）。
+
+### 91.2　为什么"另一条连接"是硬要求
+
+同一个连接读自己刚写的，读到的是自己的内存 —— 那条断言什么也证明不了。
+所以每一条都从**另一条连接**读。
+
+### 91.3　补了什么
+
+`tests/integration/test_saga_real_pg.py`：
+
+- **S-2**：同一条 Execution 插第二行，**数据库**必须拒绝
+- **S-2'**：从另一条连接看，那唯一的一条确实在
+- **S-3**：`open_for` 在真库上也是新的在前（撤销才可能是 LIFO）
+- **S-4**：两条连接同时认领，**只有一个拿到**，另一个拿到 `None`
+- **S-4'**：落空的那条连接，从自己眼里也看得到"它已经被抢走了"
+
+S-4 的全部意义：它决定两个 Coordinator 会不会把同一笔副作用**撤销两次**。
+
+### 91.4　这一轮抓到的一条假绿（值得单列）
+
+第一版 S-2 测试是这样写的：调用两次 `saga.record()`，断言库里只有一行。
+变红验证时把 UNIQUE 约束 DROP 掉 —— **红了 0 条**。
+
+原因：`saga.record()` 在写之前有一句 Python 检查
+（`get_by_execution` 已有就返回 `None`），
+于是**就算约束不存在，测试照样绿**。测的是 Python 检查，不是 PG 约束。
+
+改成**绕过 `saga.record()`、直接用 SQL 插**之后，发现还有第二层假绿：
+INSERT 少给了几个 NOT NULL 列（`tool` / `args` / `description` / `reason`），
+于是 INSERT 因为"缺列"而失败 —— **UNIQUE 在不在都抛**。
+
+两处都修掉（绕过约定 + 给全所有列）之后，去掉 UNIQUE 才真的红了。
+
+> **测物理保证，必须让被测的约束成为唯一的失败原因。**
+> 任何别的失败路径都会把它变成一条永远绿的空断言。
+
+### 91.5　变红验证（2/2）
+
+| 变异 | 红了 |
+|---|---|
+| S-4：`claim` 去掉 `AND status='pending'`（不再原子） | 1 条 |
+| S-2：迁移里去掉 `UNIQUE` | 1 条 |
+
+注意第二个变异必须改**迁移文件**：集成测试的 `setUp` 会重建 schema，
+直接在库上 `DROP CONSTRAINT` 会在下一次 setUp 时被建回来（试过，无效）。
+
+### 91.6　冻结
+
+> 上一轮冻结的是"评估必须打真服务，失败要说清卡在哪一步"。
+>
+> 这一轮冻结的是：**"保证住在哪一层，就要在哪一层验证它。
+> 一条 PG 物理约束，在内存替身上绿了，等于没验。"**
+
+另一句：**测约束的时候，先问一句"它是不是唯一的失败原因"——
+不是的话，那条断言一条都抓不住。**
+
+---
+
+## §92　M54 · 那笔"存疑"的账，撑不撑得过一次重启
+
+### 92.1　M53 的同款缺口，另一处
+
+M53 补完 S-2 / S-4 之后，同一次盘点里还剩下：
+
+| 模块 | 单测 | 真 PG |
+|---|---|---|
+| `test_delegation_compensation`（D-12 / D-13） | ✅ | ❌ **没有** |
+
+其中 **S-15**（UNRESOLVED 不会被认领）靠的也是
+`claim()` 里那条 `UPDATE ... WHERE status = 'pending'` —— **与 S-4 同一句 SQL**。
+内存版是同步字典，两个 Coordinator 根本抢不起来，
+也无从证明"状态不是 pending 时这条 UPDATE 匹配 0 行"。
+
+### 92.2　为什么 D-12 那条账尤其不能只活在内存里
+
+D-12 记的是：
+
+> 委派派出的是一条完整的 Run，它在进终态之前可能已经建了工单、发了邮件、
+> 甚至派生了它自己的子 Run。父 Run **无从得知**它到底留没留下东西。
+
+所以那条 UNRESOLVED 是"外部世界留了东西、但没人负责"的**唯一物证**。
+
+而它记载的恰恰是**重启后最该被看见**的东西 ——
+如果它只活在内存里，进程一重启就消失了，
+于是那笔没人负责的副作用从此再没有入口会记它。
+
+### 92.3　补了什么
+
+`tests/integration/test_delegation_compensation_real_pg.py`：
+
+- **D-12**：那条账真的落在库里，从**另一条连接**也读得到（且是 UNRESOLVED）
+- **D-12'**：理由能把 `failed` 与 `cancelled` 分开（排障方向不一样，D-10 同款）
+- **S-15**：另一条连接来认领，必须**拿不到**
+- **S-15'**：认领失败后，它**原封不动**还是 UNRESOLVED，`attempts` 也不许动
+  （条件 UPDATE 匹配 0 行 = 这一行任何字段都不该变）
+- **S-5**：它留在 `unresolved_for()` 里 —— 看得见，不当没发生
+
+### 92.4　变红验证
+
+把 `claim()` 的 `WHERE ... AND status = 'pending'` 改成不带条件
+（于是 UNRESOLVED 也能被认领）→ **红了 3 条**
+（`test_delegation_compensation_real_pg` 两条 + `test_saga_real_pg` 一条）。
+
+一句 SQL 撑着三条保证（S-4 / S-15 / A-11 同款），改坏它三处同时报警 ——
+这正是"一个事实一处定义"（B-7）想要的效果。
+
+### 92.5　冻结
+
+> 上一轮冻结的是"保证住在哪一层，就要在哪一层验证它"。
+>
+> 这一轮冻结的是：**"记给未来看的东西，必须撑得过一次重启。
+> 一笔没人负责的副作用，它的物证先没了 —— 那它就永远查不到了。"**
+
+另一句：**UNRESOLVED 不是"撤销不了"，是"还不知道该不该撤销"。
+让它保持这个状态，比替它做个决定更诚实。**
+
+---
+
+## §93　M55 · 待批队列撑不撑得过一次重启
+
+### 93.1　M53 之后做的一次系统性排查
+
+M53 / M54 那个"有单测但没真 PG"的缺口，前两次都是撞见的。
+这一轮把 53 个单测模块与集成模块对了一遍：
+
+    单测模块 53   有集成 15   仅单测 38
+
+但**不是这 38 个都需要真 PG** —— 纯领域逻辑（business / intelligence /
+context_memory 等）在内存里验就够了。
+
+判据仍是 M53 那条：**只有当保证是 PG 物理的，才需要真 PG。**
+按这条筛出来的是审批存储，而且它特别要紧。
+
+### 93.2　为什么 sqlite 替身证明不了 A-10
+
+`tests/unit/test_approval_store_postgres.py` 有 17 条，但跑在 `sqlite_shim` 上。
+
+> **A-10**（审批必须活过进程重启）—— 它的全部意义就是"重启后还在"。
+> 而"重启"这件事在替身上**无从模拟**：替身与被测代码共享同一个
+> 进程内的 sqlite 连接，内存从来没被清过。
+
+M19 就是为了这条：在那之前，重启后待批列表是空的，
+而 Run 还实实在在挂着等人批 ——
+**界面上什么都没有，系统里全在等**，这是最难排查的一类故障。
+一条这么要紧的保证，却在真库上从没验过。
+
+（顺带：shim 自己也承认不完整 —— 013 那根外键 sqlite 加不了。
+所以替身与真库本来就不同构。）
+
+### 93.3　为什么替身也证明不了 A-11
+
+源码注释写得很明白：
+
+    # A-11：判定与写入是一个语句。`AND status = 'pending'` 就是"我没输这场竞争"。
+
+这是一条**条件 UPDATE**。替身是同步的，两个"进程"根本到不了同一时刻，
+也无从证明"第二个到达时 rowcount = 0"。
+
+### 93.4　"另一条连接"就是一次重启
+
+服务重启 = 内存里的 stacks / 缓存全丢，只剩 PG。
+一条**新的连接**正是那个状态：它什么内存都没有，只能去库里读。
+
+### 93.5　补了什么
+
+`tests/integration/test_approval_store_real_pg.py`：
+
+- **A-10**：重启后那条待批**还在**（且仍是 PENDING）
+- **A-10'**：**列表**也在（人看的是列表，不是单个 id）
+- **A-10''**：Action 完整存下来了 —— 人要看的是"我放行的到底是什么"
+- **A-11**：两条连接同时决定，**只有一个成功**
+- **A-11'**：落空那次不许覆盖 —— "谁批的"要一直是第一个人
+- **A-11''**：落空的 transition 连 `version` 都不许动
+
+### 93.6　变红验证
+
+把 `TRANSITION_APPROVAL` 的 `AND status = 'pending'` 去掉
+（于是第二个决定者也能成功）→ **红了 3 条**。
+
+### 93.7　一条贯穿三处的观察
+
+S-4、S-15、A-11 —— 三条不同的保证，靠的都是**同一种写法**：
+一条带条件的 `UPDATE`，用 rowcount 判胜负。
+
+这不是巧合，是 A-11 那句注释的意思：
+**"先读一下再写"在并发下必然两边都通过**，唯一可靠的判胜负方式
+就是让判定与写入成为同一个语句。
+
+### 93.8　冻结
+
+> 上一轮冻结的是"记给未来看的东西，必须撑得过一次重启"。
+>
+> 这一轮冻结的是：**"'活过重启'这条保证，只能靠真的重启来验。
+> 替身的内存从来没被清过，所以它那里'还在'两个字是没有分量的。"**
+
+另一句：**一条待批事项消失了，界面上是安静的 ——
+而系统里有一整条 Run 在等它。这种安静最危险。**
+
+---
+
+## §94　M56 · 两个 worker，只能一个拿到租约
+
+### 94.1　租约测试里缺的那一条
+
+`tests/unit/test_attempt_lease_retry.py` 那几条租约测试，验的都是
+**领域语义**：E-6 序号单调、E-7 只有 RUNNING 能持租约、E-20 租约挂在 Execution 上、
+E-22 过期持有者的写回被拒、租约到期。
+
+但有一条它验不了：
+
+> **两个 worker 同时抢同一个 Execution 的租约 —— 只能一个拿到。**
+
+这条决定的是：同一条 Execution **会不会被两个 worker 各执行一遍**。
+工具是有副作用的，执行两遍就是外部世界被改两次。
+
+物理保证是 `UPDATE_EXECUTION` 末尾那句：
+
+    WHERE execution_id = %s AND version = %s       ← E-25 乐观锁
+
+**条件 UPDATE + rowcount 判胜负** —— 与 S-4 / S-15 / A-11 同一种写法
+（§93.7 记过：先读一下再写，并发下必然两边都通过）。
+内存版是同步的单线程，两个 worker 根本到不了同一时刻，
+所以它那里"只有一个赢"是一句空话。
+
+### 94.2　补了什么
+
+`tests/integration/test_lease_race_real_pg.py`：
+
+- 两个 worker（两条连接、两个 kernel）抢同一条 Execution，**第二个必须报错**
+  （静默成功 = 这条 Execution 会被执行两遍）
+- 库里记的持租人是赢的那个 —— 输了的不许覆盖
+- **E-22**：拿着**落后**的 fencing token 回报结果，必须被拒
+
+### 94.3　这一轮抓到的假绿（第四处，值得单列）
+
+第一版里第二个 worker 用的是 `real_pg()` —— 而 `real_pg()` **默认 `fresh=True`
+会重建库**。于是第二个 worker 一拿到连接，就把第一个 worker 刚写的东西全清了，
+它随后的 `claim()` 因为"找不到这条 Execution"而抛异常 ——
+**断言照样通过，但通过的原因是"库被我清空了"**。
+
+同一条测试单独跑是绿的、跑起来也"绿"，却什么都没验。
+
+> 附加连接必须 `real_pg(fresh=False)`。
+> 现有集成测试（`test_compensation_events_real_pg.py`）本来就是这么写的，
+> 这次是另起一份时没照抄到。
+
+### 94.4　还有两处"差一点就假绿"
+
+- **token 方向**：`authorize()` 只在 `token < fencing_token` 时抛。
+  传一个**更大**的 token 是合法的 —— 用 `+99` 测"过期"会永远绿。必须传更小的。
+- **别拿 `cancel()` 测过期**：源码注释写着
+  "过期 Worker 也能被系统级取消" —— `cancel()` 是**故意放行**的。
+  要测就得用"回报结果"这种会改业务状态的写回。
+
+### 94.5　变红验证
+
+去掉 `AND version = %s`（乐观锁）→ **红了 3 条**。
+这也反证了 94.3 那条假绿已经修好：现在的红是真的因为"第二个也抢到了"。
+
+### 94.6　一处贯穿四轮的观察
+
+S-4、S-15、A-11、E-25 —— 四条不同的保证，同一种写法：**带条件的 UPDATE + rowcount**。
+
+| 保证 | 条件 |
+|---|---|
+| S-4（补偿原子认领） | `AND status = 'pending'` |
+| S-15（UNRESOLVED 不认领） | `AND status = 'pending'` |
+| A-11（审批只有一个赢） | `AND status = 'pending'` |
+| E-25（租约只有一个赢） | `AND version = %s` |
+
+这不是巧合：**"先读一下再写"在并发下必然两边都通过**，
+唯一可靠的判胜负方式就是让判定与写入成为同一个语句。
+
+### 94.7　冻结
+
+> 上一轮冻结的是"'活过重启'只能靠真的重启来验"。
+>
+> 这一轮冻结的是：**"竞态只能靠真的让两个进程到同一时刻来验。
+> 让第二个进程一上来就把库清空，那不是竞态，那是独角戏。"**
+
+另一句：**一条 Execution 被执行两遍，日志上是两次成功的执行 ——
+没有报错，只有外部世界被改了两次。**
+
+---
+
+## §95　M57 · 一个事件，只该有一个投递者
+
+### 95.1　第五条同款保证
+
+`test_outbox_publisher_app.py::TerritoryTest` 有 PR-3 的用例，但跑在
+`InMemoryOutboxDeliveryStore` 上。源码注释原话：
+
+> PR-3：认领的原子性由**单条 SQL** 提供（UPDATE ... WHERE / INSERT ON CONFLICT）。
+> 进程里"先 SELECT 看看有没有人占着，再决定要不要写"永远有窗口。
+
+于是这是**第五条**同款保证。前四条记在 §94.6，现在补齐：
+
+| 保证 | 条件 |
+|---|---|
+| S-4（补偿原子认领） | `AND status = 'pending'` |
+| S-15（UNRESOLVED 不认领） | `AND status = 'pending'` |
+| A-11（审批只有一个赢） | `AND status = 'pending'` |
+| E-25（租约只有一个赢） | `AND version = %s` |
+| **PR-3（投递只有一个赢）** | `AND (claimed_until IS NULL OR claimed_until <= %s)` |
+
+### 95.2　后果很实在
+
+认领失败 = 同一个事件被**投两次**。
+
+Outbox 的语义是 at-least-once，但"至少一次"不该退化成
+"只因为这个窗口就变成两次" —— 下游要么幂等、要么就得靠这里挡住。
+
+### 95.3　补了什么
+
+`tests/integration/test_outbox_territory_real_pg.py`：
+
+- **PR-3**：两个副本认领同一个事件，只有一个成功
+- **PR-3 控制组**：队列里确实有东西（否则"第二个拿到 0 条"可能只是队列空）
+- **PR-4**：租约**没过期**不许被抢（否则正在投递的事件会被别人接手）
+- **PR-4'**：租约**过期**必须能被接管 —— 进程被 SIGKILL 时没机会归还领地，
+  过期是唯一的安全网
+
+两条 PR-4 必须**同时**成立：只守住一半，另一半就是"永远没人投"或"被抢投"。
+
+### 95.4　顺手修掉的一处脆弱
+
+M53 / M54 / M55 的附加连接用的也是 `real_pg()`（默认 `fresh=True`）。
+它们目前是安全的 —— 附加连接在 `setUp` 里建、写数据在其后 ——
+但那**依赖顺序**。一旦有人调整代码顺序，就会变成 M56 §94.3 那种假绿。
+
+已统一改成 `real_pg(fresh=False)`，不靠运气。
+
+### 95.5　变红验证
+
+去掉认领的过期条件 `AND (claimed_until IS NULL OR claimed_until <= %s)`
+→ **红了 3 条**。
+
+### 95.6　冻结
+
+> 上一轮冻结的是"竞态只能靠真的让两个进程到同一时刻来验"。
+>
+> 这一轮冻结的是：**"at-least-once 不等于'允许重复'。
+> 能挡住的重复就该挡住 —— 把防重复的成本推给所有下游，是懒。"**
+
+另一句：**一个事件被投两次，两边日志都写着"投递成功"。
+没有失败，只有一件被做了两次的事。**
+
+---
+
+## §96　M58 · 一份 HTTP 封装，不是两份
+
+### 96.1　起因是一处真实重复
+
+写评估平台（M52）时，为了"绕过系统代理"又写了一遍 urllib 封装。
+于是仓库里有两份几乎一样的东西：
+
+    apps/cli/__init__.py                 request(...)     ← M50
+    packages/agent_evaluation/harness.py _http(...)       ← M52
+
+两份都各自带着同一段注释：连 localhost 走了 `HTTP_PROXY`，
+服务没起时会拿到代理返回的 502 `upstream connect failed`，
+于是"连不上"被误报成"服务返回了一个错误"。
+
+这违反 **B-7（一个事实一处定义）**，而且后果很具体：
+下次有人修这段知识（比如换个端口、加个超时策略），
+改一处忘一处，就会得到**"CLI 修好了、评估还在误报"这种只对了一半的修复**。
+
+### 96.2　M11 的 SDK 正好一并解决
+
+`packages/agent_sdk` 提供 `AgentOSClient`：
+
+```python
+from packages.agent_sdk import AgentOSClient
+client = AgentOSClient(base="http://127.0.0.1:8011")
+client.health()
+client.start_run("agent-it", "compute 6*7", key="k1")
+client.drive(run_id)
+client.cancel(run_id, reason="...", by="...")     # B-8：归因必填
+client.decide(run_id, approval_id, approve=True, by="alice")
+```
+
+- 地址优先级：`base=` > `$AGENTOS_API_BASE` > 默认
+- **连不上 vs 服务说了不**分开：`request()` 用状态码 `0` 表示连不上
+  （一个 HTTP 里不可能出现的值）；`request_or_raise()` 给批处理场景，连不上直接抛
+- 幂等键进 **header** 不是 body
+
+### 96.3　重构后谁在用
+
+    apps/cli          → AgentOSClient.request()
+    apps/eval         → AgentOSClient.request()（连不上时抛 EvaluationError）
+
+两者的**对外行为完全不变** —— 靠原有 16 + 15 条测试守住，
+一条都没改。
+
+### 96.4　踩到的一个坑：opener 不能每次都建
+
+第一版 SDK 在 `AgentOSClient.__init__` 里建 opener。
+而 `request()` 每次调用都新建一个 client ——
+于是每个请求都 `build_opener()` 一次，
+而它会顺带创建 SSL context，几十次之后这台机器的 OpenSSL 直接
+建不出 context（`SSLError: [SSL] unknown error`）。
+
+opener 是无状态的，**共享一份**就够了。已改成模块级共享，
+并加了一条测试断言"两次取到的是同一个"（免得以后有人改回去）。
+
+### 96.5　变红验证（4/4）
+
+| 变异 | 红了 |
+|---|---|
+| opener 不再禁用代理 | 3 条 |
+| `decide` 用错字段名（`approved`） | 1 条 |
+| 幂等键塞进 body 而不是 header | 1 条 |
+| 连不上伪装成 200 | 2 条 |
+
+### 96.6　规模与测试
+
+| 指标 | 值 |
+|---|---|
+| 新增 | `packages/agent_sdk/`、`tests/unit/test_agent_sdk.py`（11 条） |
+| 删掉 | 两份重复的 urllib 封装（约 40 行 ×2） |
+| 单元测试 | 1103 → **1114**（+11） |
+
+### 96.7　冻结
+
+> 上一轮冻结的是"at-least-once 不等于'允许重复'"。
+>
+> 这一轮冻结的是：**"同一段知识抄了两遍，就一定会有一遍是旧的。
+> 修复只对了一半，比不修复更难发现 —— 因为它看起来修好了。"**
+
+另一句：**B-7 不只是"别重复定义概念"，也是"别重复写同一段修复"。**
+
+---
+
+## §97　M59 · 让一次部署说得出自己是什么
+
+### 97.1　起因：配置散在十几个环境变量里
+
+一次部署要设这些：
+
+    AGENTOS_STACK_PROVIDER   AGENTOS_MODEL_PROVIDER   AGENTOS_TOOL_PROVIDER
+    AGENTOS_PG_DSN           AGENTOS_KAFKA_BROKERS    AGENTOS_LEASE_TTL_SECONDS
+    AGENTOS_BATCH_SIZE       AGENTOS_POLL_LIMIT       AGENTOS_HEARTBEAT_SECONDS
+    AGENTOS_API_HOST         AGENTOS_API_PORT         AGENTOS_INSTANCE_ID
+    ...
+
+**能跑**，但有三个问题：不可提交、不可 diff、**不可校验**。
+
+第三条最要紧：漏了一项不会报错，只会**退化**成某个默认值或某个内存兜底。
+而"退化"在这套系统里是最危险的一类失败 ——
+它不报错，它只是让那条保证悄悄不成立（M45 冻过一次这个教训）。
+
+### 97.2　为什么是 TOML 不是 YAML
+
+`tomllib` 是标准库，`pyyaml` 在这台机器上不可用。
+
+用一个需要新增依赖的格式，会让"能不能读自己的配置文件"
+取决于装没装上某个包 —— 不值得。**零新增依赖。**
+
+### 97.3　关键设计：它不是第二套配置（B-7）
+
+清单**不**是与环境变量并列的一套新配置。
+它是环境变量的**唯一声明源**：`to_env()` 把清单翻译成环境变量，
+交给既有的 `apps._bootstrap.RuntimeConfig` 去读。
+
+> 否则就会出现"清单里改了、启动时却读的是旧环境变量" ——
+> 一种只对了一半的改动。这在 M58 消除重复 HTTP 封装时刚冻过同一条道理。
+
+### 97.4　一律点名拒绝（PR-19）
+
+| 情况 | 错误码 |
+|---|---|
+| 未知的键（多半拼错） | `MANIFEST_UNKNOWN_KEY`（并列出全部已知键） |
+| 缺必填 | `MANIFEST_MISSING` |
+| 标量位置写了列表 | `MANIFEST_BAD_TYPE` |
+| 空清单 / TOML 语法错 | `MANIFEST_EMPTY` / `MANIFEST_NOT_TOML` |
+
+**不静默忽略、不静默回退默认**：一句写错的键名会变成一次成功的、
+但配置不对的启动 —— 那比启动失败坏得多。
+
+### 97.5　用法
+
+```bash
+python -m apps.cli manifest check tests/eval/agentos.toml   # 校验
+python -m apps.cli manifest env   tests/eval/agentos.toml   # 导出环境变量
+```
+
+`env` 的输出可以直接写进 K8s ConfigMap —— 这也是选它做 M7 前置的原因：
+**先让部署有资格被声明，再谈怎么编排它。**
+
+### 97.6　变红验证（4/4）
+
+| 变异 | 红了 |
+|---|---|
+| 未知键不再拒绝 | 2 条 |
+| 缺必填不再拒绝 | 1 条 |
+| 类型错不再拒绝 | 1 条 |
+| 空清单不再拒绝 | 1 条 |
+
+### 97.7　一处方法上的提醒（本轮踩到）
+
+第一版变红脚本里用带 `\n` 的多行替换，在 Git Bash 的 heredoc 下
+`\n` 被转成 `/n`，生成了**语法错误**的源文件 ——
+于是测试整体崩溃、输出里没有 `FAIL:`/`ERROR:`，计数为 0，
+差点被读成"这条测试是假绿"。实际上是**变异脚本自己坏了**。
+
+> 写变红脚本时优先用**单行替换**；
+> 并且"红了 0 条"要先怀疑脚本，而不是先怀疑测试。
+
+### 97.8　冻结
+
+> 上一轮冻结的是"同一段知识抄了两遍，就一定会有一遍是旧的"。
+>
+> 这一轮冻结的是：**"配置漏了一项不该是'退化成默认值'，
+> 应该是启动前就死。能跑起来的错误配置，比跑不起来的错误配置贵得多。"**
+
+另一句：**一份写完就能提交、能被 review、能被 diff 的部署声明，
+比十几个只有运维记得的环境变量可靠。**
+
+---
+
+## §98　M60 · 让清单真的把服务启动起来
+
+### 98.1　M59 留下的环
+
+M59 交付的清单能 `check`、能 `env` ——
+但**没有东西真的用它启动**。那它就只是一个格式良好的文件：
+部署照样得靠人把那十几个环境变量敲对。
+
+清单存在的理由是"让一次部署说得出自己是什么"，
+所以它必须能把一次启动配置出来。这一轮补上这个接缝。
+
+### 98.2　怎么接的
+
+    AGENTOS_MANIFEST=<path> python -m apps.api
+
+`RuntimeConfig.from_env()` 看到 `AGENTOS_MANIFEST`：
+
+1. 读清单并校验（错就 `ConfigurationError`，**启动前死**）
+2. `source = dict(manifest.to_env())` —— 后续所有配置读取**一行不改**
+
+清单是环境变量的声明源这个设计（M59 §97.3）因此落地了：
+**配置怎么生效仍然只有一条路径**，只是写在哪儿变了。
+
+### 98.3　为什么二选一，不叠加（B-7）
+
+清单模式与环境变量模式**互斥**：给了清单就只读清单。
+
+如果叠加，一次启动就有两个来源，于是
+**"清单里改了、实际读的是旧环境变量"** 这种只对了一半的改动成为可能 ——
+M58 消除重复 HTTP 封装时冻过同一条道理：修一处忘一处，
+得到的不是"没修好"，是"看起来修好了"。
+
+有一条测试专门守这个：清单说 8011、环境变量说 9999 → 必须是 8011。
+
+### 98.4　测试顺带抓到的一处不一致
+
+第一版在文件读不到时冒出的是裸的 `FileNotFoundError`。
+那和"清单写错了"是同一类问题（这份部署声明不可读），
+就该是同一个错 —— 已统一成 `ConfigurationError`。
+
+不让裸的 IO 异常冒到进程外面：排障的人看到
+`FileNotFoundError` 只会去找"谁在读文件"，
+而真正的问题只是"那份清单路径写错了"。
+
+### 98.5　真跑过什么
+
+**只给一份清单、不带任何其它环境变量**启动服务：
+
+    AGENTOS_MANIFEST=tests/eval/agentos.toml python -m apps.api
+
+    → 服务起来（Uvicorn running）
+    → 完整流程跑通：start → drive → decide → trace → cancel
+    → 端口 8011、lease_ttl 30 都来自清单
+
+### 98.6　变红验证（2/2）
+
+| 变异 | 红了 |
+|---|---|
+| `AGENTOS_MANIFEST` 被忽略（退回纯环境变量模式） | 4 条 |
+| 改成叠加且环境变量赢 | 1 条 |
+
+（第二次一开始写反了 —— `dict(source, **manifest)` 仍是清单赢，
+于是红了 0 条。修正成"环境变量赢"的叠加后才真的红。
+这类"变异本身没改变行为"的坑，M59 §97.7 已记过一次。）
+
+### 98.7　冻结
+
+> 上一轮冻结的是"配置漏了一项不该退化成默认值，该在启动前就死"。
+>
+> 这一轮冻结的是：**"一份声明如果启动不了任何东西，它就只是一份文档。
+> 能校验不等于能生效 —— 中间那个接缝必须真的接上。"**
+
+另一句：**二选一，不要叠加。两个来源的配置不是"更灵活"，
+是"改了一半也算改过"。**
+
+---
+
+## §99　M61 · 平台认得自己的 agent
+
+### 99.1　空洞 231 的收尾
+
+空洞 231 登记的是：`POST /agents/{id}/runs` **不校验 agent 是否存在**。
+当时判为"抽象缺口，等需要时再治"，因为 `agent_id` 那时只是透传标签、不参与分派。
+
+注册表让它**参与分派**，于是"这个 id 存不存在"第一次有了答案。
+
+    [agents.agent-it]
+    description = "集成测试栈"
+    stack = "examples.demo_stack:build_approval_demo_stack_factory"
+
+    [agents.agent-math]
+    description = "只做算术"        # stack 不写 → 跟随全局配置
+
+（TOML / `tomllib`，与 manifest 同一条理由：**零新增依赖**。）
+
+### 99.2　一处必须说清的取舍：没配注册表就维持现状
+
+仓库里各测试用了 7 种即席的 agent id：
+
+    agent-it  agent-api  agent-math  agent-1  agent-saga  agent-rec  agent-ctx
+
+它们都不是"登记过的 agent"，而是一次性起的名字。
+
+若强制校验，这 7 类用例会**全部红** ——
+而它们红的理由不是有 bug，只是没写注册表。
+那会把**"没登记"和"写错了"混成一种错**，
+于是真正写错 id 的那一天，警报淹没在一片红里。
+
+所以：
+
+| 配置 | 行为 |
+|---|---|
+| 没配注册表 | 维持现状（`agent_id` 透传，任何 id 都收） |
+| 配了注册表 | 只收登记过的，其余 404 `AGENT_NOT_FOUND` |
+
+这不是回避 —— 是把"要不要强校验"交给部署决定。
+而一旦决定要，**校验就真的生效**（不再是登记里那句"等需要时"）。
+
+### 99.3　`GET /agents`
+
+让控制台页面和 CLI **有得可选**，而不是手填一个可能不存在的名字。
+
+没配注册表时返回**空列表**，不是 404 ——
+"有哪些 agent 可选"是查询语义，空集不是错误
+（与 `list_approvals` 同一条判据：服务重启后不该在最需要它的时候看不见东西）。
+
+### 99.4　真跑过什么
+
+    AGENTOS_MANIFEST=tests/eval/agentos.toml \
+    AGENTOS_AGENT_REGISTRY=tests/eval/agents.toml python -m apps.api
+
+    GET  /agents                     → 列出 agent-it / agent-math
+    POST /agents/agent-nope/runs     → 404 AGENT_NOT_FOUND  ✅（此前是 201）
+    POST /agents/agent-it/runs       → 201                  ✅
+
+### 99.5　变红验证（2/2）
+
+| 变异 | 红了 |
+|---|---|
+| 不再校验（空洞 231 复发） | 1 条 |
+| 没配注册表也校验（破坏向后兼容） | 1 条 |
+
+第二条一开始**红了 0 条**：测试里比的是 `str(e)`，
+而错误码在 `.code` 上、不在消息里 —— 于是那条断言在变异下仍然绿，
+**向后兼容这条命脉根本没人守**。
+
+> 这是本轮第三次栽在"错误码不在 `str(e)` 里"（前两次在 M59 / M61 的
+> 同类断言上）。已写进长期笔记：**断言 API 错误必须比 `.code`，不能比消息。**
+
+### 99.6　冻结
+
+> 上一轮冻结的是"一份声明如果启动不了任何东西，它就只是一份文档"。
+>
+> 这一轮冻结的是：**"校验要不要开，可以由部署决定；
+> 但一旦开了，它就必须真的生效 ——
+> '配了却没校验'比'没配'更坏，因为它让人以为有人在守。"**
+
+另一句：**"没登记"和"写错了"是两种错。
+混成一种，警报就失去了意义。**
+
+---
+
+## §100　M62 · 声明的那套栈，就是用的那套
+
+### 100.1　M61 留下的环
+
+M61 的注册表允许每个 agent 声明自己的 `stack`。但**当时没有任何代码读它**——
+它是一份"看起来生效"的**死数据**：
+
+> 写了 `stack = "..."` 的人会以为它生效了，而实际用的还是全局那一个。
+
+这与 M59→M60 是同一条教训：
+**一份声明如果启动不了任何东西，它就只是一份文档。**
+
+### 100.2　分派规则
+
+    agent 声明了自己的 stack → 用它
+    否则                     → 用全局 AGENTOS_STACK_PROVIDER
+
+刻意**不是**"每个 agent 都必须声明"：大多数部署只有一个栈，
+让每个 agent 各抄一遍同一个字符串，是制造不一致的最好方式（B-7）——
+改的时候漏掉一个，那个 agent 就悄悄跑在旧栈上。
+
+### 100.3　按 provider 缓存
+
+同一个 provider 只装载一次。否则每个 agent 各自 new 一个
+Kernel / 登记处，"跨 Run 共享"就散了（而登记处**必须**跨 Run 共享，M26）。
+
+### 100.4　真跑过什么
+
+    AGENTOS_MANIFEST=... AGENTOS_AGENT_REGISTRY=tests/eval/agents.toml
+
+    registry: ('agent-it', 'agent-math')
+    agent-it 声明的 stack: examples.demo_stack:build_approval_demo_stack_factory
+    装配结果: RuntimeStack | loop: True     ← 按声明装配成功
+
+### 100.5　变红验证（2/2）—— 中途抓到一条"重写逻辑"式假绿
+
+第一版测试里，我把"agent 声明了就用它、否则用全局"这段判断
+**在测试里重写了一遍**再断言 —— 那测的是我的复制品，不是被测代码：
+**被测逻辑改坏了它照样绿。**
+
+改成真正调用 `make_dispatching_stack_factory`（把装载函数换成探针）
+之后才真的测到分派结果。
+
+| 变异 | 红了 |
+|---|---|
+| 忽略 agent 声明（永远用全局 → 又变死数据） | 2 条 |
+| 传错 `agent_id` 给下层 | 1 条 |
+
+第二条一开始红了 0 条 —— 那条行为原本没人守。已补一条测试：
+`agent_id` 必须原样传下去（传错会让 Run 挂到别的 agent 名下）。
+
+### 100.6　一处通用的提醒（本轮第四次）
+
+写"验证某段逻辑"的测试时，**先确认你调的是被测代码，而不是自己又写了一遍**。
+本轮已栽四次同类：
+
+1. M59：变红脚本的 `\n` 被转成 `/n`，脚本自己坏了
+2. M61：`str(e)` 里没有错误码（在 `.code` 上）
+3. M62：测试里重写了一遍分派逻辑
+4. 加上更早的：M53 的两层假绿、M56 的 `real_pg()` 重建库
+
+> 共性：**"看起来在验"和"真的验到"是两件事。**
+> 唯一可靠的判别方式是改坏它，看它红不红。
+
+### 100.7　冻结
+
+> 上一轮冻结的是"校验要不要开可以由部署决定，但开了就必须真的生效"。
+>
+> 这一轮冻结的是：**"声明了的字段如果被忽略，比没这个字段更坏 ——
+> 没这个字段你知道要配，有这个字段你会以为配好了。"**
+
+另一句：**改坏它，看它红不红。这是唯一能分清"在验"和"验到"的办法。**
+
+---
+
+## §101　M63 · 发了信号，不等于它已经停了
+
+### 101.1　一个挂了很久的偶发红
+
+集成测试偶尔红一条（3 次里约 1 次），但**单独重跑总是绿**，且当时只留下一行
+`FAILED (failures=1)`，没有 FAIL 详情。很容易被当成"环境问题"放过去。
+
+有价值的线索是**它出现的条件**：
+
+- **单独跑 integration：10 次全绿**
+- 两次失败都发生在**同一条命令里先跑 unit 再跑 integration**
+
+### 101.2　根因
+
+`tests/integration/test_api_real_http.py` 里那个"真 uvicorn"用例
+（`test_a_real_uvicorn_serves_the_console_and_the_api`）的清理只写了：
+
+    finally:
+        proc.terminate()
+
+**`terminate()` 只发信号、立刻返回，不等待进程退出。**
+
+那个子进程连着真 PG。它残留的不确定窗口（毫秒到数秒）里，
+紧随其后的运行要 `DROP DATABASE` —— 而 **PG 在有其它连接时会拒绝 DROP**。
+
+于是红一条与被测代码毫无关系的灯。
+
+这条解释了全部现象：
+
+| 现象 | 解释 |
+|---|---|
+| 只在连着跑时出现 | 单独跑时进程随主进程退出，窗口撞不上 |
+| 复现不了 | 竞态窗口，长短不定 |
+| 只红一条 | 第一次需要重建库的用例挂掉 |
+| 出现在第二段的开头 | 那段用例在**文件末尾**，残留影响的是下一次运行 |
+
+### 101.3　修法
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+全局检查：`tests/` 下只有这一处 `terminate`/`kill`，已无遗漏。
+
+### 101.4　一条诚实的边界
+
+我**没能复现**那两次失败（连跑 13 次全绿），所以无法 100% 证明这就是根因。
+
+但 `terminate()` 不 `wait()` 是**确凿的代码缺陷**，与现象高度吻合，
+而且这个修复本身无论如何都对 —— 进程清理就该等它真的退出。
+修改后连跑 `unit; integration` 仍全绿。
+
+### 101.5　冻结
+
+> 上一轮冻结的是"声明了的字段如果被忽略，比没这个字段更坏"。
+>
+> 这一轮冻结的是：**"发信号不等于已经停了。
+> `terminate()` 之后不 `wait()`，就是把一个不确定窗口留给下一个用例去撞。"**
+
+另一句：**偶发红最容易被记成"环境问题"然后放过。
+但它出现的**条件**（什么时候红、什么时候不红）往往已经把真凶指出来了。**
+
+---
+
+## §102　M64 · 页面不再猜 agent 的名字
+
+### 102.1　M61 留下的另一个环
+
+M61 加了 `GET /agents`，并在里程碑行里写了"让控制台/CLI 有得可选而不是手填"。
+但**页面并没有用它** —— agent 还是两个手填输入框。
+
+端点没人调用，等于没加。这与 M59→M60（清单没人用来启动）、M61→M62（声明的
+`stack` 没人读）是**同一条教训的第三次**：
+
+> 一份声明/一个端点如果没人用，它就只是一段能跑的代码，不是一个已落地的东西。
+
+### 102.2　怎么接的
+
+两个 agent 输入框挂上同一个 `datalist`：
+
+    <input id="agent" list="agent-options">
+    <datalist id="agent-options"></datalist>
+
+`refreshAll()` 里并行拉 `/agents`，把结果填进去；候选里没有当前值时，用第一项
+替换（免得默认按钮发起一个未登记的 agent）。
+
+### 102.3　一处刻意的克制：没配注册表就不假装有得选
+
+`GET /agents` 在没配注册表时返回**空列表**，此时 `datalist` 是空的，
+输入框退化成普通手填 —— 与 M61 的取舍一致（不强校验），也不在界面上
+假装"系统知道有哪些 agent"。
+
+用 `datalist` 而不是 `<select>` 也是同一个理由：**保留手填能力**。
+注册表是可选的，界面不该因为它没配就变得不可用。
+
+### 102.4　验证
+
+- `GET /agents` 返回 2 条（带描述）
+- 页面已挂载改动（`agent-options` / `renderAgents` 均在其中）
+- `tests/integration/test_api_real_http.py` 13 条全绿（含控制台页面的断言：
+  `<h1>AgentOS 控制台</h1>` 与 `id="btn-cancel"` 都还在）
+- 单元 1149 / 集成 188 全绿
+
+### 102.5　冻结
+
+> 上一轮冻结的是"发信号不等于已经停了"。
+>
+> 这一轮冻结的是：**"端点写完了不算落地，有人调它才算。
+> 里程碑行里那句'让页面有得可选'，得页面真的去拉了才成立。"**
+
+另一句：**这是同一条教训的第三次 ——
+清单没人用来启动、声明的 stack 没人读、端点没人调。
+记下来：交付的判据是"被用上"，不是"被写出来"。**
+
+---
+
+## §103　M65 · 那一列终于有人读了
+
+### 103.1　洞 234 的收尾
+
+M48 给 `executions` 加了 `cancellation_reason` / `cancellation_by`，
+**并且真的写入了**（真库上验过，017 的 CHECK 也在拦）。
+然后 M49 把它登记为洞 234：**没有任何路径读它**。
+
+按 M64 刚冻过的那条判据（**交付的判据是"被用上"**），
+光写进库不算落地。这是本项目第四次栽在同一个坑，也是最后一处：
+
+| | 写了什么 | 谁在用 |
+|---|---|---|
+| M59 | 清单 | **没人用来启动** → M60 |
+| M61 | 声明的 `stack` | **没人读** → M62 |
+| M61 | `GET /agents` | **页面没调** → M64 |
+| M48 | 取消归因列 | **没人读** → M65 ← 本轮 |
+
+### 103.2　出口
+
+    GET /runs/{run_id}/executions
+    python -m apps.cli executions <run_id>
+
+实测（真服务）：
+
+    {"execution_id": "exec_5cbc...", "status": "CANCELLED",
+     "cancellation_requested": true,
+     "cancellation_reason": "who stopped me",   ← 写进库的那句话，现在读得出来
+     "cancellation_by": "alice"}
+
+### 103.3　一处刻意的取舍：不给 executions 加 run_id 列
+
+`executions` 表没有 `run_id`。查"这条 Run 手上有哪些 Execution"要中转：
+
+    executions.task_id → tasks.task_id → tasks.run_id
+
+刻意**不**为此给 `executions` 加一列 `run_id` ——
+那会在两处存同一个事实，改一处漏一处就对不上（B-7）。
+这条 JOIN 已经能回答这个问题（M48 时验过能查出归因行）。
+
+### 103.4　两条边界
+
+1. **没配查询器 → 空列表，不是 404**："这条 Run 手上有哪些 Execution"
+   是查询语义，空集不是错误（与 `list_approvals` 同一条判据）。
+2. 查询器由**组合根**注入 —— service 层不 import 任何数据库客户端。
+
+### 103.5　变红验证（3/3）
+
+| 变异 | 红了 |
+|---|---|
+| 把 `run_id` 弄丢（传给查询器别的 id） | 1 条 |
+| 空列表变成 404（把查询语义当错误） | 3 条 |
+| 不再回显 `run_id` | 1 条 |
+
+### 103.6　冻结
+
+> 上一轮冻结的是"端点写完了不算落地，有人调它才算"。
+>
+> 这一轮冻结的是：**"一列数据如果没人读，它就只是一份没人看的日记。
+> 写进去只是完成了一半 —— 另一半是让人问得到。"**
+
+另一句：**这是"写了没用上"的第四次，也是最后一次。
+四次里我每次都在里程碑行写着"它能 X"，却没有一条代码路径真的触发 X。
+教训已经刻进骨头里了：写之前先问"谁会调它"。**
+
+---
+
+## §104　M66 · 两种实现，一种行为
+
+### 104.1　起点是一个覆盖缺口
+
+M47 给 `run_cancellations` 加了三个事件（requested / settled / abandoned），
+有 9 条单测 —— 但都在 `InMemoryRunCancellationStore` 上。
+
+按本会话主线（S-4 / S-15 / A-11 / E-25 / PR-3 五条保证都在真库上验过），
+这一条也不该只停在内存。于是补真库验证。
+
+### 104.2　补的时候抓到一个真 bug
+
+测试写下去，红了一条：
+
+    已经结掉的意图再请求：不复活就不该再发事件
+    AssertionError: 3 != 2
+
+**PG 版 `request()` 无条件发事件**，而意图已 settled / abandoned 时：
+
+- `INSERT ... ON CONFLICT DO UPDATE WHERE settled_at IS NULL AND abandoned_at IS NULL`
+- WHERE 不满足 → **那一行根本没被改动**（`rowcount = 0`）
+- 但事件照样发了
+
+内存版（`InMemoryRunCancellationStore`）这种情况**是不发的**
+（M47 的 `test_duplicate_request_does_not_emit` 守着）。
+
+于是审计流里会多出一条假的"又有人要求取消了一次" ——
+而那条意图其实纹丝未动。
+
+### 104.3　修法与理由
+
+    if cur.rowcount == 1:
+        emit(...)
+
+`rowcount = 1` 才表示"这一行真的变了"。
+
+**为什么必须两种实现同源（B-7）**：一个 store 有两种实现是常态
+（内存给单测、PG 给生产）。若只有一种实现里成立，
+那条保证在生产上就是**不成立的** ——
+而单测全绿会让人以为它成立。这正是"只用替身验过"的代价。
+
+这个 bug 只有在真库集成测试补上来之后才暴露，正好印证了补这一层的价值。
+
+### 104.4　顺带学到的两条真实行为
+
+写测试时我最初的期望是错的，真库把它们教回来了：
+
+- **已 settled 的意图不会 abandoned**（R-8 / R-11 不复活）—— 不是"三条事件齐全"，
+  而是按结局二选一：停了 → settled，没等到 → abandoned。
+- 已结掉的意图再 `request`：不复活，**也不发事件**。
+
+### 104.5　变红验证
+
+去掉 `rowcount == 1` 判断（bug 复发）→ **红了 1 条** ✅。
+
+### 104.6　一条本轮定下的操作规范（血泪）
+
+冻结版本号时（`mv` 文档 + 改 `app.py`）**必须在跑测试之前连着做完**。
+
+集成测试会起真 uvicorn 读 `app.py` 的版本，而
+`_frozen_baseline_version()` 从**文档文件名**读。若一边跑测试一边改版本，
+两边不同步 → `test_the_version_it_serves_is_the_frozen_baseline` 红一条
+（`'2.1.53' != '2.1.54'`）。
+
+那个挂了很久的"偶发红"就是这么来的 —— 我猜了三种机制（咨询锁 / 连接泄漏 /
+`terminate` 不 `wait`）全错，抓到完整输出后一眼就明白。
+
+已验证：改完版本号再跑全量 → **0 红条**。
+
+### 104.7　冻结
+
+> 上一轮冻结的是"一列数据如果没人读，它就只是一份没人看的日记"。
+>
+> 这一轮冻结的是：**"一个 Store 有两种实现时，保证只在其中一种里成立，
+> 等于在生产上不成立 —— 而替身全绿会让你以为它成立。"**
+
+另一句：**补真库测试不只是在补覆盖率 —— 它真的能抓到 bug。
+这一轮就是活例子。**
+
+---
+
+## §105　M67 · 账本知道跑过什么
+
+### 105.1　起因：17 份迁移只有一个消费者，而它做的是"从零来一遍"
+
+`infrastructure/postgres/*.sql` 此前唯一的消费者是集成测试，
+用法是 `DROP SCHEMA public CASCADE` 之后把全部文件重放一遍。
+
+那是"每次从零来一遍"，**不是迁移**。于是生产环境三个问题都没有答案：
+
+    第一次上线靠什么建库？        没人管，只能手工 psql 粘贴
+    第二次上线怎么升级？          再粘贴一遍 —— 而 017 是一句裸
+                                  `ALTER TABLE ADD COLUMN`，
+                                  重放第二遍就是 `column already exists`
+    线上到底跑到了哪一版？        不知道，只能连上去看有没有某张表
+
+第三条危害最大：**"线上 schema 是什么版本"没有答案**。
+它一旦没有答案，下面两类事故就都只能靠人肉回忆来排除：
+
+    1. 代码比 schema 新（跑了一段还没上线的 SQL）—— 报"列不存在"
+    2. schema 比代码新（回滚了代码没回滚 schema）—— 静默多出几列
+
+### 105.2　形状：它不报错，它只是让人只能靠回忆
+
+这不是一个会崩的洞。库建好了、服务起来了、集成测试全绿 ——
+唯一缺席的是"下次上线该怎么办"这件事的答案，
+而它缺席的方式是**安静**：没有任何一条告警会说"我不知道库在哪一版"。
+
+### 105.3　不变量 O-1 ~ O-4
+
+**O-1　记"哪些已应用"，不改写历史 SQL。**
+两条路都能让第二遍跑得通：把 17 个文件全改写成 `IF NOT EXISTS`，
+或者记下哪些已经跑过。选后者。理由是前者**篡改历史**：
+
+    已经上线的迁移是不可变的事实 —— 它在某一天被真的执行过，
+    产出的列定义就是那一句 SQL 写的那样。把它改写成幂等形式，
+    等于宣称"它一直都是这样"，于是线上库与文件**首次分叉**。
+
+更实际的：`IF NOT EXISTS` 治不了"部分失败"。
+一句 ALTER 跑到一半失败时，它帮不上忙 —— 仍然需要知道"它到底跑没跑成"。
+
+**O-2　已上线的迁移被改动 → 点名拒绝，绝不重放。**
+改过的迁移进 `drifted`，**不进 `pending`**。进错了，一次"改了历史文件"
+就会变成一次"上线失败"，而报错说的是 `column already exists` ——
+排查方向从一开始就错了。拒绝时点名 + 给出两个指纹（应用的 / 磁盘上的），
+让人能直接 diff，而不是只看见"有个文件不对"。
+
+**O-3　迁移与记账同一事务。**
+17 个文件里 8 个自带 `BEGIN/COMMIT`、9 个不带。若在 autocommit 下执行原文，
+自带的那 8 个会在**自己的**事务里提交，于是"改库"与"记一笔已应用"
+落在两个事务里 —— 中间崩一次就留下"库改了、账上没记"的账实不符，
+而这是整套系统最忌讳的形态。剥掉首尾（只有成对才剥；中间的 `COMMIT;`
+是作者有意分段，替他合并是另一种篡改），由迁移器统一放进同一个事务。
+
+**O-4　并发迁移用会话咨询锁，不是事务锁。**
+两个 Pod 同时跑 migrate Job 时后一个排队。刻意用
+`pg_advisory_lock`（会话）而非 `pg_advisory_xact_lock`（事务）：
+每条迁移都要 `commit()` 一次，而事务锁在每次 commit 时释放 —— 那等于没锁。
+
+### 105.4　真 PG 验了什么
+
+`tests/integration/test_migrate_real_pg.py`（7 条）在真 PostgreSQL 上，
+第一条是地基：**证明裸重放是不行的** ——
+`017` 已经在 `real_pg()` 里跑过一次，再跑就是 `already exists`。
+这条把"为什么要有一张账本表"从设计文档里的一句话，变成了一个每天被验证的事实。
+
+其余覆盖生产真正会遇到的四种处境：
+
+    首次上线（空库）      17 条全应用，且业务表真的在（不是"过程没报错"）
+    已最新               第二次 `apply` 无副作用 —— 上线脚本被跑了两遍
+    落后                 只补尾部，已跑过的不许重放
+    历史被改             拒绝（MIGRATION_DRIFT），且库**一下都不许动**
+
+另外两条是边界：`check` 在真空库上**不建表**（一个"看一眼"的命令不该有
+写副作用）；第二个迁移器**拿不到锁**。
+
+### 105.5　变红验证（5/5）
+
+| 变异 | 红了 |
+|---|---|
+| 改过的迁移当成待应用（drift → pending） | 3 条 |
+| 不剥 BEGIN/COMMIT（迁移与记账分两个事务） | 1 条 |
+| 指纹退化成长度（改一个字看不出来） | 2 条 |
+| `apply` 不再拒绝 drift（篡改历史照跑） | 1 条 |
+| 迁移锁拿成释放（两个 Pod 同时改库） | 1 条 |
+
+### 105.6　空洞编号表
+
+| # | 形状 | 处置 |
+|---|---|---|
+| **235** | P2 | `apps/migrate` / `apps/probe` 已落地并接进 K8s，但基线停在 M66 —— **代码跑在文档前面**（M68 的引用已出现在 `apps/_bootstrap.py` 里）。本轮回写闭合 |
+
+### 105.7　冻结的是什么
+
+> 上一轮冻结的是"两种实现只在其一成立 = 在生产上不成立"。
+>
+> 这一轮冻结的是：**"每次从零来一遍"不是迁移。
+> 一个不知道自己跑到哪一版的库，把所有升级事故都变成了靠人肉回忆。**
+
+另一句：**改一个已经上线过的迁移文件，等同于篡改账本里的旧页。
+它在有 Outbox 与审批账本的系统里不是"小改动"。**
+
+---
+
+## §106　M68 · 活着不等于能干活
+
+### 106.1　起因：编排层眼里，卡死的进程和健康的进程是同一种状态
+
+M67 让"库在哪一版"有了答案，但一个更基本的问题仍然没有答案：
+**这个进程现在还活着吗、它能干活吗**。
+
+在此之前 `deploy/k8s/*.yaml` 里没有任何探针，
+于是 K8s 只能看"容器在不在" ——
+一个卡死的进程和一个健康的进程，在编排层眼里是同一种状态。
+
+### 106.2　要害：两种红必须分得开
+
+    ·  ·  库挂了    → ready 红、live 绿   摘流量，别杀（杀了也连不上）
+    ·  ·  进程卡了  → live 红            重启（新进程能重新连库）
+
+合成一个结果，这两种情况就被迫得到同一种处置，
+而"一律重启"在库挂掉时会让**八个进程一起 CrashLoopBackOff**。
+所以 `apps/probe` 给两个子命令（`live` / `ready`），不是给一个带参数的。
+
+配套的是 `/readyz` 端点：**没配探针时返回 503，不是 200**。
+200 是"可以放流量进来"，说不出依据的 200 比 503 危险得多 ——
+一个"没配就绪探针"的服务不该被当成就绪的。
+
+### 106.3　不变量 O-5 ~ O-9
+
+**O-5　存活与就绪是两个问题，各有各的端点。**
+`/health` 只回答存活，不许顺手把就绪也答了（PR-8 的分界不能被抹掉）。
+
+**O-6　没配就报不健康，不静默通过。**
+`check_live("")` 与 `check_ready("")` 都返回 `ok=False`，
+且 `detail` 里点名该配哪个环境变量 —— 默认 200 会让八个容器的
+liveness 全是摆设，而它不报错。
+
+**O-7　心跳只在完整跑完一轮之后跳。**
+一轮都跑不完，就不算在往前走。失败的那次**不许**跳。
+（这条用例刻意用 `_tick_once` 而不是 `run()`：后者开头会先跳一次启动那下，
+那一下会把"失败没跳"盖住，于是用例永远绿 —— 不管 `_beat()` 是不是被
+错误地放进了失败分支。这是"因为掩盖才通过"的一种形状。）
+
+**O-8　探针必须关连接。**
+探针每 10 秒跑一次，漏一次关闭就是一个慢慢漏光的连接池。
+`finally` 里关，查询失败也要关。
+
+**O-9　liveness 阈值必须严格大于每一个进程的 `max_idle_sleep`。**
+这条是被一次真实的 CrashLoop 打出来的：
+
+    阈值一度写成 30.0，而 `cancellation_sweeper` 与
+    `run_cancellation_sweeper` 的 `max_idle_sleep` 恰好也是 30.0。
+    于是空闲时心跳刚好卡在阈值上，两个 sweeper 进入
+    "起来 → 空转 → 判死 → 重启"的循环，日志里每条都是
+    `signal ticks=42 work=0` —— 一个**正常退出**的进程被反复重启，
+    而没有任何一条日志指向探活。
+
+取 90.0 = 最大退避（30 秒）的 3 倍：一轮慢查询 + 一次 GC 停顿都吃不掉这个余量。
+这条约束由测试**扫源码**看着（把 `apps/*/app.py` 里的 `max_idle_sleep`
+都扫出来比大小）：以后谁把某个进程的退避调到 90 秒以上，那条测试会红。
+并配一条控制组用例（扫不到东西的话，下一条是"因为空集合才通过"的）。
+
+### 106.4　它真的被用上了
+
+    deploy/k8s/04-api.yaml        initContainer: python -m apps.migrate apply
+    deploy/k8s/05-background.yaml 同上 ×3，liveness/readiness 各挂 `apps.probe`
+    deploy/Dockerfile             HEALTHCHECK: python -m apps.probe live
+
+按 M64 那条判据（**交付的判据是"被用上"**）：
+迁移器与探针都不是"能跑"而已 —— 部署清单里真的有人在调它们。
+
+### 106.5　变红验证（5/5）
+
+| 变异 | 红了 |
+|---|---|
+| 阈值降到与退避相等（空闲进程被判死 → CrashLoop 复发） | 1 条 |
+| 过期心跳当新鲜（live 永远绿） | 2 条 |
+| 连不上库却报活着（ready 说谎） | 1 条 |
+| 探针漏关连接（每 10 秒漏一个） | 1 条 |
+| 没配探针时 `/readyz` 返回 200 | 1 条 |
+
+### 106.6　空洞编号表
+
+| # | 形状 | 处置 |
+|---|---|---|
+| **235** | P2 | 已落地的能力没回写基线（见 §105.6） | **本轮闭合** |
+| **236** | P2 | `python -m apps.migrate` / `apps.probe` 只有 `__main__` 入口，**没有 CLI 子命令** —— 与 M50 定的九条子命令不是同一套入口。登记：两条命令的调用方是编排层（K8s / Dockerfile），不是人；若将来人也要用，应补进 `apps.cli` 而不是另立门户 |
+
+### 106.7　冻结的是什么
+
+> 上一轮冻结的是"每次从零来一遍不是迁移"。
+>
+> 这一轮冻结的是：**"容器在不在"回答不了"它能不能干活"。
+> 存活与就绪合成一个答案，就等于让每一种故障都得到同一种处置。**
+
+另一句：**一个被判死的进程，日志里写的却是"正常退出" ——
+那次 CrashLoop 里没有任何一行提到探活，
+而排查方向是由"日志里出现了什么"决定的。**
+
+---
+
+## §107　M69 · 一个镜像，八个入口
+
+### 107.1　起因
+
+八个进程（api / worker / outbox_publisher / cancellation_sweeper /
+run_cancellation_sweeper / wakeup_controller / recovery_controller /
+child_run_consumer）的**代码完全一样**，不一样的只是入口模块。
+
+最省事的写法是八个 Dockerfile。本轮刻意不这么做：
+
+    八个镜像 = 八个构建、八份版本号，以及
+               "这八个镜像是不是同一份代码"这个
+               每次上线都要重新回答的问题
+    一个镜像 = "跑的是哪份代码"只有一个答案
+
+### 107.2　两条反例
+
+都是"看起来更专业、实际更容易失败"的选择：
+
+    slim 而非 alpine      `psycopg[binary]` 只发了 manylinux wheel（glibc）。
+                          alpine 是 musl，装它会退化成源码编译 ——
+                          需要 gcc + libpq-dev，镜像反而更大。
+                          换来的是**一个更容易失败的构建**和一份更小的数字。
+
+    非 root               容器里的进程能写的东西越少越好。这条不是合规表演：
+                          八个进程都拿着数据库连接串，一旦被注入，
+                          root 意味着能改镜像里的代码。
+
+### 107.3　冻结
+
+> 上一轮冻结的是"容器在不在回答不了它能不能干活"。
+>
+> 这一轮冻结的是：**"跑的是哪份代码"只许有一个答案。
+> 八个镜像不是八个进程，是把一个版本号拆成八个需要人工对齐的版本号。**
+
+---
+
+## §108　M70 · 八个进程，其中两个停着
+
+### 108.1　`replicas: 0` 是被看见的答案
+
+`deploy/k8s/` 下八份清单里，依赖 Kafka 的两个是 **`replicas: 0`**：
+
+    outbox_publisher      把 Outbox 里的事件投递到 Kafka
+    child_run_consumer    消费 `child_run.completed`，唤醒挂起的父 Run
+
+刻意**不**删掉这两份文件：
+
+    删掉的话，`kubectl get deploy` 里只剩六个进程，
+    而架构文档写的是八个 —— 于是"另外两个去哪了"变成一个
+    需要靠口头传承才能回答的问题。
+
+**0 副本是一个能被看见的答案**：它就在那里，它写着它为什么不跑，
+而且 `kubectl get deploy` 会把它列出来（0/0）。
+
+### 108.2　为什么不顺手起一个 Kafka
+
+起了容器不等于闭合依赖：
+
+    1. 这两个进程要的不只是"一个 broker 地址"，它们要的是一条
+       **真的能把事件投递出去**的链路 —— 包括 topic、消费组、
+       以及"投到一半崩了怎么办"（PR-3 投递领地）。
+    2. 更关键的是 `child_run_consumer` 的语义：它消费一个事件去
+       **唤醒父 Run**。这条链路只在"真的有一对父子 Run 跑过去"时才成立，
+       空起一个 broker 证明不了任何事。
+
+### 108.3　配置不打进镜像
+
+两份 TOML 内嵌在 ConfigMap 里，不是 `COPY` 进镜像：
+
+    改配置不该需要重新构建 —— 重新构建会把
+    "现在线上跑的是哪份代码"和"现在线上跑的是哪份配置"
+    耦合在一起。
+
+### 108.4　冻结
+
+> 这一轮冻结的是：**删掉一个还没启用的进程，等于把"它去哪了"
+> 从一个能被看见的事实变成一个需要口头传承的记忆。**
+
+---
+
+## §109　M71 · 只有一处知道 DSN
+
+### 109.1　它是被一次真实部署逼出来的
+
+`python -m apps.migrate apply` 在集群里报的是：
+
+    NO_DSN: empty dsn; set AGENTOS_PG_DSN or pass --dsn
+
+而那份 Pod 里清清楚楚挂着 `AGENTOS_MANIFEST=/etc/agentos/agentos.toml`，
+清单里写着 `storage.pg_dsn`。
+
+原因是迁移器自己去找了 `AGENTOS_PG_DSN` 环境变量 ——
+于是"这一次部署的配置"有了**两个来源**：清单和环境变量。
+而清单模式的定义就是"清单是唯一声明源"（`RuntimeConfig.from_env`），
+迁移器与探针绕过了它，成为这条规矩上的两个缺口。
+
+### 109.2　形状：它不报错，它报成功
+
+这是本轮最要紧的一处。后果不是崩溃，是：
+
+    清单里改了 DSN，迁移器读的是环境变量 → 它连到旧的那个库上，
+    把迁移应用到**另一个**库，然后报 "up to date"。
+    一次看不出任何问题的成功。
+
+这正是 M60 冻过的那条：**"改了配置却没生效"是最难发现的一类错**，
+因为系统全程绿。
+
+### 109.3　优先级
+
+    --dsn（命令行）    > 清单（$AGENTOS_MANIFEST） > $AGENTOS_PG_DSN
+
+命令行最高，是人对"我显式指定了"的期待。
+
+清单高于环境变量，与 `RuntimeConfig.from_env()` **完全一致**：
+清单模式是"这次启动只认这一个来源"，不是"清单再叠加一层环境变量"。
+两者顺序必须一致 —— 否则"同一个进程里 bootstrap 连 A 库、
+迁移器连 B 库"这种事就**没有任何机制能阻止它发生**。
+
+### 109.4　冻结
+
+> 上一轮冻结的是"删掉未启用进程 = 把事实变成记忆"。
+>
+> 这一轮冻结的是：**两个来源的后果不是崩溃，是一次看起来完全正常的成功。
+> 一个连到旧库上、把迁移应用到另一个库、然后报 up to date 的迁移器，
+> 比一个报错的迁移器危险得多。**
+
+另一句：**同一个进程里两个组件连不同的库，
+这件事没有任何机制能阻止 —— 除非"DSN 从哪来"只有一个答案。**
+
+---
+
+## §110　M73 · 推进之后必须落一个可恢复点
+
+### 110.1　真实部署里看到的现象
+
+    · 一条 Run 通过 API 推进到 `completed`
+    · api Pod 重启（滚动更新 / 探活重启 / 节点漂移）
+    · 再查它：状态是 `created`，还挂着一个已经 approved 的审批
+
+### 110.2　原因
+
+`InProcessControlPlane.step_run / drive_run / cancel_run` 只在**内存**里推进，
+从不落快照；而后台进程走的 `RunDriver.drive()` 每次推进都落。
+
+于是持久化只在后台那条路径上成立 ——
+而线上绝大多数 Run 恰恰是**通过 API 推进**的。
+
+### 110.3　形状（重要）
+
+这个洞在"进程不会死"的环境里**永远不会被发现**。
+它只在进程真的会死的地方出现：**Kubernetes**。
+
+这也是为什么"重启"在测试里必须模拟成**换一个 ControlPlane 实例、
+只共享存储**：共享了任何内存对象就等于"进程没死"，
+那条用例会永远绿 —— 不管有没有人落快照。
+这正是它此前没被发现的原因。
+
+### 110.4　一处 B-7
+
+快照的 `reason` 必须说出停在哪（`driven: run stopped at …`），
+写成 `driven` 等于什么都没说（PR-19）。
+而且 HTTP 推进与后台推进用的是**同一句话** ——
+两种写法的同一件事，在运维眼里会变成两种不同的推进来源。
+
+### 110.5　冻结
+
+> 上一轮冻结的是"两个来源的后果是一次看起来正常的成功"。
+>
+> 这一轮冻结的是：**持久化只在后台那条路径上成立，
+> 而线上绝大多数 Run 走的恰恰是另一条。
+> 这类洞在本地永远测不出来 —— 进程不会死的地方，它不存在。**
+
+---
+
+## §111　M74 · 终态 Run 查得到，只是推不动
+
+### 111.1　起因：一条正确的规则被用在了错误的动词上
+
+`_recover()` 让 R-3（终态不可恢复）一路抛上来。那对**推进 / 取消**是对的：
+
+    它们要 409，意思是"这条已经结束了，别再动它"。
+
+但对 `GET` 不是：
+
+    查一条已经完成的 Run 得到 409，表达的是"这个操作不被允许"，
+    而调用方问的只是"它现在是什么状态" ——
+    于是人以为这条 Run 出了事，去查一个根本没问题的地方。
+
+### 111.2　形状：它在 Kubernetes 里是**每一次**
+
+Pod 重启之后内存里没有这条 Run，
+于是**每一次**"查我昨天跑完的那条"都会撞上这条分支。
+
+不是偶发，是必现 —— 只要进程会重启，它就是常态。
+
+### 111.3　出口与一处刻意的取舍
+
+从快照读出终态 Run 的样子：`run_id` / `agent_id` / `status` / `step_count`
+—— 它们在快照里，说得出就说。
+
+刻意**不**编造 `waiting_for` / `pending_approval`：
+
+    终态 Run 什么都没在等，说它在等谁就是谎报。
+
+这条与全项目那条主线是同一条：**宁可少说，不许编造。**
+返回的信息不完整是可接受的（调用方看 `status` 就知道完了），
+编一个不存在的 `waiting_for` 会把排查引到完全错误的方向。
+
+### 111.4　冻结
+
+> 上一轮冻结的是"持久化只在后台那条路径上成立"。
+>
+> 这一轮冻结的是：**同一个事实对不同的动词有不同的正确答案。
+> "推不动"是对的，"查不到"不是 —— 后者把"它已经结束了"
+> 说成了"它出了事"。**
+
+---
+
+## §112　M75 · 部署清单也要有人检查
+
+### 112.1　起因：那一整套资产此前零测试
+
+M69 / M70 把镜像与八份 K8s 清单都摆出来了。但它们引用的东西，
+**没有一条断言要求它们成立**：
+
+    python -m apps.migrate        改个名就失效，而失效的方式是
+                                  initContainer 起不来 → Pod 卡在 Init:0/1，
+                                  日志里说的是别的
+    examples.demo_stack:build_... 函数改名同样静默
+    ConfigMap 内嵌的 TOML         与 deploy/config/*.toml 是同一份声明的两处（B-7），
+                                  改一处漏一处就对不上，没有任何机制会发现
+
+最后一条最要紧：M59 给 TOML 做了 `manifest check`，M60 让它能启动服务，
+**但 `deploy/config/agentos.toml` 从来没有被执行过那个 check** ——
+"集群里那份部署声明是不是合法的"此前没人问过。
+
+### 112.2　新增 `tests/unit/test_deploy_manifest.py`（14 条）
+
+    ·  `python -m apps.X` 引用的模块真的有 `apps/X/__main__.py`
+    ·  `module:attr` 形式的 provider 都能 import，且属性真的有
+    ·  ConfigMap 内嵌的 TOML 与 `deploy/config/*.toml` **语义相等**
+    ·  集群那份声明过得了 M59 的 check，且心跳 < 租约（否则启动就死）
+    ·  `replicas > 0` 的 agentos 进程都有 `livenessProbe`（M68 的部署侧）
+    ·  心跳文件在哪只声明一处（B-7）
+    ·  Dockerfile COPY 的源路径真的存在
+    ·  镜像 tag 说的版本 == 服务对外报的版本（B-7）
+    ·  **控制组**：先证明扫描器扫得到东西
+
+控制组那条不是凑数：扫文本（本机没有 pyyaml，与 M68 那条同源）
+的代价是脆，**扫不到东西时下面每一条都是"因为空集合才通过"的**。
+
+### 112.3　一个刻意的边界
+
+**不**断言 `06-kafka-dependent.yaml` 必须挂 readiness。
+那两个进程 `replicas: 0`，且是后台消费者 ——
+没有 Service，readiness 只影响 endpoints，对它没有意义。
+只要求**真在跑的** agentos 进程有 liveness。
+
+### 112.4　补的时候当场抓到的一处漂移
+
+最后一条（镜像 tag）**写下去就是红的**：
+
+    AssertionError: '2.1.55' != '2.1.63'
+    deploy/ pins agentos:2.1.55-b3 but the service reports 2.1.63
+    — the cluster would run a build nobody can name
+
+`deploy/k8s/` 下 **14 处**写着 `agentos:2.1.55-b3`，而服务已经报到 2.1.63。
+它不是"少了个功能"，是**"线上跑的是哪个构建"这个问题有了两个答案**，
+而且**每次冻结基线都会再漂移一次** —— 除非有东西盯着。
+
+修法是更新那 14 处 tag，并留下这条测试：以后每次冻结，
+忘了同步 tag 就会红。（这与 M66 那次是同一件事：
+**补真库测试 / 补清单测试不只是在补覆盖率，它真的能抓到东西。**）
+
+### 112.5　变红验证（7/7）
+
+| 变异 | 红了 |
+|---|---|
+| 把 migrate 入口改个名 | 1 条 |
+| provider 的函数名写错 | 2 条 |
+| ConfigMap 与源文件分叉 | 1 条 |
+| 摘掉一个真在跑的进程的 liveness | 1 条 |
+| 心跳路径声明两处 | 1 条 |
+| Dockerfile COPY 一个不存在的路径 | 1 条 |
+| 镜像 tag 退回上一个版本 | 1 条 |
+
+**第一轮跑的时候只红了 4/6** —— 另外两条没红，
+而那两条恰恰是本轮最值钱的部分：**变异没红，说明漏在测试自己身上，不在被测代码上。**
+
+| 漏洞 | 为什么它不红 |
+|---|---|
+| 入口正则写成 `apps\.([a-z_]+)` | 不含数字。`apps.migrate_v2` 匹配到 `migrate_v` 后要求紧跟引号，撞上 `2` 就整条失配 → **改名扫不出来** |
+| 心跳检测只认 `AGENTOS_HEARTBEAT_FILE=` | 只认 Dockerfile 的 `ENV` 形式，认不出 K8s 的 `- {name: …}` 形式 → **在 K8s 里再声明一遍扫不出来** |
+
+两条都是"变异了却不红"，也都是**只有变异测试才能逼出来**的：
+测试自己绿的时候，没人会去怀疑 `[a-z_]+` 里少了个 `0-9`。
+
+### 112.6　空洞编号表
+
+| # | 形状 | 处置 |
+|---|---|---|
+| **235** | 代码跑在文档前面（M67~M75 共九个里程碑未回写） | **本轮闭合** |
+| **237** | 部署清单里的 `stack.provider` / `stack.model` / `stack.tool` 指向 `examples.demo_stack` —— **集群跑的是 demo 栈** | **登记不治**：智能层（M12）尚未实现，没有别的东西可指。等 M12 落地时必须回来改这三行，否则"生产跑 demo"会变成默认状态 |
+
+### 112.7　冻结
+
+> 上一轮冻结的是"同一个事实对不同的动词有不同的正确答案"。
+>
+> 这一轮冻结的是：**"声明"如果没人检查，它和没写是一样的 ——
+> 而它失效的方式是静默的：Pod 卡在 Init:0/1，日志里说的是别的。**
+
+另一句：**变异没红的时候，先怀疑测试，不要先怀疑被测代码。
+这一轮 6 条变异里有 2 条没红，两条的漏都在测试自己身上 ——
+而那两个漏（`[a-z_]+` 少个 `0-9`、等号认不出 `name:`）
+在测试绿着的时候没有任何理由被人发现。**
+
+---
+
+## §113　M76 · 重规划是一条真的边
+
+### 113.1　洞的形状：机制齐全，但从没人走过
+
+    packages/agent_domain/intelligence/action.py    REPLAN = "replan"
+    packages/agent_runtime/reducer.py               PLAN_INVALIDATED → current_plan = None
+    packages/agent_runtime/loop.py                  REPLAN → 失效 → StepOutcome.REPLANNED
+    packages/agent_runtime/task_factory.py          REPLAN: None（不产生 Task）
+
+四个文件、一条完整链路。但**没有任何 DecisionEngine 产出它，
+也没有任何测试走过它**。
+
+全仓唯一提到 REPLAN 的用例在 `test_child_run.py` 里，
+而且只是把它当作"普通活不是派生"的一个**控制组枚举值** ——
+它验证的是别的事，顺手拿 REPLAN 当了一个反例。
+
+### 113.2　为什么它不只是"少了个功能"
+
+`packages/agent_domain/business/derive.py` 里写着：
+
+    ·  ·  Agent 下一步可能还要 REPLAN（Step 全绿但目标没达成）
+
+这句话是 **B-7**（Run 的终态只能由 Runtime 声明，不能从 Step 派生）的
+一条论据。也就是说：
+
+    **一条不变量的论据，依赖一个从未被触发的机制。**
+
+这不是"还没做"，是"文档声称的机制其实没接线"。
+而它**不报错**：整条链路编译得过、测试全绿，
+没有任何一条告警会说"这条边没人走过"。
+
+按 A-12 判（丢了之后是变错还是变慢）：B-7 的那条论证是**错的** ——
+它用一个不存在的机制来支撑"Step 全绿 ≠ Run 结束"这个结论。
+
+### 113.3　补的时候抓到的真 bug：重规划不吃预算
+
+把这条边真的走一遍，第一个测试就挂住了 —— 不是断言失败，是**跑不完**。
+
+    packages/agent_runtime/loop.py
+        self.steps += 1        ← 只在"执行完成"那条路径上（1474 行）
+
+REPLAN 分支不经过那里。于是：
+
+    一个一直返回 REPLAN 的 DecisionEngine
+    → 既不产生 Task（task_factory 映射为 None）
+    → 也不产生终态
+    → 也不消耗预算
+    → `steps >= budget` **永远不成立**
+    → Run 永远跑下去，既不终止也不报错
+
+这与 L-7 是同一族病（"一个永远被拒的 Run 会永远空转，且没有任何报错"）：
+
+    **不消耗预算的分支，就是一条可以无限走的分支。**
+
+而 REPLAN 恰恰是唯一一个"既不产生 Task、也不产生终态"的出口 ——
+它是整个循环里最容易变成空转的那一条。
+
+### 113.4　I-10：重规划必须吃预算
+
+    if action.action_type is ActionType.REPLAN:
+        self.steps += 1
+        self._apply_plan_invalidated()
+        return self._record(StepOutcome.REPLANNED)
+
+刻意**不**新增一个 `max_replans` 旋钮（B-7：预算只有一处）。
+预算的语义本来就是"这个 Run 最多往前走几轮"，
+重规划确实往前走了一轮 —— 它只是没有产生 Task。
+
+### 113.5　测试（7 条）
+
+    ·  REPLAN 的 outcome 是 `StepOutcome.REPLANNED`
+    ·  `current_plan` 回到 None（否则下一轮不会重新规划）
+    ·  它经过 Observation，不是 Loop 直接赋值（I-3）
+    ·  **下一轮真的重新规划了**（planner.calls 从 1 变 2）—— 不是只记了个状态
+    ·  一直 REPLAN 的引擎**仍然会终止**（BUDGET_EXHAUSTED）
+    ·  而且不超额：预算 3 就不该跑到第 10 轮
+    ·  控制组：同样的预算下，正常 Run 照样 FINISHED
+
+最后一条不是凑数：上一条要证明"预算会拦住它"，
+**如果预算本来就永远触发，那条用例是白过的。**
+
+### 113.6　一处顺带撞到的不一致（登记为洞 238）
+
+写终止判据时发现：终态看 `agent_run`，**不能**看 `state.runtime_status`。
+
+    reducer.py:81   只有 FINISH 那条路径把 runtime_status 改成 FINISHED
+    预算耗尽        走 `_declare_terminal`，不经过 Observation
+    → State 仍写着 RUNNING，而 Run 其实已经 FAILED
+
+同是终态，State 的待遇不同：FINISH 会留痕给 Intelligence，
+预算耗尽不会。本轮**不治**（它不影响 I-10，且改 loop 的终态语义风险更大），
+登记为**空洞 238**。
+
+### 113.7　变红验证（3/3）
+
+| 变异 | 红了 |
+|---|---|
+| 重规划不吃预算（I-10 复发） | 2 条 |
+| 失效不清空计划 | 2 条 |
+| REPLAN 分支整个不存在 | 6 条 |
+
+### 113.8　空洞编号表
+
+| # | 形状 | 处置 |
+|---|---|---|
+| **238** | 预算耗尽不给 State 留痕：`state.runtime_status` 仍是 `RUNNING`，而 Run 已 FAILED（FINISH 那条路径会改成 FINISHED，两者不一致） | **登记不治**：不影响 I-10；改 loop 终态语义风险更大。将来若 Intelligence 需要读取"我为什么停了"，必须回来补这条 Observation |
+
+### 113.9　冻结
+
+> 上一轮冻结的是"声明如果没人检查，它和没写是一样的"。
+>
+> 这一轮冻结的是：**一条不变量的论据，不能依赖一个从未被触发的机制。
+> REPLAN 写了四个文件、接好了两端，却没有一个人走过它 ——
+> 于是 B-7 的那条论证，其实是空的。**
+
+另一句：**不消耗预算的分支，就是一条可以无限走的分支。
+REPLAN 是循环里唯一一个"既不产生 Task、也不产生终态"的出口，
+所以它是最容易变成空转的那一条 —— 而空转不报错。**
+
+---
+
+## §114　M77 · 带着没被处理的失败，不许宣布完成
+
+### 114.1　探针实录
+
+    loop = …; state = loop.start("boom")
+    engine = ScriptedDecisionEngine([bad_tool_action])   # 用完就 FINISH
+
+    step 1 → StepOutcome.FAILED     runtime_status RUNNING   agent_run running
+    step 2 → StepOutcome.FINISHED   runtime_status FINISHED  agent_run **completed**
+
+而失败的证据就在 State 里：
+
+    state.variables["result:exec_…"] =
+        {'kind': 'execution_failed', 'summary': '… attempt#1 FAILED (failed)'}
+
+**一个关键步骤失败了的 Run，被宣布 COMPLETED。**
+
+### 114.2　为什么这是"说谎"，不只是"少了个功能"
+
+引擎看不见失败 —— 它按脚本走，不看 Observation。
+但**宣布终态的是 Runtime**（B-7），而 Runtime 手上明明握着
+`execution_failed` 这条事实。
+
+于是"这条 Run 成功了"这句话是 Runtime 说的，
+说的时候它知道有一步失败了，只是没核实。
+
+按"宁可拒绝，不许编造"判：它不该说"完成了"。
+它至少应该说"这条计划行不通"（REPLAN），
+或者在真的救不回来的时候说"失败了"（FAILED）。
+
+### 114.3　为什么判据钉在 Loop，不钉在引擎
+
+钉在引擎的话，**换一个笨引擎，谎言就回来了**。
+而 B-7 说终态只能由 Runtime 声明 —— **谁宣布，谁负责核实。**
+
+所以这条判据在 `_advance` 的 FINISH 分支上：
+
+    if action.action_type is ActionType.FINISH:
+        if self._failures_since_last_plan():
+            self.steps += 1
+            self._apply_plan_invalidated()
+            return self._record(StepOutcome.REPLANNED)
+        return self._finish()
+
+### 114.4　I-11：完成前，自上次规划以来不许有未处理的失败
+
+**为什么按"上次规划"划界，而不是数全部失败。**
+
+数全部失败的话，一个"第一步失败、换计划后成功"的 Run
+将**永远**无法完成 —— 失败记录不会消失，它会一直挡在 FINISH 前面，
+直到预算耗尽把它判死。那等于把"可以救回来的失败"也判了死刑。
+
+按规划划界表达的是 REPLAN 的语义本身：
+
+    这份计划下失败了 → 这份计划行不通 → 换一份 → 新计划下重新算
+
+于是"换计划后成功"是能完成的，"换了还是失败"最终会走到 FAILED。
+
+**为什么从 Observation 推，不用一个计数器。**
+
+一个 `self.failures` 计数器在某些恢复路径上会丢（快照重载、进程重启），
+于是"有没有失败过"这个问题在重启前后会给出**不同的答案**。
+从 `state.observations` 推则没有这个问题 —— 它就是事实本身，
+而且它是 I-3 唯一允许进入 State 的那种东西。
+
+### 114.5　它是 I-10 的下游，也是 M76 的第一个生产者
+
+M76 把 REPLAN 这条边修好了（通了、有界了），
+但当时**没有任何引擎会产出它** —— 那条边只是"通了"而已。
+
+这一轮给了它第一个真正的触发条件：**当前这份计划下有失败**。
+于是两轮合起来才构成一个闭环：
+
+    M76  REPLAN 是一条真的边（且吃预算）
+    M77  这份计划下失败了 ⇒ 走那条边
+
+而 I-10 保证这个闭环不会变成空转：
+一直救不回来的 Run 会在预算耗尽时走到 **FAILED** ——
+它唯一不会变成的那个状态是 `completed`。
+
+### 114.6　测试（5 条）
+
+    ·  失败之后 FINISH → REPLANNED，**不是** FINISHED（探针那条）
+    ·  控制组：失败确实进了 State（判据有没有东西可看）
+    ·  **换计划之后的成功仍然被允许**（否则 I-11 就把可救的失败也判死了）
+    ·  一直失败的 Run 走到了 **failed**，不是 completed
+    ·  控制组：没有失败时 FINISH 照旧完成
+
+最后一条不是凑数：上一条要证明"失败会被拦住"，
+**如果 FINISH 本来就被无条件挡着，那条用例是白过的。**
+
+### 114.7　变红验证（2/2）
+
+| 变异 | 红了 |
+|---|---|
+| I-11 不存在（失败后照旧宣布完成） | 3 条 |
+| 数全部失败而不是自上次规划以来（换计划也救不回来） | 1 条 |
+
+第二条是本轮**第二要紧**的一条：它证明"按规划划界"这个设计决定
+真的被一条测试区分开了 —— 换成"数全部失败"，
+"换计划后成功"那条用例立刻红。
+
+### 114.8　冻结
+
+> 上一轮冻结的是"一条不变量的论据，不能依赖一个从未被触发的机制"。
+>
+> 这一轮冻结的是：**"这条 Run 成功了"这句话是 Runtime 说的 ——
+> 谁宣布，谁负责核实。手上握着 `execution_failed` 还说 completed，
+> 不是漏了一个功能，是说了假话。**
+
+另一句：**REPLAN 这条边修好之后一直没人走；
+这一轮它终于有了第一个触发条件 —— 失败。
+于是"换一条路"不再是一句设计文档里的话，而是系统在撞墙之后真的会做的事。**
+
+---
+
+## §115　M78 · 重规划必须真的换一份计划
+
+### 115.1　探针实录
+
+M77 落地之后，去问了一句"重规划换来的那份计划长什么样"：
+
+    #0: plan_id=plan_53a5…  shape=(('n0','step-0','task'), ('n1','step-1','task'))
+    #1: plan_id=plan_7bd2…  shape=(('n0','step-0','task'), ('n1','step-1','task'))
+    两份计划的形状一样吗： True
+
+`plan_id` 每次都是新的（`new_id()`），所以**从对象上看每次都"换了计划"** ——
+但节点一个没变，那条路还是那条路。
+
+### 115.2　它把上一轮的 I-11 洗白了（本轮最要紧的一处）
+
+    step 1  坏工具 → FAILED
+    step 2  I-11 拦下 FINISH → REPLANNED
+    step 3  重新规划（拿到形状相同的计划）→ FINISH → **completed**
+
+I-11 的判据是"自上次规划以来有没有失败"，而重规划之后那个计数归零。
+于是：
+
+    **一个失败过的 Run，多花一轮重规划就又"成功"了。**
+
+也就是说，M77 那条不变量，被 M77 自己引入的机制绕了过去。
+这是本轮最值得记的一点：**一条不变量刚落地，就可能被它自己引入的
+机制绕过去。** 补完 I-11 之后，值得再问一句"它现在还能被绕过吗" ——
+这一轮的答案就是"能，而且很容易"。
+
+### 115.3　I-12
+
+    重规划必须产出一份**形状不同**的计划。
+    换不出来 → 不许继续（判 FAILED），而不是拿同一份计划再撞一次墙。
+
+判据比**形状**不比对象：
+
+    plan_id  每次 `new_id()`，必然不同 —— 比对象等于宣布"每次都换了"
+    形状     (node_id, name, kind) + constraints —— 这才是"走哪条路"
+
+也不比 `metadata`：那是 Planner 自己带的东西，不是"走哪条路"的一部分。
+
+### 115.4　为什么是 FAILED 而不是"再试一次"
+
+"再试一次"正是当前的行为，而它做的事是：拿同一份计划，撞同一堵墙。
+那不是重规划，那是**把失败重复 N 遍直到预算耗尽**。
+
+按"宁可拒绝，不许编造"判：想不出新办法就应该说"想不出来"（FAILED），
+而不是假装"我又想了个办法"。
+
+### 115.5　顺带修掉的一个测试设计问题
+
+I-12 加上之后，M76 那两条 I-10 用例（"一直重规划的 Run 会不会停"）
+会先被 I-12 判死 —— 于是**那两条用例测的是 I-12，不是 I-10**。
+
+改成 `VaryingPlanner`（每轮给一条不同的路）之后它们才重新在测 I-10。
+
+> **测试也要问一句"它到底在测哪条不变量"。**
+> 一条用例绿着，不代表它守着它以为自己在守的东西。
+
+### 115.6　测试（5 条）
+
+    ·  换汤不换药 → 第二次规划时判 FAILED（不是再撞一次）
+    ·  而且**在第二次规划时**就拒绝，不是等预算烧完
+    ·  它唯一不会变成的状态是 completed
+    ·  真的换了路 → 允许继续（I-12 不该把可救的 Run 也判死）
+    ·  控制组：每份 Plan 的 `plan_id` 本来就不同 —— 所以"比对象"是无效判据
+
+第二条值得单说：它一开始**没有**这条断言，于是去掉 I-12 之后这条用例
+仍然绿（它靠预算兜底判死）。看起来在守着 I-12，其实什么都没守。
+补上"必须在 3 轮内结束"之后它才真的红。
+
+### 115.7　变红验证（2 变异 × 2 条）
+
+| 变异 | 红了 |
+|---|---|
+| I-12 不存在（换汤不换药也放行） | 2 条 |
+| 比 `plan_id` 而不是比形状 | 2 条 |
+
+### 115.8　冻结
+
+> 上一轮冻结的是"这条 Run 成功了这句话是 Runtime 说的 —— 谁宣布，谁负责核实"。
+>
+> 这一轮冻结的是：**"换了一条路"不等于换了一条路。
+> 拿同一份计划再撞一次墙，不是重规划，是把失败重复 N 遍。**
+
+另一句：**一条不变量刚落地，就可能被它自己引入的机制绕过去。
+I-11 是上一轮写的，这一轮就被 I-11 自己的 REPLAN 洗白了 ——
+补完一条不变量之后，值得再问一句"它现在还能被绕过吗"。**
+
+---
+
+## §116　M79 · 终态必须带上原因
+
+> 上一轮冻结的是：*换了一条路*不等于换了一条路。
+> 这一轮冻结的是：**一条宣布结束的记录，必须说清为什么结束。**
+
+### 116.1　探针：两条死法，同一份记录
+
+M78 冻完之后去问了一句"一个 FAILED 的 Run，账本说得出它是怎么死的吗"。
+造两个 Run，让它们死于**完全不同的原因**，然后只读账本：
+
+    === A budget exhausted ===
+      status : failed
+      history: ['failed', 'failed', 'budget_exhausted']
+      run.finished | {'status': 'failed'}
+
+    === B replan produced nothing new ===
+      status : failed
+      history: ['replanned', 'failed']
+      run.finished | {'status': 'failed'}
+
+    两份 payload 一样吗： True
+
+`history` 里那两个不同的 `StepOutcome` 是内存的，不是账本的。
+
+### 116.2　难堪的地方：这是自己打自己脸
+
+`_declare_terminal` 的 docstring 原话是：
+
+> Trace 里的这条 `run.finished` 是"谁宣布了这个 Run 结束"的**唯一证据** ——
+> 下层没有任何一条记录会说 Run 结束了。
+
+而那条**唯一证据里恰恰没有最关键的那个字：为什么**。
+
+把 FAILED 收成一个出口是对的（S-7：补偿挂在这里才不会漏掉一个
+"失败却不清理"的 Run）。代价是**四种不同的死法从这里出去之后长得一模一样**：
+
+| 出口 | 真正的死因 |
+|---|---|
+| 预算耗尽 | `steps >= budget` |
+| 换不出新计划 | I-12：形状与刚作废的那份相同 |
+| 连续被拒 | L-7：一直提出 Harness 不批的动作 |
+| 外部叫停 | B-8：`cancel(by=..., reason=...)` |
+
+### 116.3　运维手上没有第二条线索
+
+有人会说：`loop.last_outcome` 不是分得清 `budget_exhausted` / `deny_loop` /
+`failed` 吗？分得清 —— 但那是**内存里的字段**：
+
+- `RunSnapshot` 里没有 `history`，也没有 `last_outcome`；
+- 快照的 `reason` 是 `driven: run stopped at {outcome}`，
+  那是**恢复点**的备注，不是审计记录；
+- 进程一死，内存里的那份就没了。
+
+而运维排障读的是账本（`GET /runs/{id}/trace`、CLI 的 `trace`、控制台的
+trace 视图 —— 三处读的都是同一份 `RunTrace`）。
+于是"这个 Run 为什么失败"在**可审计的记录上无从查证**。
+
+这与 F-1 治过的是同一类病，只是层级不同：
+F-1 治的是"三种停在页面上是同一副样子"（挂起 / 完成 / 预算耗尽），
+这一轮治的是**同一个 FAILED 内部的三种成因**。
+
+### 116.4　B-12
+
+    B-12：终态声明必须带上原因，原因落在 `run.finished` 的 payload 上。
+
+实现方式的关键不是"加个字段"，而是 **`reason` 是必填关键字参数**：
+
+```python
+def _declare_terminal(self, status: AgentRunStatus, *, reason: str) -> None:
+    ...
+    self._trace(FINISHED, payload={"status": status.value, "reason": reason})
+```
+
+新增一个终态出口时，不写原因就构造不出这次调用。
+默认值的诱惑在于它会让"忘了说为什么"看起来像"没什么可说的" ——
+而这两件事在系统里长得一模一样，只能靠签名把它们分开。
+
+四个出口现在各自写明：
+
+| 出口 | reason |
+|---|---|
+| 预算耗尽 | `step budget exhausted (3/3)` |
+| 换不出新计划 | `replan produced a plan with the same shape as the invalidated one; no alternative path available` |
+| 连续被拒 | `denied 3 times in a row (limit 3); the run keeps proposing actions the harness refuses` |
+| 外部叫停 | `cancelled by alice: user changed their mind` |
+| 目标达成 | `goal reached` |
+
+### 116.5　测试（7 条，`tests/unit/test_terminal_reason.py`）
+
+| 用例 | 守的是什么 |
+|---|---|
+| 预算耗尽 → reason 提到 budget | 这条死法说得出自己是预算 |
+| 换不出新计划 → reason 提到 replan | 与上一条**不同** |
+| 连续被拒 → reason 提到 denied | L-7 那条死路不是泛泛的 failed |
+| 取消 → reason 带 by 与 why | B-8 的归因在终态那条上也有一份 |
+| 完成也不是沉默的 | COMPLETED 同样带原因 |
+| 两条死法留下两份不同记录 | 探针那个 `True` 反过来写 |
+| 新出口不能省略 reason | 不带 reason 调 → `TypeError` |
+
+第三条用的是**真实机制**（`Harness.default(budget=CostBudget(max_cost=-1.0))`
+→ 每个动作都被拒），不是给 `before_action` 打桩 ——
+打桩的 Deny 测的是"Loop 收到 DENY 之后怎么办"，
+真实预算测的才是"Harness 真的拒绝时 Loop 怎么办"。
+
+### 116.6　变红验证（3 变异）
+
+| 变异 | 红了 |
+|---|---|
+| 从 payload 里去掉 `reason` | 6 条 |
+| `reason` 变成可选（给默认值） | 1 条 |
+| 预算耗尽的原因改成泛泛的 `failed` | 1 条 |
+
+第二条只红 1 条是对的：它动的只是"能不能省略"，
+所以只有那条 `TypeError` 用例会响。第三条同理 ——
+只有"预算那条说得出自己是预算"会响，区分度那条仍然绿
+（`reason='failed'` 与 replan 那条依然不同）。
+
+### 116.7　冻结
+
+> 上一轮冻结的是：*换了一条路*不等于换了一条路。
+>
+> 这一轮冻结的是：**宣布结束的记录，必须说清为什么结束。**
+
+另一句：**"唯一证据"这句话是有代价的。**
+当你写下"这条记录是唯一的证据"时，你就承诺了它承载全部真相 ——
+少写一个字段，就等于宣布那条真相不可查。
+写这种 docstring 的时候，值得回头核一遍：它真的装下了它声称装的东西吗？
+
+---
+
+再一句：**内存里分得清，不等于账本上分得清。**
+`last_outcome` 一直在那儿，而且一直是准的 ——
+准到让人以为"为什么失败"这个问题已经有答案了。

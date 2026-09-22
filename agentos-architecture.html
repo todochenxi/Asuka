@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgentOS 架构总览 v2.1（评审纪要 · 非事实源）</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#ffffff;
+    --ink:#1a1d21; --ink2:#4a5160; --ink3:#7b8494;
+    --line:#e3e7ee;
+    --accent:#2f6df6; --accent-soft:#eaf1ff;
+    --green:#12a673; --green-soft:#e6f7f1;
+    --purple:#7c5cf0; --purple-soft:#f0ecff;
+    --orange:#e8833a; --orange-soft:#fdf1e6;
+    --red:#d9534f; --red-soft:#fdecec;
+    --teal:#0f9b9b; --teal-soft:#e5f6f6;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    line-height:1.65;padding:40px 24px 80px;}
+  .wrap{max-width:1120px;margin:0 auto;}
+  header{margin-bottom:28px;}
+  h1{font-size:30px;letter-spacing:-.4px;margin-bottom:8px;}
+  .sub{color:var(--ink2);font-size:15px;}
+  .tag{display:inline-block;background:var(--accent-soft);color:var(--accent);
+    font-size:12px;padding:3px 10px;border-radius:20px;margin-right:6px;margin-top:10px;font-weight:600;}
+  .tag.freeze{background:var(--red-soft);color:var(--red);}
+  .quote{background:var(--card);border-left:3px solid var(--accent);
+    padding:16px 20px;border-radius:0 10px 10px 0;margin:22px 0 32px;font-size:14px;color:var(--ink2);}
+  .quote b{color:var(--ink);}
+  h2{font-size:19px;margin:44px 0 16px;padding-left:11px;border-left:4px solid var(--accent);}
+  h3{font-size:15px;margin:24px 0 10px;color:var(--ink);}
+  .grid{display:grid;gap:14px;}
+  .g2{grid-template-columns:repeat(2,1fr);}
+  .g3{grid-template-columns:repeat(3,1fr);}
+  .g4{grid-template-columns:repeat(4,1fr);}
+  @media(max-width:860px){.g2,.g3,.g4{grid-template-columns:1fr;}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;}
+  .card .t{font-weight:700;font-size:14px;margin-bottom:6px;display:flex;align-items:center;gap:7px;}
+  .dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+  .card .d{font-size:13px;color:var(--ink2);}
+  .card ul{margin:6px 0 0 16px;font-size:12.5px;color:var(--ink2);}
+  .card li{margin-bottom:2px;}
+  .stack{display:flex;flex-direction:column;gap:8px;}
+  .layer{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:13px 18px;display:flex;gap:16px;align-items:flex-start;}
+  .layer .ln{font-weight:700;font-size:13.5px;min-width:170px;flex-shrink:0;}
+  .layer .lc{font-size:12.5px;color:var(--ink2);}
+  .layer .lc span{display:inline-block;background:var(--bg);border:1px solid var(--line);
+    border-radius:5px;padding:1px 8px;margin:2px 4px 2px 0;font-size:11.5px;color:var(--ink2);}
+  .arrow{text-align:center;color:var(--ink3);font-size:14px;line-height:1;}
+  .t-blue{color:var(--accent);} .t-green{color:var(--green);} .t-purple{color:var(--purple);}
+  .t-orange{color:var(--orange);} .t-teal{color:var(--teal);} .t-red{color:var(--red);}
+  .c-blue{background:var(--accent-soft);} .c-green{background:var(--green-soft);}
+  .c-purple{background:var(--purple-soft);} .c-orange{background:var(--orange-soft);}
+  .c-teal{background:var(--teal-soft);} .c-red{background:var(--red-soft);}
+  pre{background:#fbfcfd;border:1px solid var(--line);border-radius:10px;
+    padding:16px 18px;overflow-x:auto;font-size:12.5px;line-height:1.6;
+    font-family:"SF Mono",Consolas,"Courier New",monospace;color:var(--ink2);}
+  table{width:100%;border-collapse:collapse;font-size:13px;background:var(--card);
+    border:1px solid var(--line);border-radius:10px;overflow:hidden;}
+  th{background:#f2f4f8;text-align:left;padding:10px 14px;font-size:12.5px;color:var(--ink);font-weight:700;}
+  td{padding:10px 14px;border-top:1px solid var(--line);color:var(--ink2);vertical-align:top;}
+  td b{color:var(--ink);}
+  code{background:var(--bg);border:1px solid var(--line);border-radius:4px;
+    padding:1px 5px;font-size:12px;font-family:"SF Mono",Consolas,monospace;color:var(--accent);}
+  .note{font-size:12.5px;color:var(--ink3);margin-top:10px;text-align:center;}
+  .warn{background:var(--orange-soft);color:var(--orange);padding:10px 14px;border-radius:8px;
+    font-size:12.5px;margin-bottom:12px;}
+  .fix{background:var(--red-soft);padding:12px 16px;border-radius:8px;font-size:12.5px;color:var(--ink2);margin-bottom:12px;}
+  .fix .no{color:var(--red);} .fix .yes{color:var(--green);}
+  .loop{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:center;
+    background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;}
+  .chip{background:var(--accent-soft);color:var(--accent);font-weight:700;font-size:12.5px;padding:6px 12px;border-radius:8px;}
+  .chip.g{background:var(--green-soft);color:var(--green);}
+  .chip.p{background:var(--purple-soft);color:var(--purple);}
+  .chip.o{background:var(--orange-soft);color:var(--orange);}
+  .chip.t{background:var(--teal-soft);color:var(--teal);}
+  .arw{color:var(--ink3);font-size:13px;}
+  footer{margin-top:52px;text-align:center;font-size:12px;color:var(--ink3);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>AgentOS 架构总览 <span style="font-size:16px;color:var(--red)">v2.1 · 评审纪要（非事实源）</span></h1>
+  <div class="sub">Enterprise Agent Harness &amp; Runtime Platform · 经三轮架构评审完成收敛</div>
+  <div>
+    <span class="tag freeze">⛔ 架构冻结</span>
+    <span class="tag">v2.0 收敛边界 → v2.1 闭合概念 → v2.1.1 补定义</span>
+    <span class="tag">M15 Kernel Implementation</span>
+  </div>
+  <div style="margin-top:14px;padding:12px 14px;background:#fff8e6;border-left:4px solid #d97706;border-radius:6px;font-size:14px;color:#7c4a03">
+    <b>⚠️ 本页已降级为「评审纪要 + 变更记录」，不再作为架构事实源。</b><br>
+    架构基线 = <code>AgentOS_企业级Agent平台架构_v2.1.1_最终冻结版.md</code>（v2.1.1）。
+    概念、边界、状态集合、契约一律以基线为准。
+  </div>
+</header>
+
+<div class="quote">
+  <b>两轮评审：</b>v2.0 收敛了<b>边界</b>（Harness/Runtime/Kernel、对象模型、存储）；
+  v2.1 闭合了<b>概念</b>（消灭 TaskExecution/ToolExecution 套娃、AgentRun vs Kernel Execution、Step→Task 一对多）。<br><br>
+  <b>一句话总纲：</b>核心不是某个 LLM，而是统一的 <b>Execution Kernel</b>。
+  <b>Harness 控制 Agent，Runtime 驱动 Agent，Kernel 执行 Task。</b>
+</div>
+
+<h2>1 · 三层职责（钉死）</h2>
+<div class="stack">
+  <div class="layer"><div class="ln t-purple">Agent Harness</div><div class="lc"><b>控制</b> Agent　<span>Context</span><span>Policy</span><span>Memory</span><span>Guardrail</span><span>Cost</span><span>HITL</span><span>Evaluator</span></div></div>
+  <div class="arrow">↓</div>
+  <div class="layer"><div class="ln t-green">Agent Runtime</div><div class="lc"><b>驱动</b> Agent　<span>Agent Loop</span><span>Planner</span><span>Decision Engine</span><span>Action Resolver</span><span>Task Factory</span><span>Observation Processor</span></div></div>
+  <div class="arrow">↓　产出 Task 即交棒</div>
+  <div class="layer"><div class="ln" style="color:#6b7280">Execution Kernel</div><div class="lc"><b>执行</b> Task　<span>State Machine</span><span>Scheduler</span><span>Lease</span><span>Attempt</span><span>Checkpoint</span><span>Retry</span><span>Recovery</span><span>Cancellation</span><span>Idempotency</span></div></div>
+</div>
+<div class="fix">
+  <span class="no">✗ v1：</span>Agent Runtime 含 Scheduler / State Machine / Retry / Cancellation / Run Manager —— 与 Kernel <b>重复</b><br>
+  <span class="yes">✓ v2：</span><b>State Machine 是 Kernel 能力，不是 Agent 能力</b>（Workflow / Agent / Tool / Evaluation 都可能需要它）。Runtime 只负责把 Agent 的想法变成 Task。
+</div>
+
+<h2>2 · 执行对象模型（P0 已钉死）</h2>
+<pre>AgentRun          ← 业务语义上的 Run（≠ Kernel Execution）
+    │ contains
+    ↓
+   Step            ← 逻辑执行节点
+    │ produces (一对多)
+    ↓
+ Task ─ Task ─ Task ← 可调度工作单元（Scheduler 只认 Task）
+    │ scheduled as
+    ↓
+ Execution         ← Kernel 生命周期实体
+    │ retried as
+    ↓
+  Attempt          ← 一次具体尝试</pre>
+<table>
+  <tr><th style="width:110px">对象</th><th style="width:250px">定义</th><th>例子</th></tr>
+  <tr><td><b>AgentRun</b></td><td>业务级 Agent 执行实例 —— 用户让某个 Agent 完成一次任务</td><td>Run #10086："帮我分析 Q3 财务风险"</td></tr>
+  <tr><td><b>Step</b></td><td>Agent / Workflow 的<b>逻辑执行节点</b>，属于 Execution Graph</td><td>Step：<code>research_company</code></td></tr>
+  <tr><td><b>Task</b></td><td><b>可调度的工作单元</b>。Scheduler 只认识 Task。<b>一个 Step 可产出多个</b></td><td><code>search_official_site</code> / <code>search_news</code> / <code>query_db</code></td></tr>
+  <tr><td><b>Execution</b></td><td>Task 在 Kernel 中的<b>生命周期实体</b>：状态 / Lease / Checkpoint / Cancel / Retry / Recovery</td><td>Execution #100</td></tr>
+  <tr><td><b>Attempt</b></td><td>Execution 的<b>一次具体尝试</b></td><td>Attempt #1 → timeout；Attempt #2 → success</td></tr>
+</table>
+<div class="quote" style="border-left-color:var(--green);margin-top:14px">
+  <b>面试官问："Step 和 Task 有什么区别？"</b><br>
+  <b>Step 是逻辑节点（做什么），Task 是调度单元（谁去跑）。</b>
+  Step 描述"这一步要调研这家公司"，Runtime 为它生成<b>一个或多个</b> Task；Task 进入 Kernel 才获得 Execution 生命周期。
+  Step 属于业务语义层，Task / Execution / Attempt 属于 Kernel 层。
+</div>
+
+<h3>Step → Task 是<b>一对多</b>（v2.1 修正）</h3>
+<pre>Step: research_company
+   ↓  Planner / Fan-out
+Task 1: search_official_site
+Task 2: search_news
+Task 3: query_database
+Task 4: read_knowledge_base
+   ↓  Fan-in → 汇总 → 下一个 Step</pre>
+<div class="note" style="text-align:left">v2.0 写"一个 Step produces 一个 Task"——对第一版好理解，但<b>把架构限制死了</b>。一对多才能支持 Parallel / Planner / Multi-Agent / Workflow / Fan-out / Fan-in。</div>
+
+<h3>Execution Domain：Business vs Kernel</h3>
+<pre>Business                              Kernel
+─────────────────────────────────    ──────────────────────────
+AgentRun                              Task
+WorkflowRun                             │
+SkillRun                                ↓
+EvaluationRun                        Execution
+     │                                  └── Attempt
+     │ 内部产生可执行工作
+     └──────────────────────────────→ Checkpoint / Lease / Cancellation</pre>
+<div class="fix">
+  <span class="no">✗ v2.0：</span>Kernel Execution = <b>TaskExecution / ToolExecution</b> —— 新套娃。会被追问"Execution 是抽象还是实体？""ToolExecution 是 Task 还是 Execution？"<br>
+  <span class="yes">✓ v2.1：</span><b>删除这两个领域对象</b>。Kernel 只有 <code>Task / Execution / Attempt</code>。<br>
+  唯一链路：<code>ToolCall → Action → Task(type=TOOL) → Execution → Attempt</code>。一个 Tool Call <b>产生 Task</b>，不直接产生 ToolExecution。
+</div>
+<div class="fix">
+  <span class="no">✗ 含糊：</span>"AgentRun 是业务级执行实例" —— 没回答"AgentRun 自己是不是也由 Kernel 管？"<br>
+  <span class="yes">✓ v2.1：</span><b>AgentRun 是业务语义上的 Run，不等价于 Kernel Execution；但 AgentRun 内部产生的可执行工作（Task）由 Kernel 管理。</b>
+  否则将来做 WorkflowRun / SkillRun / EvaluationRun 时会再次出现"到底谁才是 Execution"。
+</div>
+
+<h2>3 · 状态机（P1 升级：SUSPENDED + Reason）</h2>
+<pre>CREATED ──► QUEUED ──► RUNNING ⇄ SUSPENDED ──► COMPLETED
+                          │                  ──► FAILED
+                          │                  ──► CANCELLED
+                          └──► (retry → 开新 Attempt)</pre>
+<div class="grid g2">
+  <div class="card c-blue">
+    <div class="t t-blue">为什么去掉 WAITING_HUMAN 顶层状态？</div>
+    <div class="d">WAITING_HUMAN <b>不是生命周期状态</b>，它描述的是"为什么当前 Execution 没有继续执行"—— 属于 <b>SuspensionReason</b>。</div>
+    <pre style="border:none;padding:8px 0;background:transparent;font-size:11.5px">{ "status": "SUSPENDED",
+  "suspension_reason": "HUMAN_APPROVAL" }</pre>
+    <div class="d">以后新增等待类型 <b>无需增加顶层状态</b>。</div>
+  </div>
+  <div class="card c-green">
+    <div class="t t-green">suspension_reason 取值</div>
+    <ul>
+      <li><b>HUMAN_APPROVAL</b> — 人工审批。Checkpoint 后<b>释放 Worker</b>，数小时后 Event 唤醒 Resume</li>
+      <li><b>CHILD_AGENT</b> — 等待子 Agent 返回</li>
+      <li><b>TIMER</b> — 定时唤醒 / 延迟执行</li>
+      <li><b>EXTERNAL_EVENT</b> — 等待外部系统回调</li>
+    </ul>
+    <div class="d" style="margin-top:8px">TIMEOUT 也不再是顶层状态 —— 它是 Attempt 层的失败原因，映射到 FAILED。</div>
+  </div>
+</div>
+
+<h2>4 · Core Domain Contracts（P1 重命名）</h2>
+<div class="warn">⚠️ v1 称"五大核心协议"不严谨。Goal / State / Decision / Action / Observation 是<b>领域契约</b>；真正的 Protocol 应是 Execution Protocol / Event Protocol / Tool Protocol / Agent Protocol / Model Protocol。</div>
+<div class="grid g3">
+  <div class="card c-purple"><div class="t t-purple">① Intelligence Contracts</div><ul>
+    <li><b>Goal</b> — 可执行任务定义（≠ UserRequest）</li>
+    <li><b>State</b> — 当前知道什么 + 执行到哪</li>
+    <li><b>Decision</b> — 下一步判断，不直接执行</li>
+    <li><b>Action</b> — 具体意图</li>
+    <li><b>Observation</b> — 感知世界的统一接口</li>
+    <li><b>Plan</b> — 执行图（DAG）</li></ul></div>
+  <div class="card c-blue"><div class="t t-blue">② Execution Contracts</div><ul>
+    <li><b>Task</b></li><li><b>Execution</b></li><li><b>Attempt</b></li>
+    <li><b>Checkpoint</b></li><li><b>Lease</b></li><li><b>Cancellation</b></li></ul></div>
+  <div class="card c-teal"><div class="t t-teal">③ Integration Contracts</div><ul>
+    <li><b>Tool</b></li><li><b>Skill</b></li><li><b>Agent</b></li>
+    <li><b>Model</b></li><li><b>Event</b></li></ul></div>
+</div>
+<div class="loop" style="margin-top:14px">
+  <span class="chip">Goal</span><span class="arw">→</span>
+  <span class="chip o">Decision</span><span class="arw">→</span>
+  <span class="chip g">Action</span><span class="arw">→</span>
+  <span class="chip t">Task</span><span class="arw">→</span>
+  <span class="chip p">Execution</span><span class="arw">→</span>
+  <span class="chip">Observation</span><span class="arw">→</span>
+  <span class="chip o">State</span><span class="arw">→</span>
+  <span class="chip g">Decision …</span>
+</div>
+<div class="note">Action 取值：<code>ToolCall / SkillCall / AgentDelegation / HumanApproval / AskUser / Finish</code></div>
+<div class="warn">⚠️ <b>Decision 的 Confidence 不要用成概率。</b><code>{"action":"send_email","confidence":0.97}</code> <b>不意味着决策 97% 正确</b> —— LLM confidence 不是 calibrated probability。<br>
+字段改名 <code>confidence_signal</code> 或归入 <code>decision_metadata</code>。<b>禁止</b> <code>confidence &gt; 0.9 → 自动执行</code>；是否自动执行由 Policy / Guardrail / 风险分级决定。</div>
+
+<h2>5 · 数据底座（P0 表述修正）</h2>
+<div class="fix">
+  <span class="no">✗ v1：</span>"PG 保留当前状态，<b>Kafka 保留事件流（Execution Truth）</b>" —— 既然声明不采用纯 Event Sourcing，就不能又说 Kafka 是 Truth，<b>会被面试官抓住</b><br>
+  <span class="yes">✓ v2：</span>PostgreSQL = <b>Current Durable State / Business Source of Truth</b>；Kafka = <b>Durable Event Log / Event Backbone</b>。<br>
+  <b>PG + Kafka 通过 Transactional Outbox + Idempotent Consumer 保证状态变化和事件传播的一致性。</b>
+</div>
+<table>
+  <tr><th style="width:150px">存储</th><th style="width:200px">定位</th><th>职责</th></tr>
+  <tr><td><b>PostgreSQL</b></td><td><b>durable truth</b></td><td>记录"现在是什么状态"；含 Outbox 表</td></tr>
+  <tr><td><b>Kafka</b></td><td><b>durable event log</b></td><td>记录"发生过什么"。<b>Event Log 不自动等于完整业务 Truth</b></td></tr>
+  <tr><td><b>Redis</b></td><td>runtime</td><td>热状态 / 锁 / 取消 / 幂等 / 限流</td></tr>
+  <tr><td><b>Qdrant</b></td><td><b>retrieval index</b></td><td>语义检索。<b>不是事实存储，可重建</b></td></tr>
+  <tr><td><b>S3 / MinIO</b></td><td>large object</td><td>Artifact / Dataset / Checkpoint 大对象</td></tr>
+</table>
+
+<h2>6 · 存储边界（P2）</h2>
+<div class="grid g2">
+  <div class="card c-green">
+    <div class="t t-green">Memory —— Qdrant 只是索引</div>
+    <pre style="border:none;padding:8px 0;background:transparent;font-size:11.5px">Memory
+ ├── Metadata / Lifecycle → PostgreSQL   (durable truth)
+ ├── Hot / Working        → Redis        (runtime)
+ └── Semantic Index       → Qdrant       (retrieval index)</pre>
+    <div class="d">四类型：Working / Semantic / Episodic / Procedural<br>写链路：Candidate → Policy → Importance → 去重 → 冲突解决 → 版本化<br><b>读写必须分开</b>；不做简单 DELETE</div>
+  </div>
+  <div class="card c-orange">
+    <div class="t t-orange">Knowledge —— 三层，不让 Qdrant 成唯一存储</div>
+    <pre style="border:none;padding:8px 0;background:transparent;font-size:11.5px">Object Storage → Original Document
+       ↓
+PostgreSQL     → Document Metadata / Version
+       ↓
+Qdrant         → Semantic Index</pre>
+    <div class="d">RAG：Hybrid Search(Vector+BM25) → Fusion → Rerank → Citation<br><b>权限必须进入 Retrieval</b>（Permission-aware）</div>
+  </div>
+</div>
+
+<h3>Artifact（新增，企业级 Agent 必需）</h3>
+<div class="card c-teal">
+  <div class="t t-teal">生成的 PDF / Excel / 图片 / 代码仓库 / 数据集 / 分析报告 —— 不能塞进 Observation</div>
+  <pre style="border:none;padding:8px 0;background:transparent;font-size:11.5px">Execution ──→ Artifact ──→ S3 / Object Storage
+
+Observation 只保存引用：
+{ "artifact_id": "artifact_123", "type": "pdf",
+  "uri": "s3://agentos/artifacts/artifact_123.pdf", "metadata": {} }</pre>
+</div>
+
+<h3>Memory / Knowledge / Context / Artifact 四者区分</h3>
+<table>
+  <tr><th style="width:120px"></th><th style="width:180px">是什么</th><th style="width:120px">生命周期</th><th>存储</th></tr>
+  <tr><td><b>Memory</b></td><td>Agent 记住的经验</td><td>跨 Run</td><td>PG + Redis + Qdrant</td></tr>
+  <tr><td><b>Knowledge</b></td><td>外部资料</td><td>版本化</td><td>S3 + PG + Qdrant</td></tr>
+  <tr><td><b>Context</b></td><td>每次送给模型的工作台</td><td>单次调用内</td><td>运行时组装，落 ContextSnapshot</td></tr>
+  <tr><td><b>Artifact</b></td><td>产出的文件</td><td>长期</td><td>S3 + PG 元数据</td></tr>
+</table>
+
+<h2>7 · Event / Observation / State / Trace 彻底区分</h2>
+<table>
+  <tr><th style="width:130px">概念</th><th style="width:230px">定义</th><th>例子</th></tr>
+  <tr><td><b>Observation</b></td><td><b>Agent 感知到的东西</b></td><td>Tool 返回的结果</td></tr>
+  <tr><td><b>Event</b></td><td><b>系统发生过的事情</b></td><td><code>ToolExecutionStarted</code> / <code>ToolExecutionCompleted</code></td></tr>
+  <tr><td><b>State</b></td><td>系统当前状态</td><td><code>run.status = RUNNING</code></td></tr>
+  <tr><td><b>Trace</b></td><td>执行链路（观测视图）</td><td>OTel Span Tree</td></tr>
+</table>
+<div class="loop" style="margin-top:12px">
+  <span class="chip t">Event</span><span class="arw">→</span>
+  <span class="chip t">Event</span><span class="arw">→</span>
+  <span class="chip t">Event</span><span class="arw">→</span>
+  <span class="chip g">Observation</span><span class="arw">→</span>
+  <span class="chip o">State Change</span>
+</div>
+<div class="note">Observation 是给 <b>Agent</b> 看的；Event 是给 <b>系统 / 审计 / 评估</b> 看的。不要混。</div>
+<h3>Observation <b>不直接</b>更新 State（需要 State Reducer）</h3>
+<pre>Execution Result
+      ↓
+Observation Processor
+      ↓
+Observation                ← 事实："balance = 100"
+      ↓
+State Transition (Reducer) ← 解释：写入 variables / 更新 completed_tasks
+      ↓
+New State                  ← "account_balance = 100"</pre>
+<div class="note" style="text-align:left">Observation 是事实/感知（append-only，不可变）；State 是系统解释后的当前状态（可变，带 version）。<code>State.apply(observation)</code> 内部就是 Reducer —— 唯一的合法状态变更入口。</div>
+
+<h2>8 · Execution Kernel 全貌</h2>
+<h3>九大能力 —— 六个最易被混成"失败重试系统"，必须一句话说清</h3>
+<div class="grid g3">
+  <div class="card c-purple"><div class="t t-purple">Attempt</div><div class="d"><b>我试了一次</b><br>失败开新 Attempt，保留失败证据。Retry ≠ 状态回退</div></div>
+  <div class="card c-purple"><div class="t t-purple">Retry</div><div class="d"><b>我要不要再试</b><br>Exponential Backoff + Error Classification</div></div>
+  <div class="card c-purple"><div class="t t-purple">Recovery</div><div class="d"><b>系统怎么从异常状态恢复</b><br>Lease 过期扫描 / Attempt 重建（见下方两层区分）</div></div>
+  <div class="card c-purple"><div class="t t-purple">Checkpoint</div><div class="d"><b>从哪里继续</b><br>崩溃从最近点恢复（见下方恢复边界）</div></div>
+  <div class="card c-purple"><div class="t t-purple">Lease</div><div class="d"><b>谁现在拥有执行权</b><br>租约 + Heartbeat；禁止 RUNNING → QUEUED</div></div>
+  <div class="card c-purple"><div class="t t-purple">Idempotency</div><div class="d"><b>重试后会不会重复副作用</b><br>At-Least-Once + 幂等键。<b>Retry ≠ Safe</b></div></div>
+  <div class="card c-purple"><div class="t t-purple">State Machine</div><div class="d">通用机制（见下）；原子 Domain Operation + Optimistic Lock</div></div>
+  <div class="card c-purple"><div class="t t-purple">Scheduler</div><div class="d">只认 Task；Atomic Claim；Priority + Aging 防饥饿</div></div>
+  <div class="card c-purple"><div class="t t-purple">Cancellation</div><div class="d">生命周期管理属 Kernel（见下）</div></div>
+</div>
+
+<h3>StateMachine 是<b>通用机制</b>，不是 AgentRun 专属（v2.1）</h3>
+<pre>StateMachine（通用 Kernel Mechanism）
+├── AgentRunStateMachine
+├── TaskStateMachine
+├── ExecutionStateMachine     ← 第一版实现
+├── AttemptStateMachine       ← 第一版实现
+└── WorkflowRunStateMachine   （未来）</pre>
+<div class="note" style="text-align:left">v2.0 说"是 Kernel 能力"，但展开的全是 AgentRun 状态机 —— 会被追问"到底是 AgentRun 的还是通用的？"。<b>第一版只实现 Execution + Attempt</b>，AgentRun 状态由它们派生。</div>
+
+<h3>Recovery 分两层（消除 Harness / Kernel 撞车）</h3>
+<table>
+  <tr><th style="width:180px"></th><th><b>Execution Recovery</b>（Kernel）</th><th><b>Agent Recovery</b>（Harness）</th></tr>
+  <tr><td><b>解决什么</b></td><td>Worker crash / Lease expired / Attempt failed / Execution stale / Checkpoint resume</td><td>Tool failed / Need replan / Change model / Ask human / Change strategy</td></tr>
+  <tr><td><b>一句话</b></td><td><b>怎么把 Execution 救回来</b></td><td><b>Agent 失败以后下一步怎么办</b></td></tr>
+  <tr><td><b>层级</b></td><td>基础设施级</td><td>业务策略级</td></tr>
+  <tr><td><b>命名</b></td><td><code>Recovery</code></td><td>改名 <code>AgentRecoveryStrategy</code>（避免两个 RecoveryManager）</td></tr>
+</table>
+
+<h3>Cancellation 归属</h3>
+<pre>User / Policy / System
+        ↓
+Cancellation Request          ← Harness 可以发起请求
+        ↓
+Kernel Cancellation           ← 生命周期管理属于 Kernel
+        ↓
+Worker CancellationToken
+        ↓
+Execution terminated</pre>
+<div class="note" style="text-align:left">不存在"Harness 的 Cancellation 和 Kernel 的是两个东西"的问题。</div>
+
+<h3>SUSPENDED 的 Wake-up 机制（v2.1 补齐，否则闭环不完整）</h3>
+<pre>Suspended Execution
+        ↓
+Wait Condition  (HUMAN_APPROVAL / CHILD_AGENT / TIMER / EXTERNAL_EVENT)
+        ↓
+Event / Timer 到达
+        ↓
+Wake-up                    ← Kernel 的 Resume 机制
+        ↓
+Runnable Task              ← 重新变成可调度单元
+        ↓
+Scheduler
+        ↓
+继续执行（用 Checkpoint 恢复）</pre>
+<div class="note" style="text-align:left">Wake-up 属于 <b>Kernel</b>，不是 Harness。这样 Actor + Mailbox、Event 唤醒 Resume 才真正落到执行模型上。</div>
+
+<h3>Checkpoint 的恢复边界（防止退化成大 JSON）</h3>
+<pre>Checkpoint
+├── current_step          执行到哪一步
+├── completed_tasks       已完成的任务
+├── execution_state       执行状态
+├── context_snapshot_id   ← 只存 ID 引用，不内嵌
+├── variables             变量
+├── artifacts             产物引用
+└── recovery_metadata     恢复所需元信息</pre>
+<div class="note" style="text-align:left">ContextSnapshot = 模型上下文是什么；Checkpoint = 执行到哪里了 + 恢复需要什么（<b>引用</b>而非内嵌）。</div>
+
+<h3>两种执行模型（Actor 已降级，不进第一版核心）</h3>
+<pre>Execution Kernel
+├── Task Execution        无状态 / 短任务：claim → run → done   ← 执行模式，非领域实体
+└── Stateful Execution    长任务
+      └── Actor + Mailbox
+
+Mailbox 消息：UserMessage / ToolResult / ApprovalResult /
+             ChildAgentResult / TimerEvent / ExternalEvent / Cancellation</pre>
+<div class="note">Kernel 里<b>不再有</b> <code>TaskExecution</code> / <code>ToolExecution</code> 领域对象；上图"Task Execution"是<b>执行模式</b>描述。领域实体只有 <code>Task / Execution / Attempt</code>。</div>
+
+<h2>9 · 其余模块（保持 v1 结论）</h2>
+<div class="grid g2">
+  <div class="card c-orange"><div class="t t-orange">Tool / Skill / MCP / A2A</div><div class="d">Tool <code>input→execute→output</code>；Agent <code>goal→decide→act→observe</code><br>8 步安全边界：Resolution → Validation → Policy → Guardrail → RateLimit → Timeout → Retry → Execute<br><b>Tool ≠ Credential</b>；MCP=工具连接，A2A=Agent 连接</div></div>
+  <div class="card c-teal"><div class="t t-teal">Model Gateway</div><div class="d">四层路由：Capability → Cost → Latency → Load-aware<br><b>Model ≠ Deployment</b>；Adapter 必须返回统一 Response</div></div>
+  <div class="card c-red"><div class="t t-red">Evaluation Platform（独立 Domain）</div><div class="d"><b>v2.1 从 Harness 中提出</b>：Evaluator / Dataset / Experiment / Metrics / EvaluationRun<br>四层：Deterministic → LLM-as-a-Judge → Trajectory → <b>Outcome</b><br>Failure Taxonomy + Attribution → <b>Evolution Controller</b><br>五方向：Prompt / Tool Selection / Model Routing / Skill / Memory</div></div>
+  <div class="card c-blue"><div class="t t-blue">Production / Developer</div><div class="d">Control Plane / Execution Plane 分离部署；HPA 用业务指标驱动<br>SDK / Manifest / Package / Registry / CLI / Console / Replay / GitOps</div></div>
+</div>
+<div class="note" style="text-align:left">Harness 可以<b>调用</b> Evaluation，但 Evaluation 不是 Harness 的组成部分。EvaluationRun 本身就是一个 Business Run，复用同一套 Kernel。</div>
+
+<h2>10 · 架构不变式清单（面试杀手锏）</h2>
+<pre>Agent ≠ LLM          Agent ≠ Tool          Agent ≠ Workflow
+
+Runtime ≠ Harness ≠ Kernel
+（Harness 控制 / Runtime 驱动 / Kernel 执行）
+
+Memory ≠ Knowledge ≠ Context ≠ Artifact
+
+Decision ≠ Action ≠ Task ≠ Execution ≠ Attempt
+Step    ≠ Task        （逻辑节点 vs 调度单元）
+
+Event ≠ State ≠ Trace ≠ Observation
+
+AgentOS Scheduler ≠ Kubernetes Scheduler
+Model ≠ Deployment          Tool ≠ Credential
+Qdrant ≠ Truth（retrieval index）
+Kafka  ≠ Truth（durable event log）
+
+AgentRun ≠ Kernel Execution（业务 Run vs Kernel 执行实体）
+Execution Recovery ≠ Agent Recovery（救回 Execution vs 失败后怎么办）
+TaskExecution / ToolExecution ≠ 领域对象（Kernel 只有 Task/Execution/Attempt）
+Confidence ≠ Probability（只是 signal，不是校准概率）
+Observation ≠ State（事实 vs 解释后状态，中间有 Reducer）</pre>
+
+<h2>11 · M15：Kernel Implementation（下一步）</h2>
+<div class="quote" style="border-left-color:var(--green)">
+  <b>第一件事不是 FastAPI，也不是 Kafka。</b><br>
+  先把这 <b>8 个核心对象</b>的领域模型和不变量定义出来 —— 这一步做好，后面的 PG 表、API、Worker、Kafka 都会<b>自然长出来</b>。
+</div>
+<div class="grid g2">
+  <div class="card c-purple"><div class="t t-purple">Intelligence（5）</div><div class="d">Goal · State · Decision · Action · Observation</div></div>
+  <div class="card c-blue"><div class="t t-blue">Execution（3）</div><div class="d">Task · Execution · Attempt</div></div>
+</div>
+<div class="fix">
+  <span class="no">✗ v2.0：</span>Domain → <b>PostgreSQL</b> → Kernel —— 违反自己的原则"先定义执行模型，再选择基础设施"。PG Schema 应由 Domain + Kernel 的生命周期<b>定义出来</b>，而不是反过来决定 Domain。<br>
+  <span class="yes">✓ v2.1：</span>Domain → StateMachine → Kernel → Repository Interfaces → PostgreSQL → Redis/Kafka
+</div>
+<pre>阶段 1  Domain Model          8 个核心对象 + 不变量（纯 Python，零依赖）
+阶段 2  State Machine         ExecutionStateMachine / AttemptStateMachine + 转换表
+阶段 3  Execution Kernel      Scheduler / Lease / Attempt / Checkpoint / Retry /
+                              Recovery / Cancellation / Idempotency（In-Memory）
+阶段 4  Repository Interfaces ← 抽象接口，不绑定任何数据库
+阶段 5  PostgreSQL            表结构由上面的生命周期定义出来 + Outbox
+阶段 6  Redis                 Lease / Cancellation / Idempotency
+阶段 7  Kafka + Worker        Event 驱动
+阶段 8  最小 Agent Loop       接一个 LLM + 一个 Tool
+
+验收：跑通最小闭环
+POST /agents/{agent_id}/runs → AgentRun → Task → Execution
+  → Worker → LLM → Decision → Tool → Observation → State → Final</pre>
+
+<h3>⚠️ Future Extension（架构设计内，不在实现范围）</h3>
+<div class="warn">若声称全部实现，项目会巨大到失控，且容易被问穿："这个人真的实现了 Agent + RAG + MCP + A2A + K8s + RL 全套？"</div>
+<table>
+  <tr><th style="width:130px">类别</th><th style="width:300px">内容</th><th>定位</th></tr>
+  <tr><td><b>模型训练</b></td><td>SFT / DPO / RL</td><td>Future Extension。Evolution 优先做 Prompt / Tool Selection / Model Routing / Skill / Memory Policy</td></tr>
+  <tr><td><b>深度推理</b></td><td>Tree Search / Self-Consistency / Deep Reasoning</td><td>Future Extension，成本高按需启用</td></tr>
+  <tr><td><b>高级执行</b></td><td>Actor + Mailbox / Saga / Workflow Engine</td><td>设计已闭环，第一版不实现</td></tr>
+  <tr><td><b>平台化</b></td><td>Agent Marketplace / GitOps / 完整多租户</td><td>架构已定义，按需演进</td></tr>
+</table>
+
+<h2>12 · 收敛变更清单</h2>
+<h3>v2.0 → v2.1（第二轮评审 · 闭合概念）</h3>
+<table>
+  <tr><th style="width:40px">#</th><th style="width:60px">优先级</th><th style="width:150px">问题</th><th>v2.0</th><th>v2.1</th></tr>
+  <tr><td>1</td><td><b style="color:var(--red)">P0</b></td><td>TaskExecution/ToolExecution 新套娃</td><td>Kernel Execution = 这两者</td><td><b>删除</b>；Kernel 只有 Task/Execution/Attempt</td></tr>
+  <tr><td>2</td><td><b style="color:var(--red)">P0</b></td><td>AgentRun vs Kernel Execution</td><td>只说"业务级实例"</td><td>业务 Run ≠ Kernel Execution；内部 Task 由 Kernel 管</td></tr>
+  <tr><td>3</td><td><b style="color:var(--orange)">P1</b></td><td>Step → Task 一对一</td><td>一个 Step 一个 Task</td><td><b>一对多</b>，支持 Fan-out/Fan-in</td></tr>
+  <tr><td>4</td><td><b style="color:var(--orange)">P1</b></td><td>StateMachine 只展开 AgentRun</td><td>说是通用，展示是 AgentRun</td><td>明确通用 Mechanism + 分层状态机</td></tr>
+  <tr><td>5</td><td><b style="color:var(--orange)">P1</b></td><td>两个 RecoveryManager</td><td>Harness 与 Kernel 都有</td><td>Execution Recovery / <b>AgentRecoveryStrategy</b></td></tr>
+  <tr><td>6</td><td><b style="color:var(--orange)">P1</b></td><td>Evaluation 塞进 Harness</td><td>Harness 含 Evaluator</td><td><b>独立 Evaluation Platform</b></td></tr>
+  <tr><td>7</td><td>表述</td><td>SUSPENDED 缺唤醒</td><td>只写 RUNNING ⇄ SUSPENDED</td><td>补齐 <b>Wake-up 机制</b>（属 Kernel）</td></tr>
+  <tr><td>8</td><td>表述</td><td>Cancellation 归属</td><td>Harness 与 Kernel 都有</td><td>Harness 发起，<b>Kernel 管理生命周期</b></td></tr>
+  <tr><td>9</td><td>表述</td><td>Observation 直接改 State</td><td>一步到位</td><td>加 <b>State Reducer</b> 层</td></tr>
+  <tr><td>10</td><td>表述</td><td>confidence 暗示概率</td><td><code>confidence: 0.97</code></td><td><code>confidence_signal</code>；禁止自动执行</td></tr>
+  <tr><td>11</td><td>表述</td><td>Checkpoint 缺恢复边界</td><td>只说 ≠ ContextSnapshot</td><td>明确结构，<b>引用</b> snapshot 不内嵌</td></tr>
+  <tr><td>12</td><td>表述</td><td>M15 顺序违反原则</td><td>Domain → PG → Kernel</td><td>Domain → SM → Kernel → Repo → PG</td></tr>
+  <tr><td>13</td><td>风险</td><td>范围失控</td><td>未标实现边界</td><td>新增 <b>Future Extension</b></td></tr>
+</table>
+<h3>v1 → v2.0（第一轮评审 · 收敛边界）</h3>
+<table>
+  <tr><th style="width:40px">#</th><th style="width:60px">优先级</th><th style="width:150px">问题</th><th>v1</th><th>v2</th></tr>
+  <tr><td>1</td><td><b style="color:var(--red)">P0</b></td><td>执行单元概念重复</td><td>关系模糊</td><td>钉死 AgentRun ⊃ Step → Task → Execution ⊃ Attempt</td></tr>
+  <tr><td>2</td><td><b style="color:var(--red)">P0</b></td><td>ToolExecution 套娃</td><td>"全部统一为 Execution"</td><td>拆 Business / Kernel Execution</td></tr>
+  <tr><td>3</td><td><b style="color:var(--red)">P0</b></td><td>Kafka 表述</td><td>"Kafka = Execution Truth"</td><td>"Kafka = Durable Event Log"；Truth 只有 PG</td></tr>
+  <tr><td>4</td><td><b style="color:var(--red)">P0</b></td><td>三层重叠</td><td>Runtime 含 Scheduler/StateMachine</td><td>控制 / 驱动 / 执行 分离</td></tr>
+  <tr><td>5</td><td><b style="color:var(--red)">P0</b></td><td>State Machine 归属</td><td>属 Agent Runtime</td><td>属 Execution Kernel</td></tr>
+  <tr><td>6</td><td><b style="color:var(--orange)">P1</b></td><td>状态机膨胀</td><td>8 态含 WAITING_HUMAN</td><td>7 态 + SUSPENDED{reason}</td></tr>
+  <tr><td>7</td><td><b style="color:var(--orange)">P1</b></td><td>协议命名</td><td>"五大核心协议"</td><td>三组 Core Domain Contracts</td></tr>
+  <tr><td>8</td><td>P2</td><td>Actor 定位</td><td>隐含进 Kernel 核心</td><td>降为 Stateful Execution 实现模型</td></tr>
+  <tr><td>9</td><td>P2</td><td>Qdrant 定位</td><td>"Semantic Memory Store"</td><td>Retrieval Index，非事实存储</td></tr>
+  <tr><td>10</td><td>P2</td><td>Knowledge 存储</td><td>未明确</td><td>S3 → PG → Qdrant 三层</td></tr>
+  <tr><td>11</td><td>P2</td><td>缺 Artifact</td><td>无</td><td>Execution → Artifact → S3</td></tr>
+  <tr><td>12</td><td>P2</td><td>Event/Observation</td><td>部分区分</td><td>彻底区分 + 时间线</td></tr>
+  <tr><td>13</td><td>P2</td><td>Contracts 分组</td><td>无</td><td>Intelligence / Execution / Integration</td></tr>
+</table>
+
+<footer>AgentOS 架构总览 v2.0 · 架构冻结版 · 下一步 M15 Kernel Implementation</footer>
+</div>
+</body>
+</html>

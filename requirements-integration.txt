@@ -1,0 +1,12 @@
+# 集成测试（`tests/integration/`）需要的依赖。
+#
+# **生产包 `packages/` 与进程 `apps/` 保持零第三方依赖** ——
+# 这是 PR-15 的硬要求：629 个单元测试在没有装任何数据库客户端的机器上
+# 也跑得通，集成层不许破坏它。
+#
+# 所以 psycopg 只在这里声明，且 `tests/integration/_pg.py` 是**惰性**导入：
+# 没装就 `SkipTest`，绝不让"没装驱动"变成红灯。
+#
+#     pip install -r requirements-integration.txt
+#     python -m unittest discover -s tests -t .
+psycopg[binary]>=3.1

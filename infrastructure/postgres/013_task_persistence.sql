@@ -1,0 +1,84 @@
+-- ============================================================================
+-- AgentOS · 013 · Task 持久化：让"没有 Task 的 Execution"在数据库里不存在
+-- ----------------------------------------------------------------------------
+-- 起因（空洞 215）
+--
+-- `001_kernel.sql` 从 M15 起就建好了 `tasks` 表：13 个列、2 个索引、
+-- 注释里还写着"Scheduler 只认识它（E-12）"。但直到 M35 结束，
+-- **没有任何一行代码写这张表**。
+--
+-- Task 只活在 `ExecutionKernel._tasks` 这个进程内字典里，键是 execution_id。
+-- 于是"进程重启后把活捡起来"这条能力在真 PG 上其实是断的：
+--
+--     PENDING 的 Execution 好端端躺在库里，
+--     Scheduler 选中它 → kernel.task_of() → KeyError: 'exe_xxx'
+--
+-- 而 `apps/_runtime.py` 的 ProcessRuntime 会把这个异常吞掉、
+-- 计一次 consecutive_failure、按 error_sleep 退避，
+-- 到 max_consecutive_failures 之后**整个 worker 进程退出**。
+-- 日志里只有一行 KeyError，指着一个症状，不是原因（PR-19）。
+--
+-- 更糟的是"修掉这个 KeyError"的那种修法：给个默认 Task。
+-- 那样 priority / tenant_id / resource_requirement / payload 全部变成编造值 ——
+-- 而那四样**不是加速信息，是正确性输入**（E-26）：
+--
+--     priority              决定谁先跑
+--     tenant_id             决定配额（多租户隔离边界，不是性能旋钮）
+--     resource_requirement  决定能不能派给这个 worker
+--     payload               决定要干什么
+--
+-- 编造之后的失败形态是：一个调度错误伪装成载荷错误
+-- （需要 GPU 的活派给 CPU worker → PERMANENT 不重试 → 看起来像业务坏了），
+-- 以及一条永远不生效的租户配额。两者都不报错。
+-- 按 A-12 判：丢了之后是**变错**，不是变慢 —— 所以这是 P1。
+--
+-- ----------------------------------------------------------------------------
+-- E-19 只说了半句话
+--
+--     CONSTRAINT uq_executions_task UNIQUE (task_id)   -- Task : Execution = 1 : 1
+--
+-- 它约束的是"一个 Task 最多开一个 Execution"（防重跑）。
+-- 它没有约束另一半：**一个 Execution 必须真的有一个 Task**。
+-- 半句话的不唯一约束，挡不住另一半 —— 于是库里可以躺着一条
+-- 谁也不知道要干什么的 Execution。
+--
+-- 本迁移把另一半补上。
+--
+-- ----------------------------------------------------------------------------
+-- 为什么是外键，而不是又一条 CHECK
+--
+-- 因为"Task 存不存在"这件事**不在这一行里**。
+-- CHECK 只能看 executions 自己的列，它没法知道 tasks 表里有没有那一行。
+-- 跨行的事实只能由外键来钉 —— 这是唯一能约束它的那一层（PR-23）。
+--
+-- 定向：executions.task_id → tasks.task_id。
+-- 于是写序被钉死：**先 Task，后 Execution**，且两者必须在同一事务里
+-- （见 `ExecutionKernel.submit()`）。这正是 X-3 想要的形状。
+--
+-- 不设 ON DELETE：Task 是交棒那一刻写下的**输入**，交棒之后不该被删。
+-- 默认 NO ACTION / RESTRICT 就是我们要的态度 ——
+-- 想删 Task 的人必须先想清楚那条 Execution 怎么办。
+--
+-- ----------------------------------------------------------------------------
+-- 这是兜底，不是主要保证（PR-26）
+--
+-- 主要保证在代码里：`submit()` 先写 Task 再写 Execution，
+-- 且 `task_of()` 读不到就抛 InvariantViolation 而绝不编造。
+--
+-- 那这条外键 reachable 吗？可达 —— 任何绕过 `kernel.submit()`
+-- 直接调 `repository.add()` 的代码路径都会撞上它。
+-- 001 里 `attempts` 那根 FK 是同一用法。
+--
+-- ⚠️ sqlite 测试替身**不执行**这一句：sqlite 的 ALTER TABLE 不支持
+-- ADD CONSTRAINT。所以 E-27 的这根外键**只在真 PostgreSQL 上被验证**
+-- （`tests/integration/test_task_persistence_real_pg.py`）。
+-- 这是按 PR-23 判据选的落点：换掉测试替身，这条约束依然在。
+-- ============================================================================
+
+BEGIN;
+
+ALTER TABLE executions
+    ADD CONSTRAINT fk_executions_task
+    FOREIGN KEY (task_id) REFERENCES tasks (task_id);
+
+COMMIT;

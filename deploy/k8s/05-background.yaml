@@ -1,0 +1,282 @@
+# M70 · 五个后台进程（本次部署真正跑起来的）
+#
+#     worker                     唯一真正执行 Task 的进程
+#     cancellation_sweeper       到点的取消意图 → 判死（X-3 同事务）
+#     run_cancellation_sweeper   Run 级取消的跨进程通道
+#     wakeup_controller          子 Run 完成 → 唤醒挂起的父 Run
+#     recovery_controller        租约过期 / 孤儿 Execution 的兜底
+#
+# 另有**两个**后台进程依赖 Kafka，本次部署不启用，见 `06-kafka-dependent.yaml`：
+#
+#     outbox_publisher           把 Outbox 里的事件投递出去（PR-3 投递领地）
+#     child_run_consumer         子 Run 结果的消费
+#
+# 五个文件合成一个不是偷懒：它们的结构**完全一样**，
+# 不一样的只有 `command` 里那个模块名。分成七个文件的话，
+# "这七个是不是同一套探针配置"就要靠人去比对 ——
+# 而漏掉的那一个不报错，它只是安静地没有健康信号。
+#
+# ---------------------------------------------------------------------------
+# 探针为什么是 exec 而不是 HTTP
+#
+# 这七个进程**没有 HTTP**。给它们各开一个端口只为探活，
+# 等于给每个进程加一张对外网卡和一个本不存在的攻击面。
+#
+# liveness 看心跳文件（`apps.probe live`）：
+#   一轮 tick 跑完才 touch，于是"进程还在、但已经不动了"
+#   在编排层看来与"进程死了"是同一件事 —— 两者的修法都是重启它。
+#
+# readiness 连一次库（`apps.probe ready`）：
+#   库挂了就摘掉，别杀 —— 杀了也还是连不上，只会让七个进程
+#   一起进入 CrashLoopBackOff，把"库挂了"这件事淹在重启日志里。
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-worker
+  namespace: agentos
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: agentos-worker}
+  template:
+    metadata:
+      labels: {app: agentos-worker}
+    spec:
+      initContainers:
+        - name: migrate
+          image: agentos:2.1.67-b1
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "apps.migrate", "apply"]
+          env:
+            - {name: AGENTOS_MANIFEST, value: /etc/agentos/agentos.toml}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: agentos-pg, key: password}}
+          volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
+      containers:
+        - name: worker
+          image: agentos:2.1.67-b1
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "apps.worker"]
+          env:
+            - {name: AGENTOS_MANIFEST, value: /etc/agentos/agentos.toml}
+            - {name: AGENTOS_AGENT_REGISTRY, value: /etc/agentos/agents.toml}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: agentos-pg, key: password}}
+          livenessProbe:
+            exec: {command: ["python", "-m", "apps.probe", "live"]}
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+          readinessProbe:
+            exec: {command: ["python", "-m", "apps.probe", "ready"]}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 10
+          resources:
+            requests: {cpu: "100m", memory: "192Mi"}
+            limits: {cpu: "1", memory: "512Mi"}
+          volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
+      volumes:
+        - name: config
+          configMap: {name: agentos-config}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-cancellation-sweeper
+  namespace: agentos
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: agentos-cancellation-sweeper}
+  template:
+    metadata:
+      labels: {app: agentos-cancellation-sweeper}
+    spec:
+      initContainers:
+        - name: migrate
+          image: agentos:2.1.67-b1
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "apps.migrate", "apply"]
+          env:
+            - {name: AGENTOS_MANIFEST, value: /etc/agentos/agentos.toml}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: agentos-pg, key: password}}
+          volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
+      containers:
+        - name: cancellation-sweeper
+          image: agentos:2.1.67-b1
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "apps.cancellation_sweeper"]
+          env:
+            - {name: AGENTOS_MANIFEST, value: /etc/agentos/agentos.toml}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: agentos-pg, key: password}}
+          livenessProbe:
+            exec: {command: ["python", "-m", "apps.probe", "live"]}
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+          readinessProbe:
+            exec: {command: ["python", "-m", "apps.probe", "ready"]}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 10
+          resources:
+            requests: {cpu: "50m", memory: "128Mi"}
+            limits: {cpu: "500m", memory: "384Mi"}
+          volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
+      volumes:
+        - name: config
+          configMap: {name: agentos-config}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-run-cancellation-sweeper
+  namespace: agentos
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: agentos-run-cancellation-sweeper}
+  template:
+    metadata:
+      labels: {app: agentos-run-cancellation-sweeper}
+    spec:
+      initContainers:
+        - name: migrate
+          image: agentos:2.1.67-b1
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "apps.migrate", "apply"]
+          env:
+            - {name: AGENTOS_MANIFEST, value: /etc/agentos/agentos.toml}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: agentos-pg, key: password}}
+          volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
+      containers:
+        - name: run-cancellation-sweeper
+          image: agentos:2.1.67-b1
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "apps.run_cancellation_sweeper"]
+          env:
+            - {name: AGENTOS_MANIFEST, value: /etc/agentos/agentos.toml}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: agentos-pg, key: password}}
+          livenessProbe:
+            exec: {command: ["python", "-m", "apps.probe", "live"]}
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+          readinessProbe:
+            exec: {command: ["python", "-m", "apps.probe", "ready"]}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 10
+          resources:
+            requests: {cpu: "50m", memory: "128Mi"}
+            limits: {cpu: "500m", memory: "384Mi"}
+          volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
+      volumes:
+        - name: config
+          configMap: {name: agentos-config}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-wakeup-controller
+  namespace: agentos
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: agentos-wakeup-controller}
+  template:
+    metadata:
+      labels: {app: agentos-wakeup-controller}
+    spec:
+      initContainers:
+        - name: migrate
+          image: agentos:2.1.67-b1
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "apps.migrate", "apply"]
+          env:
+            - {name: AGENTOS_MANIFEST, value: /etc/agentos/agentos.toml}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: agentos-pg, key: password}}
+          volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
+      containers:
+        - name: wakeup-controller
+          image: agentos:2.1.67-b1
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "apps.wakeup_controller"]
+          env:
+            - {name: AGENTOS_MANIFEST, value: /etc/agentos/agentos.toml}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: agentos-pg, key: password}}
+          livenessProbe:
+            exec: {command: ["python", "-m", "apps.probe", "live"]}
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+          readinessProbe:
+            exec: {command: ["python", "-m", "apps.probe", "ready"]}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 10
+          resources:
+            requests: {cpu: "50m", memory: "128Mi"}
+            limits: {cpu: "500m", memory: "384Mi"}
+          volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
+      volumes:
+        - name: config
+          configMap: {name: agentos-config}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-recovery-controller
+  namespace: agentos
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: agentos-recovery-controller}
+  template:
+    metadata:
+      labels: {app: agentos-recovery-controller}
+    spec:
+      initContainers:
+        - name: migrate
+          image: agentos:2.1.67-b1
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "apps.migrate", "apply"]
+          env:
+            - {name: AGENTOS_MANIFEST, value: /etc/agentos/agentos.toml}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: agentos-pg, key: password}}
+          volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
+      containers:
+        - name: recovery-controller
+          image: agentos:2.1.67-b1
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "apps.recovery_controller"]
+          env:
+            - {name: AGENTOS_MANIFEST, value: /etc/agentos/agentos.toml}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: agentos-pg, key: password}}
+          livenessProbe:
+            exec: {command: ["python", "-m", "apps.probe", "live"]}
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+          readinessProbe:
+            exec: {command: ["python", "-m", "apps.probe", "ready"]}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 10
+          resources:
+            requests: {cpu: "50m", memory: "128Mi"}
+            limits: {cpu: "500m", memory: "384Mi"}
+          volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
+      volumes:
+        - name: config
+          configMap: {name: agentos-config}

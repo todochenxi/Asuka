@@ -1,0 +1,25 @@
+# AgentOS 部署声明（M59 / M11 Manifest）
+#
+# 这一份描述的是**集成测试栈**：进程内工具 + 确定性模型，
+# 只连 PostgreSQL。真实部署把 provider 换成 HTTP / MCP 版本即可。
+#
+# 用法：
+#   python -m apps.cli manifest check tests/eval/agentos.toml
+#   python -m apps.cli manifest env   tests/eval/agentos.toml
+
+[stack]
+provider = "examples.demo_stack:build_approval_demo_stack_factory"
+model    = "examples.demo_stack:build_model_gateway"
+tool     = "examples.demo_stack:build_tool_runtime"
+
+[storage]
+pg_dsn = "postgresql://postgres:postgres@127.0.0.1:5433/agentos_it"
+
+[runtime]
+lease_ttl_seconds = 30
+heartbeat_seconds = 5
+batch_size        = 8
+
+[api]
+host = "127.0.0.1"
+port = 8011

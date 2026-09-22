@@ -1,0 +1,33 @@
+# 集成测试用的 PostgreSQL —— **只起它自己**。
+#
+# 为什么单独一份 compose、且用 5544 而不是 5432/5433：
+#   本机 Docker Desktop 里已经有在跑的 PG（5433）和 Redis（6380），
+#   这份文件不许碰它们。端口与容器名全部带 `agentos-it-` 前缀，
+#   于是 `up` / `down` 的边界是明确的。
+#
+# 用法（v2 插件用 `docker compose`，本机是 v1 所以用 `docker-compose`）：
+#     docker-compose -f infrastructure/docker-compose.it.yml up -d
+#     set AGENTOS_PG_DSN=postgresql://agentos:agentos@127.0.0.1:5544/agentos_it
+#     python -m unittest discover -s tests -t .
+#
+# 不设 `AGENTOS_PG_DSN` 时，`tests/integration/_pg.py` 默认指向
+# 5433 上那个 pgvector/pg16；连不上就跳过，不会让测试变红。
+#
+# Kafka 不在这里：事件链（`child_run.completed` → 唤醒父 Run，§65 空洞）
+# 还缺一个消费者，那是下一轮的事，不是"起个容器就能测"的事。
+
+services:
+  agentos-it-pg:
+    image: pgvector/pgvector:pg16
+    container_name: agentos-it-pg
+    environment:
+      POSTGRES_USER: agentos
+      POSTGRES_PASSWORD: agentos
+      POSTGRES_DB: agentos_it
+    ports:
+      - "5544:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentos -d agentos_it"]
+      interval: 3s
+      timeout: 3s
+      retries: 20

@@ -1,0 +1,52 @@
+# AgentOS 部署声明 —— 集群版（M70）
+#
+# 这就是**这次部署**的全部配置。八个进程读的是同一份，
+# 于是"线上跑的是什么配置"只有一个地方可看、可以 diff、可以 review。
+#
+# 与 `tests/eval/agentos.toml` 是两份文件，那不是重复：
+# 那是两套环境各自的声明（一个是集成测试栈、一个是集群部署），
+# 就像 dev 与 prod 各有自己的 values。
+# 重复的是**格式与校验规则**（同一个 `packages.agent_manifest`），不是内容。
+#
+# 校验：
+#   python -m apps.cli manifest check deploy/config/agentos.toml
+#   python -m apps.cli manifest env   deploy/config/agentos.toml
+
+[stack]
+# 换成真实模型/工具只改这三行 —— 它们是 `module:function` 形式的装配入口。
+# 这里用 demo 栈（确定性模型 + 进程内工具）是刻意的：
+# 一次没有外部依赖的部署才**能被验证**，
+# 否则"部署成功"和"API Key 有效"是两件事，而它们会互相掩盖。
+provider = "examples.demo_stack:build_approval_demo_stack_factory"
+model    = "examples.demo_stack:build_model_gateway"
+tool     = "examples.demo_stack:build_tool_runtime"
+
+# PR-16：没有默认执行器。执行器属于 Runtime / Intelligence，
+# 不是基础设施 —— 组合根不替你猜一个。猜出来的那个会让每个 Task
+# 以 EXECUTOR_NOT_FOUND（PERMANENT）失败，而报错看起来像配置坏了。
+# 少了这一行，`apps.worker` 起不来，且它说得很清楚为什么。
+executor_provider = "apps.executor_provider:build_executors"
+
+[storage]
+# ⚠️ 刻意**不带密码**。
+#
+# 密码由 Secret 通过 `PGPASSWORD` 注入（libpq 的标准环境变量，
+# psycopg 认它）。于是这一份文件可以进版本库、可以在 review 里被指指点点，
+# 而不必先确认"它里面没有口令"。
+#
+# 写成 `postgresql://agentos:agentos@agentos-postgres:5432/agentos` 也能跑，
+# 但那样口令就进了 ConfigMap —— 而 ConfigMap 在 `kubectl get -o yaml`
+# 面前是没有秘密可言的。
+pg_dsn = "postgresql://agentos@agentos-postgres:5432/agentos"
+
+[runtime]
+lease_ttl_seconds = 30
+heartbeat_seconds = 5
+batch_size        = 8
+
+[api]
+# 容器里必须是 0.0.0.0。写 127.0.0.1 的话，Service 的 ClusterIP
+# 永远连不上它 —— 而 Pod 自己的日志会显示"启动成功"，
+# `kubectl get pod` 也是 Ready，只有从别处访问才失败。
+host = "0.0.0.0"
+port = 8000

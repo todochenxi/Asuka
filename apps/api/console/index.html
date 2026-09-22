@@ -1,0 +1,1435 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentOS 控制台</title>
+<style>
+/* ============================================================
+   Token
+   ============================================================ */
+:root{
+  --bg:          oklch(0.145 0 0);
+  --bg-deep:     oklch(0.125 0 0);
+  --panel:       oklch(0.190 0 0);
+  --panel-2:     oklch(0.225 0 0);
+  --panel-3:     oklch(0.260 0 0);
+  --border:      oklch(0.280 0 0);
+  --border-soft: oklch(0.235 0 0);
+
+  --fg:          oklch(0.985 0 0);
+  --fg-mute:     oklch(0.708 0 0);
+  --fg-subtle:   oklch(0.556 0 0);
+
+  --brand:       oklch(0.66 0.19 264);
+  --brand-dim:   oklch(0.66 0.19 264 / 14%);
+  --ok:          oklch(0.75 0.17 155);
+  --warn:        oklch(0.82 0.16 75);
+  --bad:         oklch(0.68 0.19 22);
+  --info:        oklch(0.72 0.15 230);
+  --violet:      oklch(0.70 0.17 300);
+
+  --radius:   0.625rem;
+  --radius-s: 0.375rem;
+  --radius-l: 0.875rem;
+
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, "Noto Sans SC", "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas,
+          "Liberation Mono", monospace;
+
+  --shadow:    0 1px 2px oklch(0 0 0 / .4), 0 4px 12px oklch(0 0 0 / .25);
+  --shadow-lg: 0 2px 4px oklch(0 0 0 / .4), 0 12px 32px oklch(0 0 0 / .35);
+
+  --ease: cubic-bezier(.22,1,.36,1);
+}
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--fg);
+  font-family:var(--font); font-size:14px; line-height:1.55;
+  -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  overflow:hidden;
+}
+button,input,textarea,select{font:inherit;color:inherit}
+button{cursor:pointer;background:none;border:none}
+a{color:inherit}
+::selection{background:var(--brand);color:#fff}
+
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:var(--panel-3);border-radius:99px;border:3px solid var(--bg)}
+*::-webkit-scrollbar-thumb:hover{background:oklch(0.32 0 0)}
+
+/* ============================================================
+   App shell
+   ============================================================ */
+.app{display:grid; grid-template-rows:auto 1fr; height:100vh}
+
+.hdr{
+  display:flex; align-items:center; gap:16px;
+  padding:0 20px; height:56px; flex:0 0 56px;
+  border-bottom:1px solid var(--border-soft);
+  background:oklch(0.16 0 0 / 85%);
+  backdrop-filter:blur(12px) saturate(140%);
+  position:relative; z-index:20;
+}
+.hdr::after{
+  content:""; position:absolute; inset:auto 0 -1px 0; height:1px;
+  background:linear-gradient(90deg,transparent,var(--brand),transparent); opacity:.5;
+}
+.brand{display:flex; align-items:center; gap:10px; font-weight:600; letter-spacing:-.01em}
+.brand .mark{
+  width:26px; height:26px; border-radius:7px; flex:0 0 26px;
+  background:linear-gradient(140deg,var(--brand),oklch(0.55 0.2 300));
+  display:grid; place-items:center;
+  box-shadow:0 0 0 1px oklch(1 0 0 / .12), 0 2px 8px var(--brand-dim);
+}
+.brand .mark svg{width:15px;height:15px;stroke:#fff;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+/* 全站主标题就是品牌名（H1）。浏览器给 h1 的默认字号/外边距会撑坏 header，
+   所以这里显式抹平 —— 语义是 h1，视觉仍由 .brand 说了算。 */
+.brand h1{font-size:inherit; font-weight:inherit; line-height:inherit; margin:0; letter-spacing:inherit}
+
+.hdr-spacer{flex:1}
+.hdr-meta{display:flex; align-items:center; gap:8px}
+.chip{
+  display:inline-flex; align-items:center; gap:6px;
+  height:28px; padding:0 10px; border-radius:99px;
+  background:var(--panel-2); border:1px solid var(--border-soft);
+  font-size:12px; color:var(--fg-mute); white-space:nowrap;
+}
+.chip b{color:var(--fg); font-weight:600; font-family:var(--mono); font-size:11.5px}
+.dot{width:7px;height:7px;border-radius:99px;background:var(--fg-subtle);flex:0 0 7px}
+.dot.live{background:var(--ok); animation:pulse 2s infinite}
+.dot.down{background:var(--bad)}
+@keyframes pulse{
+  0%{box-shadow:0 0 0 0 oklch(0.75 0.17 155 / .55)}
+  70%{box-shadow:0 0 0 6px oklch(0.75 0.17 155 / 0)}
+  100%{box-shadow:0 0 0 0 oklch(0.75 0.17 155 / 0)}
+}
+
+.body{display:grid; grid-template-columns:224px 1fr; min-height:0}
+
+/* ---------- Sidebar ---------- */
+.nav{
+  border-right:1px solid var(--border-soft); background:var(--bg-deep);
+  padding:14px 10px; display:flex; flex-direction:column; gap:2px; overflow-y:auto;
+}
+.nav-label{
+  font-size:10.5px; text-transform:uppercase; letter-spacing:.09em;
+  color:var(--fg-subtle); padding:10px 10px 6px; font-weight:600;
+}
+.nav-i{
+  display:flex; align-items:center; gap:10px;
+  padding:8px 10px; border-radius:var(--radius-s);
+  color:var(--fg-mute); font-size:13.5px; font-weight:450;
+  transition:background .15s var(--ease), color .15s var(--ease);
+  position:relative; text-align:left; width:100%;
+}
+.nav-i svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:0 0 16px;opacity:.85}
+.nav-i:hover{background:var(--panel); color:var(--fg)}
+.nav-i[aria-current="true"]{background:var(--brand-dim); color:var(--fg); font-weight:550}
+.nav-i[aria-current="true"] svg{opacity:1}
+.nav-i[aria-current="true"]::before{
+  content:""; position:absolute; left:-10px; top:50%; transform:translateY(-50%);
+  width:3px; height:16px; border-radius:0 3px 3px 0; background:var(--brand);
+}
+.nav-count{
+  margin-left:auto; min-width:19px; height:19px; padding:0 5px; border-radius:99px;
+  background:var(--panel-3); color:var(--fg-mute);
+  font-size:11px; font-family:var(--mono); display:grid; place-items:center;
+}
+.nav-i[aria-current="true"] .nav-count{background:var(--brand); color:#fff}
+
+/* ---------- Main ---------- */
+main{overflow-y:auto; padding:22px 26px 40px; min-height:0}
+.view{display:none; max-width:1180px; margin:0 auto}
+.view.on{display:block; animation:viewIn .28s var(--ease)}
+@keyframes viewIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+.vhead{margin-bottom:20px}
+/* 视图标题是 h2（全站 h1 已经是品牌名），视觉层级由这条定 ——
+   卡片里的 h2 走 `.card-h h2`，两者不互相干扰。 */
+.vhead h2{font-size:21px; font-weight:600; letter-spacing:-.02em; margin-bottom:4px}
+.vhead p{color:var(--fg-subtle); font-size:13px; max-width:70ch}
+
+/* ============================================================
+   Card
+   ============================================================ */
+.card{
+  background:var(--panel); border:1px solid var(--border-soft);
+  border-radius:var(--radius-l); padding:18px; box-shadow:var(--shadow);
+  animation:cardIn .4s var(--ease) both;
+}
+.card + .card{margin-top:16px}
+@keyframes cardIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.card:nth-child(1){animation-delay:.02s}
+.card:nth-child(2){animation-delay:.06s}
+.card:nth-child(3){animation-delay:.10s}
+.card:nth-child(4){animation-delay:.14s}
+
+.card-h{display:flex; align-items:center; gap:10px; margin-bottom:14px}
+.card-h h2{font-size:14px; font-weight:600; letter-spacing:-.01em}
+.card-h .hint{color:var(--fg-subtle); font-size:12px; margin-left:auto}
+.card-h svg{width:15px;height:15px;stroke:var(--fg-mute);fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+
+.grid{display:grid; gap:16px}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.g-2-1{grid-template-columns:minmax(0,1.15fr) minmax(0,1fr)}
+@media(max-width:1080px){.g4{grid-template-columns:repeat(2,minmax(0,1fr))}.g3,.g-2-1{grid-template-columns:1fr}}
+@media(max-width:720px){.g2,.g4{grid-template-columns:1fr}}
+
+/* ============================================================
+   Stat
+   ============================================================ */
+.stat{
+  background:var(--panel); border:1px solid var(--border-soft);
+  border-radius:var(--radius-l); padding:15px 16px; box-shadow:var(--shadow);
+  animation:cardIn .4s var(--ease) both;
+}
+.stat .k{font-size:11.5px; color:var(--fg-subtle); text-transform:uppercase; letter-spacing:.07em; font-weight:600}
+.stat .v{font-size:26px; font-weight:650; letter-spacing:-.03em; margin-top:6px; font-variant-numeric:tabular-nums}
+.stat .s{font-size:12px; color:var(--fg-subtle); margin-top:3px}
+.stat.brand .v{color:var(--brand)}
+.stat.ok .v{color:var(--ok)}
+.stat.warn .v{color:var(--warn)}
+.stat.bad .v{color:var(--bad)}
+
+/* ============================================================
+   Form
+   ============================================================ */
+.field{margin-bottom:12px}
+.field:last-child{margin-bottom:0}
+.field label{display:block; font-size:12px; color:var(--fg-mute); margin-bottom:5px; font-weight:500}
+.field label .req{color:var(--brand); margin-left:2px}
+.field .note{font-size:11px; color:var(--fg-subtle); margin-top:4px}
+
+input[type=text],input[type=number],textarea,select{
+  width:100%; background:var(--bg-deep); border:1px solid var(--border);
+  border-radius:var(--radius-s); padding:8px 11px; color:var(--fg);
+  font-size:13px; transition:border-color .15s var(--ease), box-shadow .15s var(--ease);
+  font-family:var(--font);
+}
+textarea{resize:vertical; min-height:64px; line-height:1.5}
+input:focus,textarea:focus,select:focus{
+  outline:none; border-color:var(--brand); box-shadow:0 0 0 3px var(--brand-dim);
+}
+input::placeholder,textarea::placeholder{color:var(--fg-subtle)}
+input:read-only{color:var(--fg-mute); background:var(--panel-2)}
+input.mono,textarea.mono{font-family:var(--mono); font-size:12.5px}
+
+.row{display:flex; gap:8px; flex-wrap:wrap; align-items:center}
+.row.end{justify-content:flex-end}
+
+/* ============================================================
+   Button
+   ============================================================ */
+.btn{
+  display:inline-flex; align-items:center; justify-content:center; gap:7px;
+  height:34px; padding:0 14px; border-radius:var(--radius-s);
+  background:var(--panel-2); border:1px solid var(--border);
+  color:var(--fg); font-size:13px; font-weight:500; white-space:nowrap;
+  transition:background .15s var(--ease), border-color .15s var(--ease),
+             transform .1s var(--ease), opacity .15s var(--ease);
+}
+.btn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.btn:hover{background:var(--panel-3); border-color:var(--border)}
+.btn:active{transform:scale(.975)}
+.btn:disabled{opacity:.42; cursor:not-allowed; transform:none}
+.btn:focus-visible{outline:none; box-shadow:0 0 0 3px var(--brand-dim)}
+.btn-primary{background:var(--brand); border-color:transparent; color:#fff; font-weight:550}
+.btn-primary:hover{background:oklch(0.60 0.19 264); border-color:transparent}
+.btn-ok{background:oklch(0.75 0.17 155 / 16%); border-color:oklch(0.75 0.17 155 / 35%); color:var(--ok)}
+.btn-ok:hover{background:oklch(0.75 0.17 155 / 26%)}
+.btn-bad{background:oklch(0.68 0.19 22 / 14%); border-color:oklch(0.68 0.19 22 / 32%); color:var(--bad)}
+.btn-bad:hover{background:oklch(0.68 0.19 22 / 24%)}
+.btn-ghost{background:transparent}
+.btn-ghost:hover{background:var(--panel-2)}
+.btn-sm{height:29px; padding:0 11px; font-size:12.5px}
+.btn.busy{opacity:.6; pointer-events:none}
+
+/* ============================================================
+   Badge
+   ============================================================ */
+.badge{
+  display:inline-flex; align-items:center; gap:6px;
+  height:23px; padding:0 9px; border-radius:99px;
+  font-size:11.5px; font-weight:550;
+  background:var(--panel-2); border:1px solid var(--border-soft); color:var(--fg-mute);
+  white-space:nowrap;
+}
+.badge .dot{width:6px;height:6px}
+.badge.running  {color:var(--brand); background:var(--brand-dim); border-color:oklch(0.66 0.19 264 / 32%)}
+.badge.running .dot{background:var(--brand); animation:pulse 2s infinite}
+.badge.suspended{color:var(--warn); background:oklch(0.82 0.16 75 / 13%); border-color:oklch(0.82 0.16 75 / 32%)}
+.badge.suspended .dot{background:var(--warn)}
+.badge.completed{color:var(--ok); background:oklch(0.75 0.17 155 / 13%); border-color:oklch(0.75 0.17 155 / 32%)}
+.badge.completed .dot{background:var(--ok)}
+.badge.failed   {color:var(--bad); background:oklch(0.68 0.19 22 / 13%); border-color:oklch(0.68 0.19 22 / 32%)}
+.badge.failed .dot{background:var(--bad)}
+.badge.queued   {color:var(--info); background:oklch(0.72 0.15 230 / 13%); border-color:oklch(0.72 0.15 230 / 30%)}
+.badge.queued .dot{background:var(--info)}
+.badge.stranded {color:var(--bad); background:oklch(0.68 0.19 22 / 10%); border-color:oklch(0.68 0.19 22 / 30%)}
+
+.tag{
+  display:inline-flex; align-items:center; height:20px; padding:0 7px;
+  border-radius:var(--radius-s); font-size:11px; font-family:var(--mono);
+  background:var(--panel-2); border:1px solid var(--border-soft); color:var(--fg-mute);
+}
+
+/* ============================================================
+   Key-value
+   ============================================================ */
+.kv{display:grid; grid-template-columns:auto 1fr; gap:7px 16px; font-size:13px}
+.kv dt{color:var(--fg-subtle); font-size:12px; white-space:nowrap}
+.kv dd{font-family:var(--mono); font-size:12.5px; word-break:break-all; color:var(--fg)}
+.kv dd.plain{font-family:var(--font); font-size:13px}
+
+/* ============================================================
+   Run list
+   ============================================================ */
+.runs{display:flex; flex-direction:column; gap:6px}
+.run-i{
+  display:flex; align-items:center; gap:10px; padding:9px 11px;
+  border-radius:var(--radius-s); border:1px solid transparent;
+  background:var(--panel-2); transition:all .15s var(--ease);
+  text-align:left; width:100%;
+}
+.run-i:hover{background:var(--panel-3); border-color:var(--border)}
+.run-i.on{background:var(--brand-dim); border-color:oklch(0.66 0.19 264 / 38%)}
+.run-i .nm{font-family:var(--mono); font-size:12px; flex:1; min-width:0;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.run-i .rq{font-size:11.5px; color:var(--fg-subtle); flex:1; min-width:0;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+@media(max-width:900px){.run-i .rq{display:none}}
+
+/* ============================================================
+   Approval
+   ============================================================ */
+.appr{
+  background:var(--panel-2); border:1px solid var(--border-soft);
+  border-left:3px solid var(--warn);
+  border-radius:var(--radius); padding:14px; margin-bottom:10px;
+  animation:cardIn .35s var(--ease) both;
+}
+.appr:last-child{margin-bottom:0}
+.appr-top{display:flex; align-items:flex-start; gap:10px; margin-bottom:9px}
+.appr-q{font-size:13.5px; font-weight:500; line-height:1.45; flex:1}
+.appr-meta{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:11px; font-size:11.5px; color:var(--fg-subtle)}
+.appr-meta code{font-family:var(--mono); font-size:11px; background:var(--bg-deep);
+  padding:1px 5px; border-radius:4px; border:1px solid var(--border-soft)}
+
+/* ============================================================
+   Timeline
+   ============================================================ */
+.tl{position:relative; padding-left:22px}
+.tl::before{
+  content:""; position:absolute; left:6px; top:6px; bottom:6px; width:1.5px;
+  background:linear-gradient(180deg,var(--border),var(--border-soft) 60%,transparent);
+}
+.tl-e{
+  position:relative; padding:9px 12px; margin-bottom:7px;
+  background:var(--panel-2); border:1px solid var(--border-soft);
+  border-radius:var(--radius); animation:slideIn .32s var(--ease) both;
+}
+@keyframes slideIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+.tl-e::before{
+  content:""; position:absolute; left:-19.5px; top:15px;
+  width:9px; height:9px; border-radius:99px;
+  background:var(--fg-subtle); border:2px solid var(--bg);
+}
+.tl-e.k-info::before   {background:var(--info)}
+.tl-e.k-warn::before   {background:var(--warn)}
+.tl-e.k-ok::before     {background:var(--ok)}
+.tl-e.k-bad::before    {background:var(--bad)}
+.tl-e.k-violet::before {background:var(--violet)}
+.tl-e.k-brand::before  {background:var(--brand)}
+.tl-e.k-mute::before   {background:var(--fg-subtle)}
+
+.tl-top{display:flex; align-items:center; gap:8px; margin-bottom:4px; flex-wrap:wrap}
+.tl-kind{font-family:var(--mono); font-size:11.5px; font-weight:600}
+.tl-e.k-info .tl-kind  {color:var(--info)}
+.tl-e.k-warn .tl-kind  {color:var(--warn)}
+.tl-e.k-ok .tl-kind    {color:var(--ok)}
+.tl-e.k-bad .tl-kind   {color:var(--bad)}
+.tl-e.k-violet .tl-kind{color:var(--violet)}
+.tl-e.k-brand .tl-kind {color:var(--brand)}
+.tl-e.k-mute .tl-kind  {color:var(--fg-mute)}
+.tl-seq{margin-left:auto; font-family:var(--mono); font-size:11px; color:var(--fg-subtle)}
+.tl-sum{font-size:12.5px; color:var(--fg-mute); line-height:1.5}
+.tl-ids{display:flex; gap:6px; flex-wrap:wrap; margin-top:6px}
+.tl-ids .tag{font-size:10.5px; height:18px}
+pre.payload{
+  margin-top:7px; padding:9px 11px; background:var(--bg-deep);
+  border:1px solid var(--border-soft); border-radius:var(--radius-s);
+  font-family:var(--mono); font-size:11.5px; color:var(--fg-mute);
+  overflow-x:auto; max-height:190px; white-space:pre-wrap; word-break:break-word;
+}
+
+/* ============================================================
+   Empty / notice
+   ============================================================ */
+.empty{
+  padding:26px 18px; text-align:center; color:var(--fg-subtle); font-size:13px;
+  border:1px dashed var(--border); border-radius:var(--radius); background:oklch(0.17 0 0 / 45%);
+}
+.empty svg{width:26px;height:26px;stroke:var(--fg-subtle);fill:none;stroke-width:1.4;
+  margin-bottom:8px; opacity:.65}
+.empty .t{font-weight:550; color:var(--fg-mute); margin-bottom:3px; font-size:13.5px}
+
+.notice{
+  display:flex; gap:10px; padding:11px 13px; border-radius:var(--radius);
+  font-size:12.5px; line-height:1.5; border:1px solid;
+}
+.notice svg{width:15px;height:15px;flex:0 0 15px;margin-top:1px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round}
+.notice.warn{background:oklch(0.82 0.16 75 / 9%); border-color:oklch(0.82 0.16 75 / 28%); color:oklch(0.88 0.13 75)}
+.notice.info{background:oklch(0.72 0.15 230 / 9%); border-color:oklch(0.72 0.15 230 / 26%); color:oklch(0.85 0.11 230)}
+.notice.bad {background:oklch(0.68 0.19 22 / 9%);  border-color:oklch(0.68 0.19 22 / 28%);  color:oklch(0.80 0.14 22)}
+.notice code{font-family:var(--mono); font-size:11.5px; background:oklch(0 0 0 / .25); padding:1px 5px; border-radius:4px}
+
+/* ============================================================
+   HTTP log
+   ============================================================ */
+.log{
+  font-family:var(--mono); font-size:11.5px; line-height:1.65;
+  background:var(--bg-deep); border:1px solid var(--border-soft);
+  border-radius:var(--radius); padding:11px 13px; max-height:210px; overflow:auto;
+  color:var(--fg-mute); white-space:pre-wrap; word-break:break-word;
+}
+.log .ok{color:var(--ok)}
+.log .er{color:var(--bad)}
+.log .m {color:var(--brand)}
+
+/* ============================================================
+   API table
+   ============================================================ */
+.api-t{width:100%; border-collapse:collapse; font-size:12.5px}
+.api-t th{
+  text-align:left; font-weight:600; color:var(--fg-subtle); font-size:11px;
+  text-transform:uppercase; letter-spacing:.06em; padding:0 10px 8px; border-bottom:1px solid var(--border);
+}
+.api-t td{padding:9px 10px; border-bottom:1px solid var(--border-soft); vertical-align:top}
+.api-t tr:last-child td{border-bottom:none}
+.api-t .m{
+  font-family:var(--mono); font-size:10.5px; font-weight:700; padding:2px 6px;
+  border-radius:4px; display:inline-block; min-width:52px; text-align:center;
+}
+.m-get {background:oklch(0.72 0.15 230 / 16%); color:var(--info)}
+.m-post{background:oklch(0.75 0.17 155 / 16%); color:var(--ok)}
+.api-t .p{font-family:var(--mono); font-size:12px; color:var(--fg)}
+.api-t .d{color:var(--fg-subtle); font-size:12px}
+
+/* ============================================================
+   Toast
+   ============================================================ */
+.toasts{position:fixed; right:18px; bottom:18px; z-index:100;
+  display:flex; flex-direction:column; gap:8px; align-items:flex-end}
+.toast{
+  display:flex; align-items:flex-start; gap:10px; max-width:400px;
+  padding:11px 14px; border-radius:var(--radius);
+  background:var(--panel-2); border:1px solid var(--border);
+  box-shadow:var(--shadow-lg); font-size:13px;
+  animation:toastIn .3s var(--ease);
+}
+@keyframes toastIn{from{opacity:0;transform:translateX(20px) scale(.97)}to{opacity:1;transform:none}}
+.toast.out{animation:toastOut .22s var(--ease) forwards}
+@keyframes toastOut{to{opacity:0;transform:translateX(20px) scale(.97)}}
+.toast .ic{width:17px;height:17px;flex:0 0 17px;margin-top:1px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.toast.ok{border-color:oklch(0.75 0.17 155 / 40%)} .toast.ok .ic{color:var(--ok)}
+.toast.er{border-color:oklch(0.68 0.19 22 / 45%)}  .toast.er .ic{color:var(--bad)}
+.toast.info{border-color:oklch(0.72 0.15 230 / 40%)} .toast.info .ic{color:var(--info)}
+.toast .tt{font-weight:600; margin-bottom:1px}
+.toast .td{color:var(--fg-mute); font-size:12.5px; line-height:1.45; word-break:break-word}
+.toast .td code{font-family:var(--mono); font-size:11.5px; background:var(--bg-deep); padding:1px 4px; border-radius:3px}
+
+.mono-s{font-family:var(--mono); font-size:12px; color:var(--fg-mute)}
+.sep{height:1px; background:var(--border-soft); margin:14px 0}
+
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms !important; animation-iteration-count:1 !important;
+    transition-duration:.01ms !important}
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <header class="hdr">
+    <div class="brand">
+      <span class="mark">
+        <svg viewBox="0 0 24 24"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M12 22V12M12 12 3 7M12 12l9-5"/></svg>
+      </span>
+      <h1>AgentOS 控制台</h1>
+    </div>
+    <div class="hdr-spacer"></div>
+    <div class="hdr-meta">
+      <span class="chip"><span class="dot" id="hl"></span><span id="hl-text">连接中</span></span>
+      <span class="chip">v<b id="ver">—</b></span>
+      <button class="btn btn-sm btn-ghost" id="btn-refresh" title="重新拉取">
+        <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
+        刷新
+      </button>
+    </div>
+  </header>
+
+  <div class="body">
+    <nav class="nav">
+      <div class="nav-label">运行</div>
+      <button class="nav-i" data-view="overview" aria-current="true">
+        <svg viewBox="0 0 24 24"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+        总览
+      </button>
+      <button class="nav-i" data-view="runs">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/></svg>
+        Runs
+        <span class="nav-count" id="cnt-runs">0</span>
+      </button>
+      <button class="nav-i" data-view="approvals">
+        <svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        审批
+        <span class="nav-count" id="cnt-appr">0</span>
+      </button>
+
+      <div class="nav-label">观测</div>
+      <button class="nav-i" data-view="trace">
+        <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>
+        账本
+      </button>
+      <button class="nav-i" data-view="api">
+        <svg viewBox="0 0 24 24"><path d="M8 6 3 12l5 6M16 6l5 6-5 6"/></svg>
+        API
+      </button>
+
+      <div style="flex:1"></div>
+      <div style="padding:10px; font-size:11px; color:var(--fg-subtle); line-height:1.5">
+        同源 · 单进程 · 真实存储
+      </div>
+    </nav>
+
+    <main>
+      <!-- ---------- 总览 ---------- -->
+      <section class="view on" id="v-overview">
+        <div class="vhead">
+          <h2>总览</h2>
+          <p>控制面的实时状态。每一个数字都由服务真实回答 —— 页面不推断、不缓存猜测值。</p>
+        </div>
+
+        <div class="grid g4" style="margin-bottom:16px">
+          <div class="stat ok" id="st-health">
+            <div class="k">服务</div><div class="v" id="st-health-v">—</div><div class="s" id="st-health-s">探测中</div>
+          </div>
+          <div class="stat warn">
+            <div class="k">待审批</div><div class="v" id="st-appr">—</div><div class="s">有人在等签字</div>
+          </div>
+          <div class="stat brand">
+            <div class="k">追踪的 Run</div><div class="v" id="st-runs">0</div><div class="s">本次会话发起</div>
+          </div>
+          <div class="stat">
+            <div class="k">版本</div><div class="v" id="st-ver" style="font-size:19px">—</div><div class="s">服务自报</div>
+          </div>
+        </div>
+
+        <div id="ov-alert"></div>
+
+        <div class="grid g-2-1">
+          <div class="card">
+            <div class="card-h">
+              <svg viewBox="0 0 24 24"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M12 22V12"/></svg>
+              <h2>快速发起</h2>
+            </div>
+            <div class="field">
+              <label for="ov-agent">Agent</label>
+              <!-- M64：候选由 `GET /agents` 填充（配了注册表才有）。
+                   没配注册表时列表是空的，此时它就是普通输入框 —— 手填写谁就是谁。 -->
+              <input type="text" id="ov-agent" value="agent-it" class="mono"
+                     list="agent-options" autocomplete="off">
+              <datalist id="agent-options"></datalist>
+            </div>
+            <div class="field">
+              <label for="ov-req">请求</label>
+              <textarea id="ov-req" placeholder="想让它做什么">compute 6*7</textarea>
+            </div>
+            <div class="row end">
+              <button class="btn btn-primary" id="btn-ov-start">
+                <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg>
+                发起并推进
+              </button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/></svg>
+              <h2>本次会话</h2>
+            </div>
+            <div class="runs" id="ov-runs"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- Runs ---------- -->
+      <section class="view" id="v-runs">
+        <div class="vhead">
+          <h2>Runs</h2>
+          <p>发起一条 Run、推着它走、在某个安全点把它叫停。推进会在闸门处自己停下 —— 那是设计，不是卡住。</p>
+        </div>
+
+        <div class="grid g-2-1">
+          <div class="card">
+            <div class="card-h">
+              <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg>
+              <h2>发起一次 Run</h2>
+            </div>
+            <div class="field">
+              <label for="agent">Agent<span class="req">*</span></label>
+              <input type="text" id="agent" value="agent-it" class="mono"
+                     list="agent-options" autocomplete="off">
+            </div>
+            <div class="field">
+              <label for="req">请求<span class="req">*</span></label>
+              <textarea id="req" placeholder="想让它做什么">compute 6*7</textarea>
+            </div>
+            <div class="field">
+              <label for="skey">Idempotency-Key</label>
+              <input type="text" id="skey" placeholder="留空则不启用幂等" class="mono">
+              <div class="note">同一个键重发会拿回第一次的答案（<code>replayed: true</code>），而不是多出第二个 Run。</div>
+            </div>
+            <div class="row end">
+              <button class="btn btn-primary" id="btn-start">
+                <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg>
+                发起
+              </button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-h">
+              <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/></svg>
+              <h2>追踪中的 Run</h2>
+              <span class="hint" id="runs-hint"></span>
+            </div>
+            <div class="runs" id="run-list"></div>
+          </div>
+        </div>
+
+        <div class="card" id="detail-card">
+          <div class="card-h">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>
+            <h2>Run 详情</h2>
+            <span class="hint" id="detail-hint"></span>
+          </div>
+
+          <div id="run-empty" class="empty">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 10h8M8 14h5"/></svg>
+            <div class="t">还没有选中 Run</div>
+            在上方发起一条，或从右侧列表里挑一条。
+          </div>
+
+          <div id="run-info" hidden>
+            <div class="row" style="margin-bottom:14px; align-items:center">
+              <span class="badge" id="v-status"><span class="dot"></span>created</span>
+              <span class="tag" id="v-replay" hidden>replayed</span>
+              <span class="tag" id="v-cancel" hidden>cancel requested</span>
+              <div style="flex:1"></div>
+              <button class="btn btn-sm btn-ghost" id="btn-copy-id" title="复制 run_id">复制 id</button>
+            </div>
+
+            <div id="stranded-note"></div>
+
+            <dl class="kv">
+              <dt>run_id</dt><dd id="v-id">—</dd>
+              <dt>agent</dt><dd id="v-agent">—</dd>
+              <dt>步数</dt><dd id="v-steps">0</dd>
+              <dt>最后产出</dt><dd id="v-outcome" class="plain">（还没走过）</dd>
+              <dt>正在等</dt><dd id="v-wait">（不等任何人）</dd>
+            </dl>
+
+            <div class="sep"></div>
+
+            <div class="card-h" style="margin-bottom:12px">
+              <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></svg>
+              <h2>推进</h2>
+            </div>
+            <div class="row" style="margin-bottom:14px">
+              <button class="btn btn-sm" id="btn-step" disabled>
+                <svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg>
+                单步
+              </button>
+              <button class="btn btn-sm btn-primary" id="btn-drive" disabled>
+                <svg viewBox="0 0 24 24"><path d="M5 5l14 7-14 7z"/></svg>
+                推进到阻塞点或终态
+              </button>
+            </div>
+
+            <div class="card-h" style="margin-bottom:12px">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6"/></svg>
+              <h2>叫停</h2>
+            </div>
+            <div class="grid g3" style="margin-bottom:11px">
+              <div class="field" style="margin:0">
+                <label for="reason">原因<span class="req">*</span></label>
+                <input type="text" id="reason" value="user asked">
+              </div>
+              <div class="field" style="margin:0">
+                <label for="by">操作人<span class="req">*</span></label>
+                <input type="text" id="by" value="alice">
+              </div>
+              <div class="field" style="margin:0">
+                <label for="ckey">Idempotency-Key</label>
+                <input type="text" id="ckey" placeholder="留空则重试会拿到 409" class="mono">
+              </div>
+            </div>
+            <div class="row end">
+              <button class="btn btn-bad" id="btn-cancel" disabled>
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6"/></svg>
+                叫停
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="gate-card" hidden>
+          <div class="card-h">
+            <svg viewBox="0 0 24 24"><path d="M12 3l8 4v6c0 5-3.5 7.5-8 8-4.5-.5-8-3-8-8V7z"/><path d="M9 12l2 2 4-4"/></svg>
+            <h2>治理闸门</h2>
+            <span class="hint" id="gate-hint"></span>
+          </div>
+          <div class="appr" style="margin-bottom:12px">
+            <div class="appr-top">
+              <div class="appr-q" id="gate-q">—</div>
+            </div>
+            <div class="appr-meta" id="gate-meta"></div>
+          </div>
+          <div class="grid g2">
+            <div class="field" style="margin:0">
+              <label for="gate-by">决定人<span class="req">*</span></label>
+              <input type="text" id="gate-by" value="alice">
+            </div>
+            <div class="field" style="margin:0">
+              <label for="gate-comment">意见</label>
+              <input type="text" id="gate-comment" placeholder="可留空">
+            </div>
+          </div>
+          <div class="row end" style="margin-top:12px">
+            <button class="btn btn-ghost" id="btn-reject">
+              <svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+              驳回
+            </button>
+            <button class="btn btn-ok" id="btn-approve">
+              <svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>
+              批准
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- 审批 ---------- -->
+      <section class="view" id="v-approvals">
+        <div class="vhead">
+          <h2>审批</h2>
+          <p>所有待签字的请求。这个列表查的是<b>存储</b>而不是内存 —— 服务重启之后它照样在，而对应的 Run 还实实在在挂着等人批。</p>
+        </div>
+        <div class="card">
+          <div class="card-h">
+            <svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            <h2>待审批</h2>
+            <span class="hint" id="appr-hint"></span>
+          </div>
+          <div id="appr-empty" class="empty">
+            <svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            <div class="t">没有人在等签字</div>
+            发起一条会触发高风险动作的 Run，闸门会在这里出现。
+          </div>
+          <div id="appr-list"></div>
+        </div>
+      </section>
+
+      <!-- ---------- 账本 ---------- -->
+      <section class="view" id="v-trace">
+        <div class="vhead">
+          <h2>账本</h2>
+          <p>一个 Run 发生过什么。账本<b>只增</b>，不改写 —— 它是审计依据，不是缓存。</p>
+        </div>
+        <div class="card">
+          <div class="card-h">
+            <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>
+            <h2>trace</h2>
+            <span class="hint" id="trace-hint"></span>
+          </div>
+          <div class="field">
+            <label for="trace-rid">run_id</label>
+            <input type="text" id="trace-rid" class="mono" placeholder="从 Runs 视图挑一条，或粘贴 run_id">
+          </div>
+          <div class="row" style="margin-bottom:14px">
+            <button class="btn btn-sm btn-primary" id="btn-trace-load">
+              <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
+              拉取账本
+            </button>
+            <button class="btn btn-sm btn-ghost" id="btn-trace-use">用当前选中的 Run</button>
+          </div>
+          <div id="trace-empty" class="empty">
+            <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>
+            <div class="t">账本还是空的</div>
+            填入 run_id 后拉取。
+          </div>
+          <div class="tl" id="trace"></div>
+        </div>
+      </section>
+
+      <!-- ---------- API ---------- -->
+      <section class="view" id="v-api">
+        <div class="vhead">
+          <h2>API</h2>
+          <p>控制面真实暴露的端点。这张表由服务的 <code class="mono-s">/openapi.json</code> 生成 —— 页面不复制一份，所以它不会和实现走偏。</p>
+        </div>
+        <div class="card">
+          <div class="card-h">
+            <svg viewBox="0 0 24 24"><path d="M8 6 3 12l5 6M16 6l5 6-5 6"/></svg>
+            <h2>端点</h2>
+            <span class="hint" id="api-hint"></span>
+          </div>
+          <div id="api-empty" class="empty">
+            <svg viewBox="0 0 24 24"><path d="M8 6 3 12l5 6M16 6l5 6-5 6"/></svg>
+            <div class="t">拉取中</div>
+          </div>
+          <table class="api-t" id="api-t" hidden>
+            <thead><tr><th style="width:74px">方法</th><th style="width:38%">路径</th><th>说明</th></tr></thead>
+            <tbody id="api-body"></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <div class="card-h">
+            <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8"/></svg>
+            <h2>最近一次 HTTP</h2>
+          </div>
+          <pre class="log" id="log">—</pre>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+"use strict";
+
+const LS_KEY = "agentos.console.runs";
+const state = {
+  view: "overview",
+  runId: "",
+  run: null,
+  trace: null,
+  approvals: [],
+  agents: [],
+  history: [],
+  version: "",
+  health: null,
+};
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* ============================================================
+   HTTP
+   ============================================================ */
+async function api(method, path, body) {
+  const opts = { method: method, headers: {} };
+  if (body !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  let res, data = null, text = "";
+  try {
+    res = await fetch(path, opts);
+    text = await res.text();
+    try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+  } catch (e) {
+    return { ok: false, status: 0, data: null, err: String(e) };
+  }
+  logHttp(method, path, res.status, text);
+  return { ok: res.ok, status: res.status, data: data, err: null };
+}
+
+function errMsg(r) {
+  if (r.status === 0) return "连不上服务：" + (r.err || "网络错误");
+  const d = r.data || {};
+  const raw = d.code || d.detail || "";
+  const msg = (typeof raw === "string") ? raw : ((raw && raw.message) || "");
+  return "HTTP " + r.status + (msg ? " · " + msg : "");
+}
+
+function logHttp(m, p, s, text) {
+  const el = $("log");
+  if (!el) return;
+  const cls = (s >= 200 && s < 300) ? "ok" : ((s >= 400) ? "er" : "m");
+  const t = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+  const line = '<span class="' + cls + '">' + esc(t) + "  " + esc(m) + " " +
+    esc(p) + "  " + s + "</span>\n";
+  if (el.textContent === "—") el.innerHTML = "";
+  el.innerHTML = line + el.innerHTML;
+  try {
+    const j = JSON.parse(text);
+    el.innerHTML = esc("    " + JSON.stringify(j).slice(0, 400)) + "\n" + el.innerHTML;
+  } catch (e) { /* 非 JSON 只记状态行 */ }
+}
+
+/* ============================================================
+   Toast
+   ============================================================ */
+const ICON = {
+  ok:   '<path d="M20 6 9 17l-5-5"/>',
+  er:   '<circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
+};
+function toast(kind, title, detail) {
+  const box = $("toasts");
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.innerHTML =
+    '<svg class="ic" viewBox="0 0 24 24" fill="none">' + ICON[kind] + "</svg>" +
+    '<div><div class="tt">' + esc(title) + "</div>" +
+    (detail ? '<div class="td">' + detail + "</div>" : "") + "</div>";
+  box.appendChild(el);
+  setTimeout(function () {
+    el.classList.add("out");
+    setTimeout(function () { el.remove(); }, 240);
+  }, kind === "er" ? 6000 : 3600);
+}
+
+/* ============================================================
+   本地历史
+   后端没有 list-runs 端点 —— 这是会话内追踪，不是编造数据。
+   ============================================================ */
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    state.history = raw ? JSON.parse(raw) : [];
+  } catch (e) { state.history = []; }
+}
+function saveHistory() {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(state.history.slice(0, 40))); }
+  catch (e) { /* 隐私模式写不进去，不影响功能 */ }
+}
+function remember(run_id, agent_id, request) {
+  const i = state.history.findIndex(function (h) { return h.run_id === run_id; });
+  if (i >= 0) { state.history[i].request = request || state.history[i].request; }
+  else { state.history.unshift({ run_id: run_id, agent_id: agent_id, request: request || "", at: Date.now() }); }
+  state.history = state.history.slice(0, 40);
+  saveHistory();
+}
+
+/* ============================================================
+   渲染
+   ============================================================ */
+function statusMeta(v) {
+  const gate = v && v.pending_approval;
+  const stranded = v && v.status === "suspended" && !v.waiting_for && !gate;
+  return stranded
+    ? { cls: "stranded", text: "suspended · 没有出口" }
+    : { cls: (v && v.status) || "created", text: (v && v.status) || "created" };
+}
+
+function badgeHtml(v) {
+  const m = statusMeta(v);
+  return '<span class="badge ' + esc(m.cls) + '"><span class="dot"></span>' +
+    esc(m.text) + "</span>";
+}
+
+function renderHealth() {
+  const ok = state.health && state.health.status === "ok";
+  $("hl").className = "dot " + (ok ? "live" : "down");
+  $("hl-text").textContent = ok ? "运行中" : "不可用";
+  $("st-health-v").textContent = ok ? "ok" : "—";
+  $("st-health-s").textContent = ok ? "控制面在应答" : "探测失败";
+  $("st-ver").textContent = state.version || "—";
+  $("ver").textContent = state.version || "—";
+}
+
+function renderRunList() {
+  ["run-list", "ov-runs"].forEach(function (id) {
+    const el = $(id);
+    if (!el) return;
+    if (!state.history.length) {
+      el.innerHTML = '<div class="empty" style="padding:18px">本次会话还没有发起过 Run</div>';
+      return;
+    }
+    el.innerHTML = state.history.map(function (h) {
+      return '<button class="run-i ' + (h.run_id === state.runId ? "on" : "") +
+        '" data-run="' + esc(h.run_id) + '">' +
+        '<span class="nm">' + esc(h.run_id) + "</span>" +
+        (h.request ? '<span class="rq">' + esc(h.request) + "</span>" : "") +
+        "</button>";
+    }).join("");
+  });
+  $("cnt-runs").textContent = state.history.length;
+  $("st-runs").textContent = state.history.length;
+  const hint = $("runs-hint");
+  if (hint) hint.textContent = state.history.length + " 条 · 会话内追踪";
+}
+
+function fmtTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d) ? String(iso) : d.toLocaleString("zh-CN", { hour12: false });
+}
+
+function renderRun() {
+  const v = state.run;
+  const has = !!v;
+  $("run-empty").hidden = has;
+  $("run-info").hidden = !has;
+  $("btn-step").disabled = !has;
+  $("btn-drive").disabled = !has;
+  $("btn-cancel").disabled = !has;
+
+  const gate = v && v.pending_approval;
+  $("gate-card").hidden = !gate;
+  if (gate) {
+    $("gate-q").textContent = gate.question || "（这条审批没有写明问题）";
+    $("gate-meta").innerHTML =
+      "<span>approval <code>" + esc(gate.approval_id) + "</code></span>" +
+      "<span>run <code>" + esc(gate.run_id) + "</code></span>" +
+      (gate.expires_at ? "<span>过期 <code>" + esc(fmtTime(gate.expires_at)) + "</code></span>" : "") +
+      "<span>状态 <code>" + esc(gate.status) + "</code></span>";
+    $("gate-hint").textContent = "policy 判它需要人点头";
+  }
+
+  if (!has) { $("stranded-note").innerHTML = ""; return; }
+
+  $("v-status").outerHTML = badgeHtml(v);
+  $("v-id").textContent = v.run_id;
+  $("v-agent").textContent = v.agent_id;
+  $("v-steps").textContent = v.step_count;
+  $("v-outcome").textContent = v.last_outcome || "（还没走过）";
+  $("v-wait").textContent = v.waiting_for || "（不等任何人）";
+  $("v-replay").hidden = !v.replayed;
+  $("v-cancel").hidden = !v.cancel_requested;
+  $("detail-hint").textContent = v.run_id;
+
+  const m = statusMeta(v);
+  $("stranded-note").innerHTML = (m.cls === "stranded")
+    ? '<div class="notice bad" style="margin-bottom:14px">' +
+      '<svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg>' +
+      "<div>它是 <code>suspended</code> 但 <code>waiting_for</code> 是空的 —— " +
+      "不是在等任何人。这通常意味着状态没有被重新派生（B-11）。再点一次推进它会继续。</div></div>"
+    : "";
+}
+
+function renderApprovals() {
+  const items = state.approvals || [];
+  $("cnt-appr").textContent = items.length;
+  $("st-appr").textContent = items.length;
+  const hint = $("appr-hint");
+  if (hint) hint.textContent = items.length + " 条待决定";
+  $("appr-empty").hidden = items.length > 0;
+  $("appr-list").innerHTML = items.map(function (a) {
+    return '<div class="appr">' +
+      '<div class="appr-top"><div class="appr-q">' +
+        esc(a.question || "（这条审批没有写明问题）") + "</div>" +
+        '<span class="badge suspended"><span class="dot"></span>' +
+        esc(a.status) + "</span></div>" +
+      '<div class="appr-meta">' +
+        "<span>approval <code>" + esc(a.approval_id) + "</code></span>" +
+        "<span>run <code>" + esc(a.run_id) + "</code></span>" +
+        (a.expires_at ? "<span>过期 <code>" + esc(fmtTime(a.expires_at)) + "</code></span>" : "") +
+      "</div>" +
+      '<div class="row">' +
+        '<button class="btn btn-sm btn-ok" data-appr="' + esc(a.approval_id) +
+          '" data-run="' + esc(a.run_id) + '" data-act="approve">' +
+          '<svg viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>批准</button>' +
+        '<button class="btn btn-sm btn-ghost" data-appr="' + esc(a.approval_id) +
+          '" data-run="' + esc(a.run_id) + '" data-act="reject">' +
+          '<svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>驳回</button>' +
+        '<button class="btn btn-sm btn-ghost" data-goto="' + esc(a.run_id) + '">查看 Run</button>' +
+      "</div></div>";
+  }).join("");
+}
+
+function kindMeta(kind) {
+  const k = String(kind || "");
+  if (k.indexOf("execution.") === 0)    return { c: "info",   g: "execution" };
+  if (k.indexOf("attempt.") === 0)      return { c: "info",   g: "attempt" };
+  if (k.indexOf("lease.") === 0)        return { c: "mute",   g: "lease" };
+  if (k.indexOf("approval.") === 0)     return { c: "warn",   g: "approval" };
+  if (k.indexOf("checkpoint.") === 0)   return { c: "violet", g: "checkpoint" };
+  if (k.indexOf("snapshot.") === 0)     return { c: "violet", g: "snapshot" };
+  if (k.indexOf("child_run.") === 0)    return { c: "brand",  g: "child run" };
+  if (k.indexOf("compensation.") === 0) return { c: "bad",    g: "compensation" };
+  if (k.indexOf("task.") === 0)         return { c: "info",   g: "task" };
+  if (k.indexOf("run.") === 0)          return { c: "ok",     g: "run" };
+  return { c: "mute", g: (k.split(".")[0] || "event") };
+}
+
+function renderTrace() {
+  const t = state.trace;
+  const el = $("trace");
+  const has = t && t.entries && t.entries.length;
+  $("trace-empty").hidden = !!has;
+  const hint = $("trace-hint");
+  if (hint) hint.textContent = has ? (t.entries.length + " 条 · step " + t.step_count) : "";
+  if (!has) { el.innerHTML = ""; return; }
+
+  el.innerHTML = t.entries.map(function (e, i) {
+    const km = kindMeta(e.kind);
+    const ids = [];
+    if (e.step_id)      ids.push("step " + e.step_id);
+    if (e.task_id)      ids.push("task " + e.task_id);
+    if (e.execution_id) ids.push("exec " + e.execution_id);
+    if (e.attempt_no)   ids.push("attempt " + e.attempt_no);
+    const p = e.payload;
+    const payload = (p && Object.keys(p).length)
+      ? '<pre class="payload">' + esc(JSON.stringify(p, null, 2)) + "</pre>" : "";
+    const sv = (e.served && Object.keys(e.served).length)
+      ? '<pre class="payload">' + esc(JSON.stringify(e.served, null, 2)) + "</pre>" : "";
+    return '<div class="tl-e k-' + km.c + '" style="animation-delay:' +
+        Math.min(i * 22, 300) + 'ms">' +
+      '<div class="tl-top">' +
+        '<span class="tl-kind">' + esc(e.kind || "?") + "</span>" +
+        '<span class="tag">' + esc(km.g) + "</span>" +
+        '<span class="tl-seq">#' + esc(e.seq) + " · " + esc(fmtTime(e.at)) + "</span>" +
+      "</div>" +
+      (e.summary ? '<div class="tl-sum">' + esc(e.summary) + "</div>" : "") +
+      (ids.length ? '<div class="tl-ids">' +
+        ids.map(function (x) { return '<span class="tag">' + esc(x) + "</span>"; }).join("") + "</div>" : "") +
+      payload + sv +
+    "</div>";
+  }).join("");
+}
+
+function renderApi(spec) {
+  const paths = (spec && spec.paths) || {};
+  const rows = [];
+  Object.keys(paths).forEach(function (p) {
+    if (p === "/") return;
+    Object.keys(paths[p]).forEach(function (m) {
+      const op = paths[p][m] || {};
+      if (["get", "post", "put", "delete", "patch"].indexOf(m) < 0) return;
+      rows.push({ m: m.toUpperCase(), p: p, d: op.summary || op.description || "" });
+    });
+  });
+  rows.sort(function (a, b) { return a.p.localeCompare(b.p); });
+  $("api-empty").hidden = rows.length > 0;
+  $("api-t").hidden = rows.length === 0;
+  $("api-hint").textContent = rows.length + " 个操作";
+  $("api-body").innerHTML = rows.map(function (r) {
+    return '<tr><td><span class="m m-' + r.m.toLowerCase() + '">' + esc(r.m) + "</span></td>" +
+      '<td class="p">' + esc(r.p) + "</td>" +
+      '<td class="d">' + esc(r.d) + "</td></tr>";
+  }).join("");
+}
+
+function renderOverviewAlert() {
+  const el = $("ov-alert");
+  const n = state.approvals.length;
+  el.innerHTML = (n > 0)
+    ? '<div class="notice warn" style="margin-bottom:16px">' +
+      '<svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg>' +
+      "<div>有 <b>" + n + "</b> 条审批在等人签字 —— 它们对应的 Run 现在挂在闸门上，" +
+      "不会自己往下走。去「审批」视图处理。</div></div>"
+    : "";
+}
+
+/* ============================================================
+   拉取
+   ============================================================ */
+async function refreshAll() {
+  const results = await Promise.all([
+    api("GET", "/health"),
+    api("GET", "/openapi.json"),
+    api("GET", "/agents"),
+    api("GET", "/approvals"),
+  ]);
+  const h = results[0], oa = results[1], ag = results[2], ap = results[3];
+  state.health = h.ok ? h.data : null;
+  if (oa.ok && oa.data && oa.data.info) state.version = oa.data.info.version || "";
+  if (oa.ok && oa.data) renderApi(oa.data);
+  state.agents = (ag.ok && ag.data && ag.data.items) ? ag.data.items : [];
+  state.approvals = (ap.ok && ap.data && ap.data.items) ? ap.data.items : [];
+  renderHealth();
+  renderAgents();
+  renderApprovals();
+  renderRunList();
+  renderOverviewAlert();
+}
+
+function renderAgents() {
+  /* 把 `GET /agents` 的结果填进 datalist。
+     没配注册表时是空列表 —— 输入框照旧手填，不假装有得选。 */
+  const dl = $("agent-options");
+  if (!dl) return;
+  const items = state.agents || [];
+  dl.innerHTML = items.map(function (a) {
+    const label = a.description ? (a.agent_id + " · " + a.description) : a.agent_id;
+    return '<option value="' + esc(a.agent_id) + '">' + esc(label) + "</option>";
+  }).join("");
+
+  // 候选里没有当前值时，把第一项填进去 —— 免得默认按钮发起一个未登记的 agent
+  const first = items.length ? items[0].agent_id : "";
+  ["agent", "ov-agent"].forEach(function (id) {
+    const el = $(id);
+    if (!el) return;
+    if (items.length && !items.some(function (a) { return a.agent_id === el.value; })) {
+      el.value = first;
+    }
+  });
+}
+
+async function loadRun(run_id, opts) {
+  const r = await api("GET", "/runs/" + encodeURIComponent(run_id));
+  if (!r.ok) {
+    if (!(opts && opts.quiet)) toast("er", "读不到这条 Run", esc(errMsg(r)));
+    return false;
+  }
+  state.runId = run_id;
+  state.run = r.data;
+  renderRun();
+  renderRunList();
+  const tr = $("trace-rid");
+  if (tr) tr.value = run_id;
+  return true;
+}
+
+async function loadTrace(run_id) {
+  if (!run_id) {
+    toast("info", "先选一条 Run", "填入 run_id 或点「用当前选中的 Run」");
+    return;
+  }
+  const r = await api("GET", "/runs/" + encodeURIComponent(run_id) + "/trace");
+  if (!r.ok) { toast("er", "账本拉取失败", esc(errMsg(r))); return; }
+  state.trace = r.data;
+  renderTrace();
+}
+
+/* ============================================================
+   动作
+   ============================================================ */
+function busy(btn, on, label) {
+  if (!btn) return;
+  btn.classList.toggle("busy", on);
+  btn.disabled = on;
+  if (label) {
+    if (!btn.dataset.label) btn.dataset.label = btn.innerHTML;
+    btn.innerHTML = on ? label : btn.dataset.label;
+  }
+}
+
+// 带自定义 header 的 POST（幂等键要进 header，不是 body）
+async function postWith(path, bodyObj, key) {
+  const opts = {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(bodyObj || {}),
+  };
+  if (key) opts.headers["Idempotency-Key"] = key;
+  let res, text = "";
+  try {
+    res = await fetch(path, opts);
+    text = await res.text();
+  } catch (e) {
+    return { ok: false, status: 0, data: null, err: String(e) };
+  }
+  logHttp("POST", path, res.status, text);
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (e) { data = null; }
+  return { ok: res.ok, status: res.status, data: data, err: null };
+}
+
+async function startRun(agent_id, request, key, btn) {
+  if (!agent_id) { toast("er", "缺 agent_id", "发起一条 Run 必须指明是哪个 agent"); return null; }
+  busy(btn, true, "发起中");
+  const r = await postWith(
+    "/agents/" + encodeURIComponent(agent_id) + "/runs",
+    { user_request: request || "" },
+    key
+  );
+  busy(btn, false);
+  if (!r.ok) { toast("er", "发起失败", esc(errMsg(r))); return null; }
+  const v = r.data;
+  remember(v.run_id, v.agent_id, request);
+  state.runId = v.run_id;
+  state.run = v;
+  renderRun();
+  renderRunList();
+  toast("ok", v.replayed ? "拿回了第一次的答案" : "Run 已创建",
+    "<code>" + esc(v.run_id) + "</code>" + (v.replayed ? " · replayed" : ""));
+  return v;
+}
+
+async function advance(run_id, mode) {
+  const btn = (mode === "step") ? $("btn-step") : $("btn-drive");
+  busy(btn, true, (mode === "step") ? "走一步" : "推进中");
+  const r = await api("POST", "/runs/" + encodeURIComponent(run_id) + "/" + mode, {});
+  busy(btn, false);
+  if (!r.ok) { toast("er", "推进失败", esc(errMsg(r))); return; }
+  state.run = r.data;
+  renderRun();
+  const o = r.data.last_outcome;
+  toast((r.data.status === "suspended") ? "info" : "ok", "推进完成",
+    "状态 <code>" + esc(r.data.status) + "</code>" +
+    (o ? " · 产出 <code>" + esc(o) + "</code>" : ""));
+  await loadTrace(run_id);
+  await refreshAll();
+}
+
+async function cancelRun(run_id) {
+  const reason = $("reason").value.trim();
+  const by = $("by").value.trim();
+  const key = $("ckey").value.trim();
+  if (!reason || !by) {
+    toast("er", "原因和操作人都必填",
+      "审计要回答「谁叫停的、为什么」—— 缺一样，这次取消就等于没发生过");
+    return;
+  }
+  const btn = $("btn-cancel");
+  busy(btn, true, "叫停中");
+  const r = await postWith(
+    "/runs/" + encodeURIComponent(run_id) + "/cancel",
+    { reason: reason, by: by },
+    key
+  );
+  busy(btn, false);
+  if (!r.ok) { toast("er", "叫停失败", esc(errMsg(r))); return; }
+  state.run = r.data;
+  renderRun();
+  const unknown = r.data && (r.data.status === "unknown" || r.data.cancel_requested);
+  toast(unknown ? "info" : "ok", unknown ? "已落下叫停意图" : "Run 已叫停",
+    unknown ? "它跑在别的进程里 —— 这里只登记了意图，不敢替它宣告终态"
+            : "状态 <code>" + esc(r.data.status) + "</code>");
+  await refreshAll();
+}
+
+async function decide(run_id, approval_id, approved, by, comment) {
+  const path = "/runs/" + encodeURIComponent(run_id) +
+    "/approvals/" + encodeURIComponent(approval_id) + "/decision";
+  // 契约是 decision: "approve" | "reject" —— 不是 approved: true/false。
+  // `approved` 是服务端派生的只读属性，客户端写它是 400。
+  const r = await api("POST", path, {
+    decision: approved ? "approve" : "reject",
+    by: by || "human",
+    comment: comment || "",
+  });
+  if (!r.ok) {
+    toast("er", approved ? "批准失败" : "驳回失败", esc(errMsg(r)));
+    return;
+  }
+  state.run = r.data;
+  renderRun();
+  toast("ok", approved ? "已批准" : "已驳回",
+    "状态 <code>" + esc(r.data.status) + "</code> · 产出 <code>" +
+    esc(r.data.last_outcome || "") + "</code>");
+  await loadTrace(run_id);
+  await refreshAll();
+}
+
+/* ============================================================
+   导航
+   ============================================================ */
+function go(view) {
+  state.view = view;
+  document.querySelectorAll(".view").forEach(function (v) {
+    v.classList.toggle("on", v.id === "v-" + view);
+  });
+  document.querySelectorAll(".nav-i").forEach(function (b) {
+    b.setAttribute("aria-current", String(b.dataset.view === view));
+  });
+  if (view === "trace" && state.runId) loadTrace(state.runId);
+}
+
+/* ============================================================
+   事件
+   ============================================================ */
+document.addEventListener("click", function (e) {
+  const t = e.target;
+
+  const nav = t.closest(".nav-i");
+  if (nav) { go(nav.dataset.view); return; }
+
+  const goto = t.closest("[data-goto]");
+  if (goto) { loadRun(goto.dataset.goto); go("runs"); return; }
+
+  const apprBtn = t.closest("[data-act]");
+  if (apprBtn) {
+    const by = ($("gate-by") && $("gate-by").value.trim()) || "alice";
+    const comment = ($("gate-comment") && $("gate-comment").value.trim()) || "";
+    decide(apprBtn.dataset.run, apprBtn.dataset.appr,
+      apprBtn.dataset.act === "approve", by, comment);
+    return;
+  }
+
+  const runI = t.closest("[data-run]");
+  if (runI) { loadRun(runI.dataset.run); go("runs"); return; }
+});
+
+$("btn-refresh").addEventListener("click", function () {
+  refreshAll().then(function () {
+    toast("info", "已刷新", "状态、审批、端点都重新拉过一次");
+  });
+});
+
+$("btn-start").addEventListener("click", function () {
+  startRun($("agent").value.trim(), $("req").value.trim(),
+    $("skey").value.trim(), $("btn-start"));
+});
+
+$("btn-ov-start").addEventListener("click", async function () {
+  const v = await startRun($("ov-agent").value.trim(), $("ov-req").value.trim(),
+    "", $("btn-ov-start"));
+  if (v) {
+    go("runs");
+    if (v.status !== "completed") await advance(v.run_id, "run");
+  }
+});
+
+$("btn-step").addEventListener("click", function () { advance(state.runId, "step"); });
+$("btn-drive").addEventListener("click", function () { advance(state.runId, "run"); });
+$("btn-cancel").addEventListener("click", function () { cancelRun(state.runId); });
+
+$("btn-approve").addEventListener("click", function () {
+  const g = state.run && state.run.pending_approval;
+  if (!g) return;
+  decide(state.runId, g.approval_id, true,
+    $("gate-by").value.trim() || "alice", $("gate-comment").value.trim());
+});
+$("btn-reject").addEventListener("click", function () {
+  const g = state.run && state.run.pending_approval;
+  if (!g) return;
+  decide(state.runId, g.approval_id, false,
+    $("gate-by").value.trim() || "alice", $("gate-comment").value.trim());
+});
+
+$("btn-copy-id").addEventListener("click", async function () {
+  const id = state.run && state.run.run_id;
+  if (!id) return;
+  try {
+    await navigator.clipboard.writeText(id);
+    toast("ok", "已复制", "<code>" + esc(id) + "</code>");
+  } catch (e) { toast("info", "复制失败", "手动选中即可"); }
+});
+
+$("btn-trace-load").addEventListener("click", function () {
+  loadTrace($("trace-rid").value.trim());
+});
+$("btn-trace-use").addEventListener("click", function () {
+  if (!state.runId) { toast("info", "还没有选中的 Run", "先去 Runs 发起或挑一条"); return; }
+  $("trace-rid").value = state.runId;
+  loadTrace(state.runId);
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+(async function init() {
+  loadHistory();
+  renderRunList();
+  await refreshAll();
+  if (state.history.length) await loadRun(state.history[0].run_id, { quiet: true });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Agent 注册表 —— 集群版（M70）
+#
+# 登记"这个部署里有哪些 agent"。配了它，`POST /agents/{id}/runs`
+# 就只收登记过的 id —— 没登记的拿 404 而不是 201。
+#
+# 用法（由编排层注入这个环境变量）：
+#   AGENTOS_AGENT_REGISTRY=/etc/agentos/agents.toml
+#
+# ⚠️ 不配这个文件就维持"agent_id 透传"。那是刻意的向后兼容，
+#    不是漏配 —— 要不要强校验交给部署决定。
+
+[agents.agent-demo]
+description = "集群默认 agent：确定性模型 + 进程内工具"
+stack = "examples.demo_stack:build_approval_demo_stack_factory"
+model = "examples.demo_stack:build_model_gateway"
+tool  = "examples.demo_stack:build_tool_runtime"
+
+[agents.agent-math]
+description = "只做算术（同一套栈，用于评估里的对照组）"
+# stack / model / tool 不写 → 跟随全局配置

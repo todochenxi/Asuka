@@ -1,0 +1,47 @@
+# M70 · 配置（两份 TOML）
+#
+# 这里放的是 `deploy/config/*.toml` 的**内容**，不是路径：
+# 镜像里不带这两份文件（它们是部署的产物，不是代码），
+# 于是"改配置"不需要重新构建镜像 —— 重新构建会让
+# "现在线上跑的是哪份代码"和"现在线上跑的是哪份配置"耦合在一起。
+#
+# 两份文件内嵌在 ConfigMap 里，改完 `kubectl apply` 再 rollout 即可。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentos-config
+  namespace: agentos
+data:
+  agentos.toml: |
+    # 部署声明。详细注释见 deploy/config/agentos.toml。
+    [stack]
+    provider = "examples.demo_stack:build_approval_demo_stack_factory"
+    model    = "examples.demo_stack:build_model_gateway"
+    tool     = "examples.demo_stack:build_tool_runtime"
+    # PR-16：没有默认执行器。少了这行 worker 起不来（它会说清楚为什么）
+    executor_provider = "apps.executor_provider:build_executors"
+
+    [storage]
+    # 刻意不带密码：由 Secret 通过 PGPASSWORD 注入（libpq 标准环境变量）
+    pg_dsn = "postgresql://agentos@agentos-postgres:5432/agentos"
+
+    [runtime]
+    lease_ttl_seconds = 30
+    heartbeat_seconds = 5
+    batch_size        = 8
+
+    [api]
+    # 容器里必须是 0.0.0.0 —— 写 127.0.0.1 时 Service 永远连不上它
+    host = "0.0.0.0"
+    port = 8000
+
+  agents.toml: |
+    # Agent 注册表：登记了才收（未登记 → 404，而不是来者不拒的 201）
+    [agents.agent-demo]
+    description = "集群默认 agent：确定性模型 + 进程内工具"
+    stack = "examples.demo_stack:build_approval_demo_stack_factory"
+    model = "examples.demo_stack:build_model_gateway"
+    tool  = "examples.demo_stack:build_tool_runtime"
+
+    [agents.agent-math]
+    description = "只做算术（同一套栈，用于评估里的对照组）"

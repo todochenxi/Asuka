@@ -1,0 +1,12 @@
+# M70 · 命名空间
+#
+# 为什么单开一个 ns 而不是用 default：
+# `kubectl get pod` 在 default 里会列出集群里所有人的东西 ——
+# 于是"删掉这次部署的全部资源"变成一件需要逐条确认的事。
+# 单开一个 ns，"全部删掉"就是 `kubectl delete ns agentos` 一句。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentos
+  labels:
+    app.kubernetes.io/name: agentos

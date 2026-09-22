@@ -1,0 +1,129 @@
+# M70 · 两个**依赖 Kafka** 的进程 —— 本次部署不启用（replicas: 0）
+#
+#     outbox_publisher      把 Outbox 里的事件投递到 Kafka
+#     child_run_consumer    消费 `child_run.completed`，唤醒挂起的父 Run
+#
+# ---------------------------------------------------------------------------
+# 为什么是 0 副本而不是删掉这两个文件
+#
+# 删掉的话，`kubectl get deploy` 里只剩六个进程，
+# 而架构文档写的是八个 —— 于是"另外两个去哪了"变成一个
+# 需要靠口头传承才能回答的问题。
+#
+# 0 副本是一个**能被看见**的答案：它就在那里，它写着它为什么不跑，
+# 而且 `kubectl get deploy` 会把它列出来（0/0）。
+#
+# ---------------------------------------------------------------------------
+# 为什么不顺手起一个 Kafka
+#
+# 起了容器不等于闭合依赖：
+#
+#   1. 这两个进程要的不只是"一个 broker 地址"，它们要的是一条
+#      **真的能把事件投递出去**的链路 —— 包括 topic、消费组、
+#      以及"投到一半崩了怎么办"（PR-3 投递领地）。
+#   2. 更关键的是 `child_run_consumer` 的语义：它消费
+#      `child_run.completed` 去唤醒父 Run。
+#      **没有它，父 Run 不是"慢一点被唤醒"，是永远挂在那里** ——
+#      而这件事在库里看起来完全正常（父 Run 在等，子是 completed）。
+#
+#     也就是说，起一个空 Kafka 会让这条链路"看起来通了"，
+#     而实际上只是把失败从"启动时报错"推迟到"某个父 Run 永久挂起"。
+#     那正是这套系统最忌讳的那类失败（PR-19：报错要说中真发生了什么）。
+#
+# 所以这里宁可让它不跑，并把原因写在这份文件里 ——
+# 一个 0 副本的 Deployment 会有人来问，一个"看起来正常"的
+# 空 Kafka 不会。
+#
+# ---------------------------------------------------------------------------
+# 要启用时怎么做
+#
+#   1. 起一个 Kafka（或 Redpanda），得到 broker 地址
+#   2. 在 `01-configmap.yaml` 的 `[storage]` 下加一行
+#      `kafka_brokers = "..."`
+#      （`packages.agent_manifest.KNOWN` 已经有这个键，不会报未知键）
+#   3. 把下面两个 `replicas` 改成 1
+#   4. `kubectl apply -f deploy/k8s/`
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-outbox-publisher
+  namespace: agentos
+  labels:
+    agentos.io/blocked-on: kafka
+spec:
+  replicas: 0
+  selector:
+    matchLabels: {app: agentos-outbox-publisher}
+  template:
+    metadata:
+      labels: {app: agentos-outbox-publisher}
+    spec:
+      containers:
+        - name: outbox-publisher
+          image: agentos:2.1.67-b1
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "apps.outbox_publisher"]
+          env:
+            - {name: AGENTOS_MANIFEST, value: /etc/agentos/agentos.toml}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: agentos-pg, key: password}}
+          livenessProbe:
+            exec: {command: ["python", "-m", "apps.probe", "live"]}
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+          readinessProbe:
+            exec: {command: ["python", "-m", "apps.probe", "ready"]}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 10
+          resources:
+            requests: {cpu: "50m", memory: "128Mi"}
+            limits: {cpu: "500m", memory: "384Mi"}
+          volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
+      volumes:
+        - name: config
+          configMap: {name: agentos-config}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-child-run-consumer
+  namespace: agentos
+  labels:
+    agentos.io/blocked-on: kafka
+spec:
+  replicas: 0
+  selector:
+    matchLabels: {app: agentos-child-run-consumer}
+  template:
+    metadata:
+      labels: {app: agentos-child-run-consumer}
+    spec:
+      containers:
+        - name: child-run-consumer
+          image: agentos:2.1.67-b1
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "apps.child_run_consumer"]
+          env:
+            - {name: AGENTOS_MANIFEST, value: /etc/agentos/agentos.toml}
+            - name: PGPASSWORD
+              valueFrom: {secretKeyRef: {name: agentos-pg, key: password}}
+          livenessProbe:
+            exec: {command: ["python", "-m", "apps.probe", "live"]}
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 10
+          readinessProbe:
+            exec: {command: ["python", "-m", "apps.probe", "ready"]}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 10
+          resources:
+            requests: {cpu: "50m", memory: "128Mi"}
+            limits: {cpu: "500m", memory: "384Mi"}
+          volumeMounts: [{name: config, mountPath: /etc/agentos, readOnly: true}]
+      volumes:
+        - name: config
+          configMap: {name: agentos-config}

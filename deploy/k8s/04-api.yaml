@@ -1,0 +1,106 @@
+# M70 · api 进程（八个进程里唯一有 HTTP 的那个）
+#
+# 它是唯一对外开口的进程：控制台页面挂在它上面，CLI 与评估平台也打它。
+# 另外七个是循环型后台进程，见 `05-background.yaml`。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentos-api
+  namespace: agentos
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agentos-api
+  template:
+    metadata:
+      labels:
+        app: agentos-api
+    spec:
+      initContainers:
+        # M67：起来之前先把 schema 补到位。
+        #
+        # 它是**幂等**的（已应用的记在 `agentos_schema_migrations` 里），
+        # 也拿着会话咨询锁，所以八个 Pod 同时起来也不会互相抢。
+        # 于是"忘记先跑迁移 Job"不会变成一次上线事故，
+        # 只会变成多跑几次空操作。
+        - name: migrate
+          image: agentos:2.1.67-b1
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "apps.migrate", "apply"]
+          env:
+            - name: AGENTOS_MANIFEST
+              value: /etc/agentos/agentos.toml
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agentos-pg
+                  key: password
+          volumeMounts:
+            - name: config
+              mountPath: /etc/agentos
+              readOnly: true
+      containers:
+        - name: api
+          image: agentos:2.1.67-b1
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "apps.api"]
+          env:
+            # 清单模式：这一次启动**只**认这份文件（B-7：一个事实一处定义）。
+            - name: AGENTOS_MANIFEST
+              value: /etc/agentos/agentos.toml
+            - name: AGENTOS_AGENT_REGISTRY
+              value: /etc/agentos/agents.toml
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agentos-pg
+                  key: password
+          ports:
+            - name: http
+              containerPort: 8000
+          # liveness 走 HTTP `/health`：它回答的是"这个服务还在应答"。
+          # 用 exec 去跑 `apps.probe live` 也行，但那测的只是
+          # "进程还在跑" —— 一个 accept 队列堵死的服务，进程照样在跑。
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+          # readiness 走 `/readyz`：它**真的连一次库**（M68）。
+          # 于是库挂掉时 api 会被摘掉而不是继续收请求 ——
+          # 收到的请求会以 500 落库失败的形式返回，
+          # 而那种"成功的 HTTP + 失败的业务"是最难被发现的一类。
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: {cpu: "100m", memory: "192Mi"}
+            limits: {cpu: "1", memory: "512Mi"}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/agentos
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: agentos-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentos-api
+  namespace: agentos
+spec:
+  selector:
+    app: agentos-api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
