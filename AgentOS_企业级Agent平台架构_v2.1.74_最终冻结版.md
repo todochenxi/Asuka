@@ -1,4 +1,4 @@
-# AgentOS — 企业级 Agent 平台架构（v2.1.73 最终冻结版）
+# AgentOS — 企业级 Agent 平台架构（v2.1.74 最终冻结版）
 
 > 项目定位：Enterprise Agent Harness & Runtime Platform
 > 架构状态：Final / Frozen
@@ -839,6 +839,64 @@ v2.1.65 相对 v2.1.64：**M77（带着没被处理的失败，不许宣布完�
 在此之前没有任何引擎会产出 REPLAN，那条边只是"通了"而已。详见 §114。
 
 ---
+
+v2.1.74 相对 v2.1.73：**M86（可恢复点必须带走"注入的智能实现"的进度）
+落地后的回写 —— 它把 `RunSnapshot` 那句"全部数据"从一句声明变成一条判据。**
+
+`RunSnapshot` 的 docstring 写着它是"一次可恢复点的**全部**数据"。
+那句话在它被写下的那天是真的，但它悄悄过期了 ——
+因为"全部"里只包含 **Runtime 自己的**内存状态：
+
+    steps / consecutive_denials / steps_of_run / spent / trace / pending_*
+
+而 `assemble_runtime_stack` 还注入进来两个 **Intelligence** 实现
+（Planner / DecisionEngine）。它们可以无状态，也可以自己记着
+"我走到第几步了" —— 后者是合法的，`demo_stack.py` 就是这么写的：
+
+    # 每个 Run 一个 DecisionEngine：它是**有状态的**（第几步了），
+    # 跨 Run 共享会让第二个 Run 直接 FINISH。
+
+★ 注释承认了它是有状态的，而那句承诺只管住了"跨 Run"，
+**管不住同一 Run 的一次恢复**。
+
+探针（`probe86.py`）实测：
+
+    正常路径    第 1 次 decide → LLM_CALL     第 2 次 → FINISH
+    恢复之后    新引擎第 1 次 → LLM_CALL      ← ★ 又调了一次模型
+
+同一个 Run、同一份 State、同一段代码，**两个引擎给出两个答案**，
+而没有任何东西会发现这件事 —— 调模型要花钱、要在外部世界留痕，
+**静默重来一次不等于没发生**。
+
+新增 **R-7**：有状态的 Intelligence 实现必须能自述进度（`progress()`），
+恢复时 Runtime 拿快照里的值跟它比。判据的生命周期是**成对**的：
+
+    progress()    我在哪     捕获时问
+    resume(p)     接到这     恢复时问
+
+★ **为什么必须是成对的**（这一段是本轮最要紧的设计）：
+只有 `progress()` 而没有 `resume()`，第一次实现就把
+`test_a_suspended_run_is_still_suspended_after_a_restart` 打红了 ——
+那条走的是**真的生产流程**（挂起等审批 → Pod 重启 → 恢复），
+因为组合根每次重装配都是一个全新的 `calls=0` 引擎。
+
+    判据要挡的是"**静默**重来"，不是"恢复"本身。
+    直接拒绝会用一个正确的判据弄坏一条正常的路径。
+
+所以 `_assert_port_progress_matches` 的顺序是**先接上、接不上才拒绝**，
+并且 `_try_resume` 在调完 `resume()` 之后**再自述一次、比对一次** ——
+否则"实现一个什么都不做的 `resume()`"就是绕过 R-7 的后门
+（M4/M6 两个变异专门守这一点）。
+
+还有一处是同族漏洞，被 M5 变异逼出来：`progress()` 返回 `None`
+与"根本没实现 progress"被混为一谈 → 一个有状态的引擎只要返回 `None`
+就把自己伪装成无状态，R-7 被一个返回值绕过。现在两者分开：
+没有该方法 = 无状态（合法）；有该方法却返回 None = 当场拒绝。
+
+落地：018 迁移（`run_snapshots.progress` JSONB + `jsonb_typeof = 'object'`
+的物理约束）、`Ports.ProgressBearing`、Loop 的捕获与恢复两段、
+`DemoDecisionEngine` 的 `progress()`/`resume()`。
+13 条单元 + 8 条真 PG 集成；6 变异全红。单测 1299 → 1319。详见 §123。
 
 v2.1.73 相对 v2.1.72：**M85（"只能由工厂构造"必须是一条机制，不是一句愿望）
 落地后的回写 —— 它把 I-6 从一句 docstring 变成一条不变量。**
@@ -4066,6 +4124,7 @@ AgentOS Scheduler ≠ Kubernetes Scheduler
 | M80 | A Child Run's Cause Must Travel With Its Result | **子 Run 的死因必须跟着结果一起交给父 Run**：B-12 给子 Run 的终态加上了死因，但那个原因只落在子 Run 自己的 trace 上，没跟着事件走 —— 探针实测父 Run 听到的是子 Run **最后一句自言自语**（`summary`），而预算耗尽那条恰恰是反的：`child run failed: execution exec_xxx attempt#1 COMPLETED (completed)`。★ 不是说漏了，是**说反了**。它有真实消费者：`_reason()` 的产物就是父 State 里 `child_run.finished` 的 `content["error"]`，父 Agent 唯一能看到的线索；I-12 要求重规划换一条路，理由错了就换不对路。新增 **D-37**：`reason` 必填关键字参数，死因跟着 `result` 走；死因缺失时必须说"没记录到"，**不许拿 summary 顶替**（那是用过程冒充结论）。（**已在 v2.1.68 落地，见 §117**） |
 | M81 | A Run Whose Delegation Failed Must Not Announce Completion | **委派失败了的父 Run，不许宣布完成**：按 §0.4 回头查"刚落地的 I-11 能不能被绕过"，探针实测一个委派失败的父 Run 照常 FINISH → `completed`，账本写着 `goal reached`。★ 形状是**同一个事实两条路给出两个答案**：那条委派 Execution 真的被判成了 FAILED，但委派路径不经 Worker，没人给它写 `execution.failed` observation —— State 上只有 `child_run.finished`（说的是"子 Run 完事了"），I-11 从 State 读于是读不到。新增 **I-13**：委派失败必须进 State，且绑定真实 Execution（I-6）。只治 `failed`（取消不是失败 S-15；`unknown` 是不知道 D-19）。⭐ 测试设计上踩到一处：不能断言"最终不是 completed" —— I-11 按上次规划划界，换了形状不同的计划之后完成是**设计允许的**；真正的可观测后果是**不能从委派失败直接走到 FINISH**。详见 §118 |
 | M82 | A Voice-Less Delegation Must Not Announce Completion | **委派没有回音的父 Run，不许宣布完成**：M81 只治了 `failed`，回头查 `unknown` 那扇门 —— 探针实测委派等到上限、Kernel 那条 Execution 确实被判死（不判死它永远挂着），但 State 上只有 `child_run.unknown`，I-11 判据 = 0 → 父 Run 宣布 `completed` / `goal reached`。**与 M81 一字不差的同一句话，换了一扇门进来。**★ 难处：写 `execution_failed` 违反 PR-19（那条子 Run 可能正在别的 worker 上跑得好好的，"判死"是**我们不再等**，不是"它做不成"），不写就是上面这一幕 ⇒ 必须要有第三个 kind。新增 **I-14**：`execution_unresolved` 必须进 State 但不许冒充失败；I-11 判据扩成"**这一步没有被证明成功**"（证明不了的与证明失败的同等对待）。`cancelled` 仍不在此列 —— S-15 说取消是父侧主动选择，父 Run 自己知道，不构成"被隐瞒的失败"。⭐ 变红验证第一轮 M4 没红，漏在**测试自己**：reducer 末尾有兜底分支，只断言 `obs.kind` 存在是守不住分支的 —— 要断言"它把这一步当结束了"（从 `active_tasks` 摘掉、进 `completed_tasks`）。详见 §119 |
+| M86 | A Recovery Point Must Carry Its Intelligence | **可恢复点必须带走「注入的智能实现」的进度**：`RunSnapshot` 的 docstring 写着它是「一次可恢复点的**全部**数据」，但那份「全部」只覆盖 **Runtime 自己的**内存状态（steps / denials / spent / trace / pending_*）。装配层还注入进来两个 **Intelligence** 实现（Planner / DecisionEngine），它们**可以是有状态的** —— `demo_stack.py` 自己就在注释里承认了：「每个 Run 一个 DecisionEngine：它是**有状态的**（第几步了）」。★ 那句承诺只管住了「跨 Run」，**管不住同一 Run 的一次恢复**。探针（`probe86.py`）实测：正常路径「第 1 次 → LLM_CALL，第 2 次 → FINISH」，而恢复之后新引擎又从第 1 次开始 —— **★ 又调了一次模型**。同一个 Run、同一份 State，两个引擎给出两个答案，而没有任何东西会发现；调模型要花钱、要在外部世界留痕，**静默重来一次不等于没发生**。新增 **R-7**：有状态实现必须能 `progress()` 自述、并能被 `resume(progress)` 接上，恢复时对不上就**点名拒绝**。★ 本轮的转折点是：第一版只做「拒绝」，当场把 `test_a_suspended_run_is_still_suspended_after_a_restart` 打红 —— 那走的是**真的生产流程**（挂起等审批 → Pod 重启 → 恢复）。**判据要挡的是「静默重来」，不是「恢复」本身**：直接拒绝会用一个正确的判据弄坏一条正常的路径。于是改成**先接上、接不上才拒绝**，且 `resume()` 之后**再自述一次、比对一次** —— 否则「实现一个空的 `resume()`」就是后门（M4/M6 两个变异专门守它）。另一处同族漏洞由 **M5 变异**逼出：`progress()` 返回 `None` 与「根本没实现」被混为一谈 → 有状态引擎只要返回 `None` 就能伪装成无状态、绕过 R-7；现在两者分开（没方法=无状态合法；有方法却返回 None=当场拒绝）。落地：018 迁移（`progress` JSONB + `jsonb_typeof='object'` 物理约束）、`ports.ProgressBearing`、Loop 捕获/恢复两段、`DemoDecisionEngine` 的 progress/resume。13 条单元 + 8 条**真 PG** 集成；**6 变异全红**；单测 1299 → 1319。详见 §123 |
 | M85 | A Promise Is Not A Mechanism | **「只能由工厂构造」必须是一条机制，不是一句愿望**：I-6 的唯一入口写着「来自执行的 Observation 只能由这个工厂构造，必须绑定真实 Execution」，而 `Observation` 是 `@dataclass(frozen=True)` —— **`__init__` 是公开的**，`execution_id: str \| None = None` 这个默认值本身就是漏洞的形状。探针（`probe84.py`）实测**四扇门全开**：直构 `EXECUTION_RESULT` 不带 id、`execution_id=""` 空串、非执行来源凭空挂 `execution_id="exec_FAKE"`、`attempt_no=0/-1`（工厂拦得住、直构拦不住）。危害是**账本的可解释性**：声称来自执行的可无 id（问不出「有没有实证」），而 `human_input` 可顺手挂 id —— 于是「**有 execution_id**」不再能推出「**它真的来自执行**」，一个信号失去意义比没有信号更坏。判据搬进 **`__post_init__`**（所有路径的汇合处），**双向**：执行来源必须绑 id+attempt≥1，非执行来源**不许**绑 id；刻意留口：`attempt_no` 对非执行来源仍可选。⭐ 1287 条既有测试**一条不红** ⇒ 保证一直是**碰巧成立**、不是被机制守住，本轮把它变成后者。⭐ 变红验证 **M2 第一版是假绿**（断言被隔壁检查掩盖 —— 与 §119.5 同一族错，栽第二次）→ 立通则：**除被测项外其他字段一律给足**。12 条测试，5 变异全红；单测 1287 → 1299。详见 §122 |
 | M84 | The Flaky Red Was Never Flaky | **那条「偶发红」根本不是偶发**：M83 收尾把集成本层「6 次跑、2 次各红 1 条」当成时序不稳定登记了下来。本轮按纪律**完整输出落盘**再连跑 —— 9 次串行 + 4 次并发双跑：**13 次全绿、2613 条用例无一失败**。撞不出来之后换方向翻**任务账本**：它不是新问题，而是 M66 那轮已经诊断过（`'2.1.53' != '2.1.54'`）、**写进了任务卡却没写进基线也没固化成测试**的旧账。根因是升版要动**三处**（文档名 / `app.py` / k8s 14 处 tag），而集成那条断言是**跨文件**的：左边来自 `app.py`，右边来自文档**文件名** —— 停在两步之间跑就红。**被测代码一秒都没坏过**，那次红灯指向了一个不存在的问题。新增 **PR-33**（三处落点必须同源，不许有中间状态），补两条**不依赖 PG** 的守卫，3 变异全红。详见 §121 |
 
@@ -13945,3 +14004,270 @@ case 4 最能说明问题：**工厂拦得住的东西，直构拦不住** —�
 **断言里除了"被测的那一项"，其他字段一律给足。**
 否则多道校验叠在一起时，你会验证"某处会拦"，而不是"这一处会拦" ——
 而两者在变异面前的表现完全不同（一个照样绿，一个必红）。
+
+
+---
+
+## §123　M86 · 一句"全部"如果漏了不在自己手里的那一半
+
+### 123.1　起因：一句悄悄过期的承诺
+
+`RunSnapshot` 的 docstring 第一行是：
+
+> 一次可恢复点的**全部**数据。
+
+这句话在它被写下的那天是真的。它甚至**专门为了这件事改过一次** ——
+M14 那一轮的原文写着 `RunCheckpoint` 不够：
+
+> 它只记 `current_step` / `completed_tasks`，那是**指针**不是**数据**。
+
+于是快照装上了 `steps` / `step_count` / `consecutive_denials` / `spent` /
+`trace` / `pending_*` —— 一个完整的、真正的"可恢复点"。
+
+**它漏掉的是不在 Runtime 手里的那一半。**
+
+`assemble_runtime_stack` 除了 Runtime 自己的东西，还注入进来两个
+**Intelligence** 实现（Planner / DecisionEngine）。协议对它们只有一个要求：
+
+```python
+def plan(self, state: State) -> Plan: ...
+def decide(self, state: State) -> Decision: ...
+```
+
+从签名上看，它们**可以**是纯函数 —— 也可以**不是**。而
+`examples/demo_stack.py` 明确选了后者，并在注释里承认了：
+
+```python
+# 每个 Run 一个 DecisionEngine：它是**有状态的**（第几步了），
+# 跨 Run 共享会让第二个 Run 直接 FINISH。
+decision_engine=DemoDecisionEngine(approval_at_step=approval_at_step),
+```
+
+★ 那句承诺是**真的**（每次 `make_stack` 都 new 一个），
+但它管住的范围只有"跨 Run"这个维度。
+
+**同一 Run 的一次恢复，它管不住。**
+
+### 123.2　形状：一个不在快照里的计数器
+
+```
+                      快照落在这里
+                            │
+   ┌────────────────────────┼────────────────────────┐
+   │  Runtime 自己的内存状态    │   Intelligence 的私有状态  │
+   │  steps / denials         │   DemoDecisionEngine      │
+   │  spent / trace           │     .calls = 2            │
+   │  pending_*               │                           │
+   └────────────────────────┴───────────────────────────┘
+        ✅ 在 RunSnapshot 里        ❌ 不在任何地方
+```
+
+`restore()` 恢复的是**左边那一栏**。它注入的引擎在**右边那一栏**，
+而 `restore()` 不可能替它恢复 —— 它不认识那个对象的内部。
+
+于是恢复后的第一个决定，由一个**从未走过这条路**的引擎做出。
+
+### 123.3　探针实测（`probe86.py`）
+
+```
+=== 正常路径：同一个引擎连着走三步 ===
+  第 1 次 decide → LLM_CALL
+  第 2 次 decide → FINISH
+  第 3 次 decide → FINISH
+  引擎看到的 calls = 3
+
+=== 恢复路径：进程重启后组合根重新装配，给一个**全新**的引擎 ===
+  新引擎的 calls 初始 = 0
+  下一步 decide → LLM_CALL   ← 期望 FINISH？
+```
+
+**同一个 Run、同一份 State、同一段代码，两个引擎给出两个答案。**
+
+后果不是"多算一次"那么轻：`LLM_CALL` 是一次**真实的模型调用** ——
+要花钱、要在外部世界的账上留痕。一条已经写过外部世界的 Run
+被"恢复"成再来一遍，**那是双写，不是恢复**。
+
+而它比崩溃更坏的地方在于：**没有任何东西会发现这件事。**
+
+### 123.4　为什么它落在 `RunSnapshot` 上，而不是引擎上
+
+一个自然的反应是"那就要求引擎必须无状态"。但那条要求：
+
+- **无法验证**。签名上写不出来，运行时也测不出来（`decide(state)` 完全可以
+  既读 state 又偷看自己的计数器）。
+- **抹掉一种合法设计**。"我这个引擎走到第几步了"是一个正当的实现选择，
+  尤其当一个引擎要在多轮之间保持某种连续性时。
+
+真正错的不是"引擎有状态"，是**一条声称"全部"的快照没有把它带走**。
+
+所以判据钉在**捕获/恢复这条边界**上，因为只有 Runtime 知道"我正在恢复"：
+
+> **R-7：有状态的 Intelligence 实现必须能自述进度，恢复时对不上就必须
+> 被接上或者被点名拒绝 —— 不允许静默重来。**
+
+### 123.5　协议：为什么必须成对
+
+第一版只实现了 `progress()`（捕获时问"你在哪"）+ 拒绝。
+
+它**当场**打红了一条测试：
+
+```
+FAIL: test_a_suspended_run_is_still_suspended_after_a_restart
+R-7: run 'run_49288b14db134c1e' cannot be restored — the injected
+decision_engine is not the one this snapshot was taken with.
+snapshot says {'calls': 2, ...}, the current implementation says {'calls': 0, ...}
+```
+
+而那条测试走的是**真的生产流程**：一条 Run 挂起等人审批（可能要等几小时），
+期间 Pod 被调度、被重启、被滚动更新，它回来时必须能接上。
+
+> **判据要挡的是"静默重来"，不是"恢复"本身。**
+> 直接拒绝，是**用一个正确的判据弄坏一条正常的路径**。
+
+于是协议变成成对的：
+
+```
+progress()    我在哪      ← 捕获时问
+resume(p)     接到这      ← 恢复时问
+```
+
+`restore()` 里的顺序因此是**先接上、接不上才拒绝**：
+
+```python
+if self._try_resume(port, want):
+    continue                      # 常态路径
+have = self._progress_of(port)
+if want == have:
+    continue
+raise InvariantViolation(...)     # 接不上，点名拒绝
+```
+
+### 123.6　`_try_resume` 的第二个动作（否则它是个后门）
+
+只调 `resume()` 就返回 True 是不够的 —— **"实现一个什么都不做的 `resume()`"
+就是绕过 R-7 的后门**，而且比不实现更隐蔽：它看起来接上了，
+实际 `calls` 还是 0，恢复之后照样重复调一次模型。
+
+所以 `_try_resume` 在调完之后**再自述一次、比对一次**：
+
+```python
+resumer(progress)
+...
+return self._progress_of(port) == progress
+```
+
+**判据是"接上了没有"，不是"有没有调用过 `resume`"** ——
+前者可测，后者只是调用记录。
+
+### 123.7　同族漏洞：`None` 的两义性（M5 变异逼出来的）
+
+变红验证的第 5 条变异是：把 `DemoDecisionEngine.progress()` 改成
+`return None`，预期红。**结果没红。**
+
+一查，是个真漏洞 —— 我把两件事混为一谈了：
+
+```
+没有 progress 属性          → 无状态。合法。
+有 progress() 但返回 None   → ？？
+```
+
+第二行被当成了第一行。于是**一个有状态的引擎只要返回 `None`，
+就把自己伪装成无状态** → 快照里存 `None` → 恢复时"两边都是 `None`" →
+**静默放行** —— 整个 R-7 被一个返回值绕过。
+
+改法是把两件事分开：
+
+```python
+if not hasattr(port, "progress"):
+    return None                      # 无状态：什么都不用做
+value = port.progress()
+if value is None:
+    raise InvariantViolation(        # 自述了，却说不出自己在哪
+        f"R-7: {type(port).__name__} implements progress() but returned None. ..."
+    )
+```
+
+一个**故意撒谎**的 Port 永远防不住（`progress()` 是它唯一的自述渠道）。
+但"我实现了这个方法却说不出值"不是撒谎，是**疏漏** —— 而疏漏是可测的。
+
+### 123.8　落地
+
+| 层 | 改动 |
+|---|---|
+| 领域 | `RunSnapshot.progress`（JSONB 语义，`{"planner": …, "decision_engine": …}`） |
+| 物理 | `018_snapshot_port_progress.sql`：加列 + `CHECK (jsonb_typeof(progress) = 'object')` |
+| 端口 | `ports.ProgressBearing`（`progress()` / `resume()`，**可选**） |
+| Runtime | `capture()` 带走进度；`restore()` 先接上、接不上才拒绝 |
+| 示例 | `DemoDecisionEngine.progress()` / `resume()` |
+| 替身 | `sqlite_shim` 翻译 `jsonb_typeof` → `json_type`（与 016 的 interval 同款）|
+
+**为什么那个物理约束值钱**：`progress` 在 Runtime 里是**只写不深读**的
+核对数据 —— 它只被 `stored.get("planner")` 这样取值。一个**数组**形态的
+progress 会让那个 `get` 静默拿到 `None` → 被误判成"两边都没说" →
+**恢复放行**。所以它值钱的地方不在"数据合法"，在"错误会静默生效"。
+
+### 123.9　变红验证
+
+| # | 变异 | 结果 |
+|---|---|---|
+| M1 | `capture()` 不带走进度 | 红了 9 条 |
+| M2 | `restore()` 不校验进度（静默放行）| 红了 11 条 |
+| M3 | 只拒绝、不尝试 `resume()`（把常规路径弄坏）| 红了 5 条 |
+| M4 | `resume()` 之后不验它是不是真接上了 | 红了 1 条 |
+| M5 | 引擎的 `progress()` 返回 `None`（伪装无状态）| 红了 8 条 |
+| M6 | `resume()` 是空实现 | 红了 1 条 |
+
+**6/6 全红。** 其中 M4/M6 各只红 1 条是**对的** ——
+它们动的只是"接上了没有"这一个守点，只有专门守它的那条用例会响。
+
+⚠️ 两处**首轮假信号**，都记在这里：
+
+1. **M1 第一版根本没生效** —— 我把变异写成给字段加一个 `# noqa: M1` 注释，
+   字段还在，什么都没变。与 §114（M75）"把 `livenessProbe:` 注释掉"同一个坑：
+   **注释不是变异。**
+2. **变红脚本自己把 cwd 算错了**（`parent.parent` 而不是 `parent`），
+   于是所有调用都跑在仓库外 → 报"基线红了 4 条"。
+   看到"基线就不绿"先查脚本，不要先查代码。
+
+### 123.10　真 PG 验了什么
+
+`tests/integration/test_snapshot_progress_real_pg.py`（8 条）：
+
+- `progress` 作为 JSONB 的**往返保真**（字典进去、**字典**出来）
+- 一条走过 2 步的 Run 落库 → 全新引擎从**库里那个值**接成 2
+- 接不回去的实现 → 真 PG 上同样**点名拒绝**
+- `jsonb_typeof(progress) = 'object'` 这条 CHECK **在真 PG 上真的生效**
+  （shim 上是我手写的 `json_type` 翻译 —— 翻译等价只是我读文档的判断，
+  真 PG 跑一遍才是证据）
+
+### 123.11　空洞表
+
+| # | 形状 | 处置 |
+|---|---|---|
+| **241** | `RunSnapshot` 的"全部数据"漏掉注入 Port 的私有进度 —— 恢复静默重来 | **M86 本轮闭合**（R-7） |
+| **237** | 部署清单指向 `examples.demo_stack` | 仍然登记不治：M12 落地时必须回来改这三行 |
+
+### 123.12　冻结的是什么
+
+> 上一轮冻结的是：**一句"只能由 X 构造"如果 X 只是众多入口之一，
+> 那它不是约束，是注释。**
+>
+> 这一轮冻结的是：**一句"这是全部"如果漏了不在自己手里的那一半，
+> 那它不是保证，是错觉。**
+
+还有两句，是本轮真金白银换来的：
+
+**一、判据要挡的是"坏的那条路"，不是"那条路"。**
+
+第一版只做拒绝，抓到了真阳性 —— 而那个真阳性指向的是一条**正常的路径**。
+一个判据如果把正常行为也一并挡住，它就已经从守卫变成了障碍。
+**发现"新判据打红了既有测试"时，先问打红的这条是不是在描述正常行为。**
+
+**二、`None` 有两义性，而系统里这两种意思常常都需要分。**
+
+- "我没有这个能力"（没有 `progress` 方法）
+- "我有这个能力但说不出值"（`progress()` 返回 `None`）
+
+混为一谈时，第二种会静默退化成第一种 —— 于是一个**疏漏**
+看起来像一次**合法的选择**。这与 §122 那条（空串与 `None` 同罪）
+形状相反、道理相同：**判据要能区分"没有"和"不知道"。**

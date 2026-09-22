@@ -272,6 +272,8 @@ class ControlPlaneWiringTest(unittest.TestCase):
                     load_schema_sql("004_run_snapshots.sql"),
                     # 009 是 004 的 companion：少了它快照表的列数对不上
                     load_schema_sql("009_snapshot_pending_child.sql"),
+                    # 018 也是 004 的 companion（R-7 / M86）
+                    load_schema_sql("018_snapshot_port_progress.sql"),
                     load_schema_sql("007_idempotency.sql"),
                 ]
             )
@@ -302,6 +304,8 @@ class ControlPlaneWiringTest(unittest.TestCase):
                     load_schema_sql("004_run_snapshots.sql"),
                     # 009 是 004 的 companion：少了它快照表的列数对不上
                     load_schema_sql("009_snapshot_pending_child.sql"),
+                    # 018 也是 004 的 companion（R-7 / M86）
+                    load_schema_sql("018_snapshot_port_progress.sql"),
                     load_schema_sql("007_idempotency.sql"),
                 ]
             )
@@ -359,6 +363,8 @@ class ChildRunRegistryWiringTest(unittest.TestCase):
                     load_schema_sql("003_approvals.sql"),
                     load_schema_sql("004_run_snapshots.sql"),
                     load_schema_sql("009_snapshot_pending_child.sql"),
+                    # 018 也是 004 的 companion（R-7 / M86）
+                    load_schema_sql("018_snapshot_port_progress.sql"),
                     load_schema_sql("007_idempotency.sql"),
                     load_schema_sql("008_child_runs.sql"),
                     load_schema_sql("010_child_run_result.sql"),
@@ -501,6 +507,8 @@ class KernelWiringTest(unittest.TestCase):
                     load_schema_sql("007_idempotency.sql"),
                     load_schema_sql("008_child_runs.sql"),
                     load_schema_sql("009_snapshot_pending_child.sql"),
+                    # 018 也是 004 的 companion（R-7 / M86）
+                    load_schema_sql("018_snapshot_port_progress.sql"),
                     load_schema_sql("011_run_cancellations.sql"),
                     load_schema_sql("010_child_run_result.sql"),
                     load_schema_sql("015_child_wait_deadline.sql"),
@@ -612,6 +620,8 @@ class StackStoreWiringTest(unittest.TestCase):
                     load_schema_sql("007_idempotency.sql"),
                     load_schema_sql("008_child_runs.sql"),
                     load_schema_sql("009_snapshot_pending_child.sql"),
+                    # 018 也是 004 的 companion（R-7 / M86）
+                    load_schema_sql("018_snapshot_port_progress.sql"),
                     load_schema_sql("011_run_cancellations.sql"),
                     load_schema_sql("010_child_run_result.sql"),
                     load_schema_sql("015_child_wait_deadline.sql"),

@@ -194,18 +194,39 @@ def _to_sqlite_interval(sql: str) -> str:
     return _INTERVAL_ADD_RE.sub(repl, sql)
 
 
+#: `018_snapshot_port_progress.sql` 那句 CHECK 用的是 PG 的 `jsonb_typeof(x)`，
+#: sqlite 的对应物叫 `json_type(x)` —— **语义相同**：
+#:
+#:     jsonb_typeof('{}'::jsonb) → 'object'      json_type('{}') → 'object'
+#:     jsonb_typeof('[]'::jsonb) → 'array'       json_type('[]') → 'array'
+#:
+#: 它是 016 的 `interval` 同一类：PG 独有的字面量，替身做**等价翻译**
+#: 而不是跳过 —— 跳过等于这条 CHECK 从来没被测过（PR-23）。
+#:
+#: ⚠️ 别把这个翻译做成"整句丢掉"。那样 `progress` 是数组时替身会放行，
+#: 而真 PG 会拒绝 —— 两边行为不同，正是替身最容易骗人的那种分岔。
+_JSONB_TYPEOF_RE = re.compile(r"\bjsonb_typeof\s*\(", re.IGNORECASE)
+
+
+def _to_sqlite_json_type(sql: str) -> str:
+    return _JSONB_TYPEOF_RE.sub("json_type(", sql)
+
+
 def _to_sqlite_ddl(sql: str) -> str:
     """只改 PG 特有的字面量，表/约束/索引的形状原样保留 —— 这样测的才是真 schema。
 
-    两个例外：
+    三个例外：
       · `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ...` 整句丢掉
         （sqlite 加不了外键），代价见 `_ALTER_ADD_FK_RE` 那段注释；
       · `col + interval 'N unit'` 翻译成 `datetime(col, '+N units')`
-        （014 的回填），见 `_INTERVAL_ADD_RE` 那段注释。
+        （014 的回填），见 `_INTERVAL_ADD_RE` 那段注释；
+      · `jsonb_typeof(x)` 翻译成 `json_type(x)`（018 的 CHECK），
+        见 `_JSONB_TYPEOF_RE` 那段注释。
     """
     sql = _strip_jsonb_cast(sql)
     sql = sql.replace("DEFAULT now()", "DEFAULT CURRENT_TIMESTAMP")
     sql = _to_sqlite_interval(sql)
+    sql = _to_sqlite_json_type(sql)
     return _ALTER_ADD_FK_RE.sub("", sql)
 
 

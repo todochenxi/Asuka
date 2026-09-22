@@ -58,7 +58,7 @@ from ..delegation import (
 SELECT_SNAPSHOT = """
 SELECT snapshot_id, run_id, agent_id, status, step_count, consecutive_denials,
        pending_approval_id, pending_child_id, current_step_id, state, steps,
-       spent, trace, reason, created_at
+       spent, trace, progress, reason, created_at
   FROM run_snapshots
 """
 
@@ -66,8 +66,8 @@ INSERT_SNAPSHOT = """
 INSERT INTO run_snapshots (
     snapshot_id, run_id, agent_id, status, step_count, consecutive_denials,
     pending_approval_id, pending_child_id, current_step_id, state, steps,
-    spent, trace, reason, created_at
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    spent, trace, progress, reason, created_at
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 """
 
 
@@ -102,6 +102,9 @@ def _row_to_snapshot(row: Mapping[str, Any]) -> RunSnapshot:
         pending_child_id=row["pending_child_id"],
         spent=_load(row["spent"], {}),
         trace=tuple(_load(row["trace"], [])),
+        # R-7（M86）：注入的 Intelligence 实现自述的进度。缺列的行（018 之前）
+        # 走 `_load` 的 fallback → `{}`，语义正好是"这份快照没带走进度"。
+        progress=_load(row["progress"], {}),
         reason=row["reason"] or "",
         created_at=parse_dt(row["created_at"]) or datetime.now(),
     )
@@ -227,6 +230,7 @@ class PostgresRunSnapshotStore:
                 _json(list(snapshot.steps)),
                 _json(snapshot.spent),
                 _json(list(snapshot.trace)),
+                _json(snapshot.progress),
                 snapshot.reason,
                 snapshot.created_at,
             ),

@@ -47,11 +47,13 @@ from .test_agent_loop_full import Interpreter, Planner
 # 009 是 004 的 companion：快照表补"在等哪条子 Run"那一列（R-6）。
 # 少了它，`PostgresRunSnapshotStore` 的 INSERT 会比表多一个参数 ——
 # 也就是说"加载 004 却不加载 009"是一个**跑不起来**的组合。
+# 018 同款（R-7 / M86）：再补一列"注入的智能实现自述的进度"。
 _SCHEMA = (
     "001_kernel.sql",
     "003_approvals.sql",
     "004_run_snapshots.sql",
     "009_snapshot_pending_child.sql",
+    "018_snapshot_port_progress.sql",
 )
 
 

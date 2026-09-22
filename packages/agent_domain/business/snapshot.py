@@ -312,6 +312,26 @@ class RunSnapshot:
     #: 前半段（谁请求了审批、花了多少 token）在老进程里，后半段在新进程里，
     #: 两边都"看起来完整"，拼起来才知道断了。
     trace: tuple[Mapping[str, Any], ...] = ()
+    #: R-7（M86）：注入的 Intelligence 实现**自述的进度**。
+    #:
+    #: 这一列是被一个探针逼出来的。`RunSnapshot` 的 docstring 写着
+    #: "一次可恢复点的**全部**数据"，但那份"全部"只覆盖了 Runtime 自己的
+    #: 内存状态（steps / denials / spent / trace …）。注入进来的
+    #: Planner / DecisionEngine 若自己记着"走到第几步了"，那份进度不在里面 ——
+    #: 于是**恢复之后引擎从第 1 次重新开始**。
+    #:
+    #: 探针（probe86.py）实测最朴素的后果：一个已经调过模型的 Run 恢复后
+    #: **又调了一次模型**（第 1 次的分支），而不是接着 FINISH。
+    #:
+    #: 形状是两个键的字典，各自可为 None（= 那个 Port 是无状态的，
+    #: 或者它没实现 `ProgressBearing`）::
+    #:
+    #:     {"planner": <planner.progress()>, "decision_engine": <engine.progress()>}
+    #:
+    #: Runtime **不解释**这两个值，只做一件事：恢复时比一次。
+    #: 对不上就点名拒绝恢复（宁可拒绝，不许编造）——
+    #: 恢复不了一条 Run 是可接受的；假装恢复而实际重跑一遍不可接受。
+    progress: Mapping[str, Any] = field(default_factory=dict)
     reason: str = ""
     created_at: datetime = field(default_factory=_utcnow)
 
@@ -336,6 +356,7 @@ class RunSnapshot:
         object.__setattr__(self, "state", dict(self.state))
         object.__setattr__(self, "spent", dict(self.spent))
         object.__setattr__(self, "trace", tuple(dict(e) for e in self.trace))
+        object.__setattr__(self, "progress", dict(self.progress))
 
     @property
     def is_terminal(self) -> bool:

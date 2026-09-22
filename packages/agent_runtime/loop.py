@@ -30,6 +30,7 @@ Agent 要靠它来决定下一步（Replan / 换 Tool / 放弃）。
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import Enum
@@ -1047,6 +1048,132 @@ class AgentLoop:
         return cp
 
     # ------------------------------------------------------------ 快照 / 恢复
+    def _port_progress(self) -> dict[str, Any]:
+        """R-7（M86）：问一遍注入的两个 Intelligence 实现"你走到哪了"。
+
+        无状态 / 未实现 `ProgressBearing` 的 Port 返回 None ——
+        那表示"我随时可以从 state 重算"，于是恢复时不需要核对。
+
+        ⚠️ 这里刻意**不**试图替 Port 保存进度：Runtime 不知道每种实现的
+        进度长什么样，硬做就是把 Intelligence 的内部状态搬进 Runtime（B-7）。
+        Runtime 只负责**把它带走**、**把它比一次**。
+        """
+        return {
+            "planner": self._progress_of(self.planner),
+            "decision_engine": self._progress_of(self.decision_engine),
+        }
+
+    @staticmethod
+    def _progress_of(port: Any) -> Any:
+        """可选能力探测（与 `cancel_child` / `attempts` 同一套风格）。
+
+        ⚠️ 两个"说不清"要分得开（这一条是 M5 变异逼出来的）：
+
+            **没有** `progress` 属性   → 无状态。合法，返回 None。
+            **有** `progress()` 但返回 None → 它自述了、却说不出自己在哪。
+                                            这是实现的问题，当场拒绝。
+
+        混为一谈的后果：一个有状态的引擎只要 `progress()` 返回 None，
+        就把自己伪装成无状态的 → 快照里存 None → 恢复时"两边都是 None"→
+        **静默放行**，而它实际上会从第 1 步重来。R-7 就被这一个返回值绕过了。
+
+        一个**故意撒谎**的 Port 永远防不住（`progress()` 是它唯一的自述渠道），
+        但"我实现了这个方法却说不出值"是可测的 —— 而它不是撒谎，是疏漏。
+        """
+        if not hasattr(port, "progress"):
+            return None                      # 无状态：什么都不用做
+        value = port.progress()
+        if value is None:
+            raise InvariantViolation(
+                f"R-7: {type(port).__name__} implements progress() but returned None. "
+                "That is ambiguous: either it is stateless (then it should not "
+                "implement progress() at all), or it is stateful and cannot say "
+                "where it is (then a snapshot cannot be trusted to resume it). "
+                "Return a value, or remove the method."
+            )
+        try:
+            json.dumps(value, default=str)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - 兜底
+            raise InvariantViolation(
+                f"R-7: {type(port).__name__}.progress() must return a JSON-able "
+                f"value (it is stored in the snapshot); got {type(value).__name__}: {exc}"
+            ) from exc
+        return value
+
+    def _assert_port_progress_matches(self, snapshot: RunSnapshot) -> None:
+        """R-7（M86）：让当前引擎接上这条 Run 的进度 —— 接不上就点名拒绝。
+
+        两段，顺序不能反：
+
+            1. 先问引擎 `resume(progress)`：能接上就接上，恢复照常走。
+            2. 接不上（或没实现 `resume`）才拒绝。
+
+        ⚠️ 为什么不能直接拒绝
+
+        "挂起 → 进程重启 → 恢复"是最常规的一条路径：一条 Run 挂起等人
+        审批（可能几小时），期间 Pod 被调度、被重启、被滚动更新 ——
+        它回来时必须能接上。直接拒绝会把这条常规路径变成不可用，
+        那是**用一个正确的判据弄坏一个正常的系统**。
+
+        这条判据要挡的是"**静默**重来"，不是"恢复"本身。
+        """
+        stored = dict(snapshot.progress or {})
+        for name, port in (
+            ("planner", self.planner),
+            ("decision_engine", self.decision_engine),
+        ):
+            want = stored.get(name)
+            if want is None:
+                # 快照说"这个 Port 当时没带进度"。若当前实现也说不出进度
+                # （`progress()` 返回 None / 没实现），两边一致 → 放行。
+                # 若当前实现自述了值 → 那是"换了一个世界的引擎"，往下走拒绝。
+                if self._progress_of(port) is None:
+                    continue
+
+            # 先试着接上 —— 这是常态路径。
+            if self._try_resume(port, want):
+                continue
+
+            have = self._progress_of(port)
+            if want == have:
+                continue          # 本来就在同一个进度上，不需要接
+            raise InvariantViolation(
+                f"R-7: run {snapshot.run_id!r} cannot be restored — the injected "
+                f"{name} is not the one this snapshot was taken with, and it cannot "
+                f"be resumed onto that progress. snapshot says {want!r}, the current "
+                f"implementation says {have!r}. A stateful Intelligence implementation "
+                "must be resumed with the same progress, or it will silently start "
+                "over from its first step."
+            )
+
+    def _try_resume(self, port: Any, progress: Any) -> bool:
+        """问引擎"你能接到这个进度上吗"，并且**验它是不是真的接上了**。
+
+        两段，第二段是必须的：
+
+            1. 调 `resume(progress)`；没实现 ⟹ False；抛异常 ⟹ False。
+            2. ★ **接完再自述一次，看对不对得上**。
+
+        第 2 段不是保险，是这条判据的**唯一守点**。少了它，
+        "实现一个什么都不做的 `resume()`"就是绕过 R-7 的后门 ——
+        而那个后门比不实现 `resume` 更隐蔽：它看起来接上了，
+        实际 `calls` 还是 0，于是恢复之后**照样重复调一次模型**。
+
+        判据是"接上了没有"，不是"有没有调用过 resume" ——
+        前者可测，后者只是调用记录。
+        """
+        resumer = getattr(port, "resume", None)
+        if resumer is None:
+            return False
+        try:
+            resumer(progress)
+        except Exception:  # noqa: BLE001 - 见下面注释
+            # 引擎内部的失败原因对"这条 Run 能不能恢复"这个问题没有帮助
+            # （PR-19：报错要说中真发生了什么 —— 而这里真发生的是"恢复不了"）。
+            return False
+        # ★ 关键：**问它现在在哪**，而不是相信它说自己接上了。
+        return self._progress_of(port) == progress
+
     def capture(self, *, reason: str = "") -> RunSnapshot:
         """R-1：造一个可恢复快照（**只造不存** —— 存由 `_capture_snapshot` 做）。
 
@@ -1089,6 +1216,10 @@ class AgentLoop:
             ),
             spent=spent,
             trace=trace_entries_to_dicts(self.trace),
+            # R-7（M86）：注入的 Intelligence 实现自述的进度。
+            # Runtime 不解释它，只是在恢复时比一次 —— 对不上就拒绝恢复，
+            # 而不是让一个"走到第 3 步"的 Run 被一个"从未走过"的引擎接管。
+            progress=self._port_progress(),
             reason=reason,
         )
 
@@ -1102,17 +1233,43 @@ class AgentLoop:
         return snapshot
 
     def restore(self, snapshot: RunSnapshot) -> None:
-        """把一个 Run 从快照重新装载回来（R-2 / R-3 / R-4）。
+        """把一个 Run 从快照重新装载回来（R-2 / R-3 / R-4 / R-7）。
 
         **恢复不是重跑**：Kernel 里的 Execution / Attempt 本来就持久化着，
         这里只补回 Runtime 侧的内存状态。已经发出去的 Task 不会被重发
         （幂等键 = execution_id）。
+
+        ⚠️ R-7（M86）：这里还多一道 —— 注入的 Intelligence 实现若**有状态**，
+        它必须自述进度并对得上快照里那个值。对不上就拒绝恢复。
         """
         if snapshot.is_terminal:
             raise IllegalTransition(
                 f"R-3: run {snapshot.run_id!r} is already {snapshot.status}; "
                 "a terminal run cannot be restored"
             )
+
+        # ── R-7（M86）：不认识的引擎不许接管这条 Run ──
+        #
+        # 放在这里（而不是 restore 末尾）是刻意的：这是在改任何内存状态**之前**
+        # 就能判掉的事，而它判掉的是一个"静默重跑"的后果。
+        #
+        # 后果长什么样（probe86.py 实测）：
+        #
+        #     正常路径   第 1 次 decide → LLM_CALL   第 2 次 → FINISH
+        #     恢复之后   新引擎第 1 次 → LLM_CALL     ← 又调了一次模型
+        #
+        # 调模型要花钱、要在外部世界留痕。**静默重来一次不等于没发生。**
+        #
+        # 三条设计决定：
+        #
+        # 1. 只比**自述了进度**的那些 Port。无状态实现（`progress()` 返回 None）
+        #    什么都不用做 —— 它随时可以从 state 重算，恢复对它本来就成立。
+        # 2. 快照里存的也是 None 而当前引擎自述了值 → 同样算对不上。
+        #    那意味着"这条 Run 是在一个无状态引擎下跑起来的"，
+        #    换成有状态的接管一样是换了一个世界。
+        # 3. 拒绝而不是修：Runtime 不替引擎还原进度（B-7），
+        #    也绝不假装自己还原了（判据：宁可拒绝，不许编造）。
+        self._assert_port_progress_matches(snapshot)
         state = state_from_dict(snapshot.state)
         self.state = state
 

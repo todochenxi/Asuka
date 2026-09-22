@@ -108,11 +108,12 @@ from .test_child_run import (
     _tool_runtime,
 )
 
-#: 一个"真重启"需要的全部表：内核（001）+ 快照（004 + 009）+ 派生（008）
+#: 一个"真重启"需要的全部表：内核（001）+ 快照（004 + 009 + 018）+ 派生（008）
 RESTART_SCHEMA = (
     "001_kernel.sql",
     "004_run_snapshots.sql",
     "009_snapshot_pending_child.sql",
+    "018_snapshot_port_progress.sql",
     "008_child_runs.sql",
     "010_child_run_result.sql",
     "012_child_run_cancel_request.sql",

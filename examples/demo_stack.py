@@ -186,11 +186,61 @@ class DemoDecisionEngine:
     "智能体主动请示"（`ActionType.HUMAN_APPROVAL`），而是
     **"智能体没想请示，是治理层说这一步得有人签字"**（I-9）。
     后者才是企业级平台真正要保证的那条路：审批不靠智能体自觉。
+
+    ⚠️ 它是**有状态**的（`self.calls` = 我走到第几步了），所以它实现
+    `progress()`（R-7 / M86）—— 见那个方法的 docstring。
     """
 
     def __init__(self, *, approval_at_step: int = 0) -> None:
         self.calls = 0
         self.approval_at_step = approval_at_step
+
+    def progress(self) -> object:
+        """R-7（M86）：自述"我走到第几步了"。
+
+        这个方法是被 `probe86.py` 逼出来的。没有它的时候：
+
+            正常路径    第 1 次 decide → LLM_CALL     第 2 次 → FINISH
+            恢复之后    新引擎第 1 次 → LLM_CALL      ← ★ 又调了一次模型
+
+        因为 `self.calls` 是**进程内**的，而 `RunSnapshot` 只装得下
+        Runtime 自己的内存状态。恢复后组合根重新装配出一个全新的引擎，
+        `calls` 归零 → 这个已经调过模型的 Run 又调了一次。
+
+        调模型要花钱、要在外部世界留痕 —— **静默重来一次不等于没发生。**
+
+        返回 `calls` 是把"同一个 Run"变成"同一个值"：
+        `self.calls == n` ⟺ "这个引擎已经替这条 Run 做过 n 次决定"。
+        Runtime 不解释它，只在恢复时比一次；对不上就问 `resume()`。
+
+        `approval_at_step` 也一起带走是刻意的：它是**配置**，
+        而"这条 Run 是在哪套配置下跑起来的"同样是恢复必须知道的事。
+        少了它，一条在 `approval_at_step=2` 下挂起的 Run 被一个默认配置
+        的栈恢复，恢复出来的是另一条 Run。
+        """
+        return {"calls": self.calls, "approval_at_step": self.approval_at_step}
+
+    def resume(self, progress: object) -> None:
+        """R-7（M86）：把自己接到快照里那个进度上。
+
+        这个方法存在的理由，是 `progress()` 单独存在时会造成一个更坏的结果：
+        "挂起 → 进程重启 → 恢复"是企业级平台最常规的一条路径
+        （审批可能要等几小时，期间 Pod 被重启、被滚动更新），
+        而组合根每次重装配都是一个**全新的** `calls=0` 的引擎 ——
+        只拒绝、不接上，等于把这条路径整个弄成不可用。
+
+        判据要挡的是"**静默**重来"，不是"恢复"。
+
+        接不上时抛异常（Runtime 会把它当成"这条 Run 恢复不了"）。
+        对 demo 的字典进度来说，只要形状对就接得上。
+        """
+        if not isinstance(progress, Mapping):
+            raise TypeError(f"cannot resume from {type(progress).__name__}")
+        if "calls" not in progress:
+            raise KeyError("calls")
+        self.calls = int(progress["calls"])
+        if "approval_at_step" in progress:
+            self.approval_at_step = int(progress["approval_at_step"])
 
     def decide(self, state: Any) -> Any:
         from packages.agent_domain.intelligence.action import (
