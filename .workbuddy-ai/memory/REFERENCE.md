@@ -71,12 +71,21 @@
     `ADD COLUMN`）。新迁移必须在 ≥1 个单测的 schema 列表里被引用，否则卫生测试红。
 43. **sqlite 替身做等价翻译，不是跳过**（`interval` → `datetime(x,'+N units')`、
     `jsonb_typeof` → `json_type`）。别写 `COMMENT ON`。PG 连接要带 `row_factory=dict_row`。
-44. ⚠️⚠️ **变红脚本会真的改源文件 —— 三条纪律**（M87 栽最惨）。第一版还原写在 `try/finally`，
-    跑到 M4 被**中途 kill** → `finally` 没跑 → **变异留在 `loop.py` 里**。连锁：全套 89 errors
-    （像"我的改动弄红了测试"）→ 备份是**污染之后**拷的 → `git checkout HEAD` 验"HEAD 绿"
-    （判断对、结论错）→ 从备份恢复把变异装回去。
-    ⇒ **原文件先落盘** + 子进程加 `timeout=`；**备份要在确认干净之后才拷**；
-    **看到"既有测试红了"先 grep 变异串**（串要挑独一无二的）。
+44. ⚠️⚠️ **变红脚本会真的改源文件 —— 五条纪律**（M87 / Asuka 第六轮各栽一次）。
+    第一版还原写在 `try/finally`，跑到 M4 被**中途 kill** → `finally` 没跑 → **变异留在 `loop.py` 里**。
+    连锁：全套 89 errors（像"我的改动弄红了测试"）→ 备份是**污染之后**拷的 →
+    `git checkout HEAD` 验"HEAD 绿"（判断对、结论错）→ 从备份恢复把变异装回去。
+    ⇒ ① **原文件先落盘** + 子进程加 `timeout=`；② **备份要在确认干净之后才拷**；
+    ③ **看到"既有测试红了"先 grep 变异串**（串要挑独一无二的）；
+    ④ **`finally` 挡不住信号** —— SIGTERM/SIGINT 时 Python 不跑 `finally`。
+    还要装 `signal.signal(SIGTERM|SIGINT, ...)` 处理。Asuka 第六轮实锤：
+    前台跑 `red91.py` 被 Bash 的 120s 超时杀掉，`answers.py` 里 `grounded_rate`
+    的漂移检查被换成"和自己比"，**下一次跑的基线因此报红，白查十分钟**。
+    ⇒ **变红脚本一律后台跑**（一轮 = 变异数 × 全套件，20+ 条就是四五分钟）。
+    ⑤ **启动时比对备份与源码，不一致就拒绝启动**（Asuka 的 `redkit.py` 退出码 3）。
+    **不自动还原** —— "备份 ≠ 源码"有两种原因（上次被杀 / 有人改过源码），
+    两者在文件上长得一模一样，自动挑一种就是**替操作者猜**，猜错就静默改掉别人的代码。
+    处置：确认源码是你想要的那份之后删掉备份目录再跑。
 45. **stdout 重定向到文件是带缓冲的**（日志空着 ≠ 没在跑）→ 用 `python -u` / `flush=True`。
 46. ⭐ **"超时"的变异可能指向另一个洞**（M87 的 M4 超时 120s → 修完 I-17 变成红 301 条）。
 47. **`probe<N>.py` / `red<N>.py` 提交进仓库** —— 基线文档点名引用，文件不在那句话没法复验。
@@ -123,3 +132,55 @@ python -m apps.eval run ds.json [--out base.json] [--against base.json]
   `agentos`**（包名/模块/文档标题都是内容）
 - 坑：① `git init -b main` 对已初始化的 repo **不改分支** → 用 `git branch -M main`
   ② Windows `failed to execute prompt script` = GCM 弹不出窗（走 SSH / PAT）
+
+## Asuka：沙箱 / 代理 / 模型下载（2026-09-22 实测）
+
+三条都会**静默失败**，各浪费过一次半小时以上，记下来：
+
+1. ⚠️⚠️ **沙箱只允许写项目目录内，失败是静默的。**
+   `curl -sL -o /tmp/x.json <url>` 报告 `http=200 size_download=687`、退出码 0，
+   而 `/tmp/x.json` **根本不存在**。写项目目录内正常。
+   ⇒ **任何下载都落到项目目录内**，下完用 `stat` 核对字节数，**不信 curl 的退出码**。
+   （`huggingface_hub` 写出 0 字节 `config.json` 并报"成功"就是这么来的。）
+   ⚠️ **`/dev/null` 也写不了**：`curl -o /dev/null` 返回 `size=0 speed=0` + 退出码 23，
+   **看起来像"服务器不给数据"** ⇒ 测速必须写到项目目录里的临时文件，否则结论全错。
+
+2. ⚠️ **环境有 HTTP 代理 `http_proxy=http://127.0.0.1:64216`；大响应会卡死不报错。**
+   小响应正常；PyPI 的 `torch` 索引页（~10MB HTML）与 2GB wheel 会**静默挂住**
+   （pip 缓存 25 秒零增长，既不超时也不失败）。
+   ⇒ 大文件必须**断点续传 + 循环重试**，单次 curl 一定被掐断
+   （`schannel: server closed abruptly`，实测 34MB 处断）。
+   排查手段：`du -sm <缓存目录>` **采样两次**看有没有增长 —— 比等 pip 报错快得多。
+
+   **带宽是全局限速，不是每连接限速**（2026-09-22 实测，同一 URL 同一时刻）：
+
+   | 方式 | 聚合速度 |
+   |---|---|
+   | 单连接 | 548 KB/s |
+   | 8 段 `curl -r` 并行 | 492 KB/s |
+   | `--noproxy '*'` 直连 | 68 KB/s（更差，代理是帮手不是瓶颈） |
+
+   ⇒ **分片不提速**，只降低"断一段损失一段"的风险。别指望 8 倍。
+   2.1GB 大约 1 小时，按这个预算安排。
+
+3. **源的选择**：
+   * pip → **默认源** `https://pypi.org/simple`（用户 2026-09-22 开代理后指定）。
+     曾配清华源，实测**在本环境不可靠**：`sentence-transformers` 返回
+     `from versions: none`、`sentencepiece` 报 `ReadTimeoutError (read timeout=15)`；
+     而同一时刻 curl 直拉清华索引页是 **200 / 248KB / 3s** ⇒
+     **源没问题，是代理在 ~250KB 的响应上卡住**（见第 2 条）。
+     结论：装不上先怀疑**代理**，再怀疑源，最后才怀疑包名。
+   * 模型 → **ModelScope**（`https://modelscope.cn/models/<org>/<name>/resolve/master/<file>`）。
+     HuggingFace 不通；`hf-mirror.com` 小文件可以、**大文件必断**。
+     ModelScope 的 `bge-m3` 与 HF 的 `pytorch_model.bin` **字节数完全一致**（2271145830）。
+     ⚠️ ModelScope **支持 `Range`**（实测 `curl -r 100-1099` → `206` + 1000 字节），
+     所以分片下载可行；但必须**只认 206**，200 表示 Range 被忽略，按偏移追加会写坏文件。
+   * `HF_HUB_DISABLE_XET=1` 能消掉 Xet 路径的报错（但 HF 本身不通，治不了根）。
+
+4. 依赖分工（沿用既有约定）：
+   * 单测 `.../python/versions/3.13.12/python.exe` —— **保持零依赖**
+   * 建索引/跑模型 `.../python/envs/default/Scripts/python.exe`
+     （实测 `torch 2.14.0+cpu` / `sentence-transformers 6.0.1` / `transformers 5.17.0`
+     / `sentencepiece 0.2.2` / `qdrant-client 1.19.1`）
+   * ⚠️ **`sentencepiece` 是必装的** —— bge-m3 是 XLM-RoBERTa 系，
+     缺了 `transformers` 可能加载不了 tokenizer

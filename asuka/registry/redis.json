@@ -1,0 +1,153 @@
+{
+  "topic": "redis",
+  "display_name": "Redis",
+  "vendor": "Redis Ltd.",
+  "license_note": "官方文档，仅用于评测语料；版权归 Redis Ltd.",
+  "markdown_url_template": "https://redis.io/docs/latest/commands/{unit}/index.html.md",
+  "page_url_template": "https://redis.io/docs/latest/commands/{unit}/",
+  "headers": "deep",
+  "headers_note": "redis.io 的代码示例是 `##### <语言名>` 划的 codetabs。该层级不在 h1/h2/h3 里时，同一片会混进两种语言的代码（实测 35% 的 Examples chunk 混语言）—— 切分器看不见它，citation 也就说不出是哪个语言。改 h1..h5 后混语言 0%，citation 形如 `Redis · SET · Examples / Go`。",
+  "normalization_note": "14/20 份文档含页面模板样板块 `## Code Examples Legend`（官方 metadata 的 tableOfContents 里没有它）。它在切分前被移除并记账，见 manifest.summary.normalization。",
+  "units": [
+    {
+      "unit_id": "set",
+      "title": "SET",
+      "group": "string",
+      "description": "Sets the string value of a key, ignoring its type. The key is created if it doesn't exist.",
+      "syntax": "SET key value [NX | XX | IFEQ ifeq-value | IFNE ifne-value | IFDEQ ifdeq-digest | IFDNE ifdne-digest] [GET] [EX seconds | PX milliseconds | EXAT unix-time-seconds | PXAT unix-time-milliseconds | KEEPTTL]"
+    },
+    {
+      "unit_id": "get",
+      "title": "GET",
+      "group": "string",
+      "description": "Returns the string value of a key.",
+      "syntax": "GET key"
+    },
+    {
+      "unit_id": "incr",
+      "title": "INCR",
+      "group": "string",
+      "description": "Increments the integer value of a key by one. Uses 0 as initial value if the key doesn't exist.",
+      "syntax": "INCR key"
+    },
+    {
+      "unit_id": "lpush",
+      "title": "LPUSH",
+      "group": "list",
+      "description": "Prepends one or more elements to a list. Creates the key if it doesn't exist.",
+      "syntax": "LPUSH key element [element ...]"
+    },
+    {
+      "unit_id": "rpush",
+      "title": "RPUSH",
+      "group": "list",
+      "description": "Appends one or more elements to a list. Creates the key if it doesn't exist.",
+      "syntax": "RPUSH key element [element ...]"
+    },
+    {
+      "unit_id": "lrange",
+      "title": "LRANGE",
+      "group": "list",
+      "description": "Returns a range of elements from a list.",
+      "syntax": "LRANGE key start stop"
+    },
+    {
+      "unit_id": "brpop",
+      "title": "BRPOP",
+      "group": "list",
+      "description": "Removes and returns the last element in a list. Blocks until an element is available otherwise. Deletes the list if the last element was popped.",
+      "syntax": "BRPOP key [key ...] timeout"
+    },
+    {
+      "unit_id": "blpop",
+      "title": "BLPOP",
+      "group": "list",
+      "description": "Removes and returns the first element in a list. Blocks until an element is available otherwise. Deletes the list if the last element was popped.",
+      "syntax": "BLPOP key [key ...] timeout"
+    },
+    {
+      "unit_id": "hset",
+      "title": "HSET",
+      "group": "hash",
+      "description": "Creates or modifies the value of a field in a hash.",
+      "syntax": "HSET key field value [field value ...]"
+    },
+    {
+      "unit_id": "hget",
+      "title": "HGET",
+      "group": "hash",
+      "description": "Returns the value of a field in a hash.",
+      "syntax": "HGET key field"
+    },
+    {
+      "unit_id": "sadd",
+      "title": "SADD",
+      "group": "set",
+      "description": "Adds one or more members to a set. Creates the key if it doesn't exist.",
+      "syntax": "SADD key member [member ...]"
+    },
+    {
+      "unit_id": "smembers",
+      "title": "SMEMBERS",
+      "group": "set",
+      "description": "Returns all members of a set.",
+      "syntax": "SMEMBERS key"
+    },
+    {
+      "unit_id": "zadd",
+      "title": "ZADD",
+      "group": "sorted-set",
+      "description": "Adds one or more members to a sorted set, or updates their scores. Creates the key if it doesn't exist.",
+      "syntax": "ZADD key [NX | XX] [GT | LT] [CH] [INCR] score member [score member ...]"
+    },
+    {
+      "unit_id": "zrange",
+      "title": "ZRANGE",
+      "group": "sorted-set",
+      "description": "Returns members in a sorted set within a range of indexes.",
+      "syntax": "ZRANGE key start stop [BYSCORE | BYLEX] [REV] [LIMIT offset count] [WITHSCORES]"
+    },
+    {
+      "unit_id": "expire",
+      "title": "EXPIRE",
+      "group": "generic",
+      "description": "Sets the expiration time of a key in seconds.",
+      "syntax": "EXPIRE key seconds [NX | XX | GT | LT]"
+    },
+    {
+      "unit_id": "ttl",
+      "title": "TTL",
+      "group": "generic",
+      "description": "Returns the expiration time in seconds of a key.",
+      "syntax": "TTL key"
+    },
+    {
+      "unit_id": "publish",
+      "title": "PUBLISH",
+      "group": "pubsub",
+      "description": "Posts a message to a channel.",
+      "syntax": "PUBLISH channel message"
+    },
+    {
+      "unit_id": "subscribe",
+      "title": "SUBSCRIBE",
+      "group": "pubsub",
+      "description": "Listens for messages published to channels.",
+      "syntax": "SUBSCRIBE channel [channel ...]"
+    },
+    {
+      "unit_id": "multi",
+      "title": "MULTI",
+      "group": "transactions",
+      "description": "Starts a transaction.",
+      "syntax": "MULTI"
+    },
+    {
+      "unit_id": "watch",
+      "title": "WATCH",
+      "group": "transactions",
+      "description": "Monitors changes to keys to determine the execution of a transaction.",
+      "syntax": "WATCH key [key ...]"
+    }
+  ]
+}

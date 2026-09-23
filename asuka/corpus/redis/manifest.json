@@ -1,0 +1,233 @@
+{
+  "topic": "redis",
+  "display_name": "Redis",
+  "vendor": "Redis Ltd.",
+  "license_note": "官方文档，仅用于评测语料；版权归 Redis Ltd.",
+  "generated_at": "2026-09-22T16:50:49+00:00",
+  "params": {
+    "backend": "langchain",
+    "headers": "deep",
+    "chunk_size": 1000,
+    "chunk_overlap": 150,
+    "length_unit": "characters",
+    "context_cliff_tokens": 2500,
+    "min_chars": 40
+  },
+  "summary": {
+    "topic": "redis",
+    "backend": "langchain",
+    "units_total": 20,
+    "units_ok": 20,
+    "units_failed": 0,
+    "chunks": 428,
+    "tokens": 59974,
+    "oversized": 9,
+    "normalization": {
+      "template_legend_docs": 14,
+      "template_legend_chars_removed": 13832
+    },
+    "fetched": [
+      {
+        "unit_id": "set",
+        "url": "https://redis.io/docs/latest/commands/set/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 21889,
+        "sha256": "84efb799170f25146cd8e453c935d4795510ec8c6eecbb2c1bf5b8f4dcf17874",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "get",
+        "url": "https://redis.io/docs/latest/commands/get/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 13691,
+        "sha256": "cf4ad01632918271106a5addcc5eeef98712bde5a0f14afa020d0b85f4c2a3c0",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "incr",
+        "url": "https://redis.io/docs/latest/commands/incr/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 17504,
+        "sha256": "b4777f1b7c0a3568c5612894176b657e18a0ec704c2ccf0093993f55cc5790e4",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "lpush",
+        "url": "https://redis.io/docs/latest/commands/lpush/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 11659,
+        "sha256": "c60e25ec0f5538459b432b52ec2e01e15fd9cfffeed7fe1377eb2b274faca978",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "rpush",
+        "url": "https://redis.io/docs/latest/commands/rpush/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 11731,
+        "sha256": "b166bec62f820e8365e2a60f2dbd45aa519e989a2db9ceba202e4a9ffa6bc8b4",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "lrange",
+        "url": "https://redis.io/docs/latest/commands/lrange/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 18280,
+        "sha256": "b7fbc22ffc1d3eb5c285a28a659a3627ebc9b0c5d8c538ba4b9e1a32de9850b8",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "brpop",
+        "url": "https://redis.io/docs/latest/commands/brpop/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 3624,
+        "sha256": "8b614ea9fb710b5d96b617bd4e595c461ef64759b88d8c45fe1e0a50e1eb0b3d",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "blpop",
+        "url": "https://redis.io/docs/latest/commands/blpop/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 12113,
+        "sha256": "8a72306adc199a604a498fe7d39e6394e0d05ce687e4a7979b519c76de3bd000",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "hset",
+        "url": "https://redis.io/docs/latest/commands/hset/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 24210,
+        "sha256": "755e0f366b8cd02b2311c91a45f34f4ea7166611f886d6b457d900c8e78e8115",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "hget",
+        "url": "https://redis.io/docs/latest/commands/hget/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 14792,
+        "sha256": "962730bdbe18552361783c547f46643a7443c2e41a960c8c8c7f43d55c5c7d98",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "sadd",
+        "url": "https://redis.io/docs/latest/commands/sadd/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 12010,
+        "sha256": "b5ddbc669b9ccdf833a22c0c443a86f27f164c32ab590267638ceb66f3e98761",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "smembers",
+        "url": "https://redis.io/docs/latest/commands/smembers/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 9488,
+        "sha256": "6faa6d32097f3b5ae33c3c25c681869a69b3ed93e2260aea27393e1847531dff",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "zadd",
+        "url": "https://redis.io/docs/latest/commands/zadd/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 21523,
+        "sha256": "0d38de5c0c049025e057564df2ae0210edc70dd041e9114447c8ae0bb4f1d239",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "zrange",
+        "url": "https://redis.io/docs/latest/commands/zrange/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 39830,
+        "sha256": "6924af1502bbc7be268c7e4afd033fc55ff32dc7a9769c8fdf03e707a49d4208",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "expire",
+        "url": "https://redis.io/docs/latest/commands/expire/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 34417,
+        "sha256": "282f97fa9440f3d475c6f11af158fbc43f1f12ae36e59173bf7495b0b44333e5",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "ttl",
+        "url": "https://redis.io/docs/latest/commands/ttl/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 12477,
+        "sha256": "d8e002e67e677e10cb2f90879572f848fd472d5480c15845fb9a45ab7d3027ff",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "publish",
+        "url": "https://redis.io/docs/latest/commands/publish/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 2463,
+        "sha256": "7ff494856f1ab9552b8aef8245c0f2a7c87053ceca6d2ad7038a767ac406d6d2",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "subscribe",
+        "url": "https://redis.io/docs/latest/commands/subscribe/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 2901,
+        "sha256": "349575d5e1e5e05b90747ac93568783a037ca0d47154a2566c81e5da3298f610",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "multi",
+        "url": "https://redis.io/docs/latest/commands/multi/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 1776,
+        "sha256": "4c682d92db798a2520c2fb6c10dc18b41a816eaad6fa2fd7be2f16f199965e2e",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      },
+      {
+        "unit_id": "watch",
+        "url": "https://redis.io/docs/latest/commands/watch/index.html.md",
+        "status": "ok",
+        "http_code": 0,
+        "bytes": 2033,
+        "sha256": "11186205d42570d0aabfcb37e296ac81c66ce71680089a24e52735faf4984647",
+        "fetched_at": "2026-09-22T16:50:49+00:00",
+        "note": "offline（用缓存）"
+      }
+    ]
+  },
+  "chunks_file": "chunks.jsonl"
+}
