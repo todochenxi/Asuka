@@ -127,10 +127,11 @@ skill `agentos-milestone`：空洞 → 实现 → 测试 → **变红验证** �
 的旧报告 —— 拿它并排比，差的全是指标定义的差。
 
 **核心层零第三方**：`textutil`/`corpus`/`splitters`/`kb`/`dataset`/`evaluate`/`compare`/
-`answers`/`context`/`trace`/`regression` 顶层 import 全是标准库（`context`/`regression` 还顶层引
-`packages.agent_context.*` / `packages.agent_evaluation`（内核，同仓零依赖包）），
+`answers`/`context`/`trace`/`regression`/`deepseek` 顶层 import 全是标准库
+（`context`/`regression` 顶层引 `packages.agent_context.*` / `packages.agent_evaluation`；
+`deepseek` 用标准库 `urllib` 打 DeepSeek，不引第三方——**零依赖解释器可跑**），
 重活（langchain / qdrant-client / sentence-transformers）一律惰性 import。
-单测跑零依赖解释器，**1753 条**。
+单测跑零依赖解释器，**1768 条**。
 
 **答案级判据（#117）**：主判据**不用 LLM-as-Judge**（它偏爱长输出 ⇒ 把"啰嗦"变成得分项），
 改成规则式**必答要点召回** —— `RequiredPoint(label, any_of)`，Redis 24 题共 **97 条**。
@@ -278,10 +279,12 @@ RetrievalPipeline / PermissionFilter）= **C-9 权限过滤 + C-10 citation 必�
 其余 6 个 / manifest+registry+sdk。**反向也没有**：全仓没有一处 `import asuka`。
 ⇒ 现状是**挂在 AgentOS 旁边**，不是长在它里面。
 
-**两处"还没接上"（不是重复）**：
-1. `agent_context/tokens.py` 有 `Tokenizer` 端口。**已部分接上**：`estimate_tokens`
-   现在委托 `HeuristicTokenizer`。但 `Answer.prompt_tokens` 仍是**答案器自己填的**
-   （oracle/null 填 0）⇒ **Token 指标要到真 LLM 接上才有模型侧含义**（#116）。
+**两处"还没接上"已全部闭合（2026-09-23 第八轮）**：
+1. ~~`agent_context/tokens.py` 的 `Tokenizer` 端口~~ —— **已接**：`estimate_tokens`
+   委托 `HeuristicTokenizer`；**且真模型侧**的 `Answer.prompt_tokens`/`completion_tokens`/
+   `cost_usd` 现在由 `deepseek.py` 从 DeepSeek 返回的 `usage` 真填（#116 闭合）：
+   `DeepSeekAnswerer` 接 OpenAI 兼容接口，引用靠模型**自述** `[[key]]`、代价真测。
+   oracle/null 仍填 0，那是"校准没测"，不是"免费"。
 2. ~~`agent_evaluation/regression.py` 的"这次 vs 上次"~~ —— **第七轮已接上**：
    `asuka/regression.py` 复用 `compare`/`regressions`/`Delta`，外面加**可比性门**
    （topic/retriever/answerer/top_k/samples/窗口/预留/cpt/corpus_chunks/calibration +
@@ -289,6 +292,9 @@ RetrievalPipeline / PermissionFilter）= **C-9 权限过滤 + C-10 citation 必�
    **不可测点名**。CLI `asuka.regression <旧> <新> --out --json`。变红 `red93.py` 27 条。
 3. ~~两处 token 估算系数不同~~ —— **已闭合**：全包只认 `textutil.CHARS_PER_TOKEN`，
    装配时显式传入并**记进报告与 trace identity**。
+
+⚠️ `agent_runtime`/`agent_domain`/`execution_kernel`/`agent_api`/`agent_harness` 一行没用：
+Asuka 是**挂在 AgentOS 旁边**，不是长在它里面（反向也没有 `import asuka`）。
 
 **曾经"另一个咬人的点"**：`kb.search` 的 `top_k` 是条数不是 token 数、没有
 C-3/C-4 的概念 —— **已闭合**，见上面的「Context 装配」。

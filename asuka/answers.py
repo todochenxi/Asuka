@@ -90,6 +90,7 @@ ground truth 是**最少必要依据**，不是**唯一允许引的依据**。�
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1441,9 +1442,9 @@ def build_parser() -> Any:
     parser.add_argument(
         "--answerer",
         default="oracle",
-        choices=["oracle", "null", "fabricator"],
-        help="三个都是**校准用**的假答案器（oracle 全对 / null 全空 / fabricator 编造引用）；"
-        "真模型接入见 #116",
+        choices=["oracle", "null", "fabricator", "deepseek"],
+        help="oracle/null/fabricator 是**校准用**假答案器；deepseek 是**真模型**"
+        "（需要 DEEPSEEK_API_KEY，会在报告里标『模型成绩』而非『校准』）",
     )
     parser.add_argument("--retriever", default="bm25", choices=["bm25", "dense"])
     parser.add_argument("--top-k", type=int, default=5)
@@ -1544,11 +1545,22 @@ def _run(args: Any) -> int:
         allow_non_semantic=args.allow_non_semantic,
     )
 
-    answerer: Answerer = {
-        "oracle": OracleAnswerer,
-        "null": NullAnswerer,
-        "fabricator": FabricatingAnswerer,
-    }[args.answerer]()
+    answerer: Answerer
+    if args.answerer == "deepseek":
+        # 惰性 import：避免与 `deepseek.py` 的 `from .answers import ...` 形成循环依赖。
+        from .deepseek import DeepSeekAnswerer
+
+        if not os.environ.get("DEEPSEEK_API_KEY"):
+            raise ValueError(
+                "用 deepseek 作答需要 DEEPSEEK_API_KEY 环境变量（真模型必须有 key）"
+            )
+        answerer = DeepSeekAnswerer()
+    else:
+        answerer = {
+            "oracle": OracleAnswerer,
+            "null": NullAnswerer,
+            "fabricator": FabricatingAnswerer,
+        }[args.answerer]()
 
     report = evaluate_answers(
         kb,

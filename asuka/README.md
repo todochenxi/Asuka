@@ -25,20 +25,21 @@ Redis 一类文档端到端跑通。其余五类待做。
 
 | 已完成 | 未做 |
 |---|---|
-| 语料 / 任务集 / 检索评测 / 对照 | **真 LLM 生成**（需要 API key，见 #116） |
-| 答案级判据（规则式 + `pass@k`）+ 上下界校准 | 其余 5 类文档 |
+| 语料 / 任务集 / 检索评测 / 对照 | 其余 5 类文档 |
+| 答案级判据（规则式 + `pass@k`）+ 上下界校准 | |
 | Citation：自述引用 + 编造探测 + 归因拆分 | |
 | **Context 装配**（C-1/C-3/C-4）：`top_k` 之后再过一道 token 预算 | |
 | Trace：逐步记录 + 审计视图 + 交叉核对 | |
 | **回归对比**：这次 vs 上次，只报警"上次过、这次不过" | |
 | 检索：BM25 与本地 bge-m3 全链路 | |
+| **真 LLM 生成**：DeepSeek 已接入（`--answerer deepseek`，见下） | |
 
-⚠️ `Correctness` / `Latency` / `Token` / `Cost` 现在跑的都是**校准答案器**（不调模型），
-所以后四项目前只证明了**判据本身没坏**，还没证明任何模型的水平 —— 那是 #116。
+⚠️ `Correctness` 一直跑校准答案器（oracle/null 是判据上下界）。
+`Latency` / `Token` / `Cost` 在 **`--answerer deepseek`** 下是**真模型侧**的数
+（DeepSeek 返回的 `usage` + 声明单价）；校准答案器填 0 只是"没测"，不是"免费"。
 
 ⚠️ 这四项目前测的是**装配之后**的那一份上下文（`asuka/context.py`）：
 `Token` 数的是真喂进 prompt 的 token，`Latency` 把检索和生成分开记。
-接上真模型之后这两项才开始有模型侧的含义。
 
 ## 端到端跑通（Redis）
 
@@ -80,13 +81,20 @@ export ASUKA_EMBED_MODEL_PATH=.asuka-models/bge-m3
     asuka/runs/retrieval/redis-dense-<ts>.json \
     --out asuka/runs/retrieval/compare-<ts>.md
 
-# 7) 答案级指标（规则式必答要点召回 + pass@k + 引用核对 + 上下文装配）—— **不需要 LLM**
+# 7) 答案级指标（规则式必答要点召回 + pass@k + 引用核对 + 上下文装配）
 "$PY_HEAVY" -m asuka.answers redis --answerer oracle     --retriever bm25 --top-k 10 --samples 1
 "$PY_HEAVY" -m asuka.answers redis --answerer null       --retriever bm25 --top-k 10 --samples 1
 "$PY_HEAVY" -m asuka.answers redis --answerer fabricator --retriever bm25 --top-k 10 --samples 1
 #   → asuka/runs/answers/redis-<answerer>-<retriever>-k<n>-<ts>.{json,md}
 #   `oracle` 必须 1.0、`null` 必须 0.0 —— 这两个数是**判据的上下界**，不是模型成绩。
 #   `fabricator` 专门去踩"引用了没给它的来源"，证明**编造探测器会响**。
+
+# 7b) **真模型**：DeepSeek（需要 key；Token/Cost/Latency 这下是模型侧的了）
+export DEEPSEEK_API_KEY="sk-..."            # 没有就拒绝出表（退出码 2，提示里点名要设这个变量）
+"$PY_HEAVY" -m asuka.answers redis --answerer deepseek --retriever bm25 --top-k 10 --samples 3
+#   ⚠️ deepseek 会**真实调用** API（每个问题 × 采样次数一次）。报告里标「模型成绩」，
+#   不标「校准」。单价默认 deepseek-chat 公开价，可经 DEEPSEEK_INPUT_COST_PER_MILLION /
+#   DEEPSEEK_OUTPUT_COST_PER_MILLION 覆盖；base_url 经 DEEPSEEK_BASE_URL 覆盖（自建网关）。
 
 # 7a) 把窗口调小 —— 看"检到了但装不进预算"这条归因真的会动
 "$PY_HEAVY" -m asuka.answers redis --answerer oracle --retriever bm25 --top-k 10 \
@@ -130,6 +138,7 @@ export ASUKA_EMBED_MODEL_PATH=.asuka-models/bge-m3
 | `datasets/` | 具体题目（人工整理，ground truth 来自官方文档） | 无 |
 | `evaluate.py` | 检索指标 + 报告；`recall` 上限一并报出；报告读回时**自洽校验** | 无 |
 | `answers.py` | 答案级指标：规则式必答要点召回 + `pass@k` + **引用核对** + 延迟/Token/成本测量位 | 无 |
+| `deepseek.py` | **真模型答案器**：接 DeepSeek（OpenAI 兼容）；引用自述 + 代价真测；零第三方（标准库 `urllib`） | 无 |
 | `context.py` | **装配**：`top_k` 之后再过一道 token 预算（C-1/C-3/C-4），复用内核 `agent_context` | 无 |
 | `trace.py` | 一条 Run 的逐步记录（**可审计**）+ 与报告的交叉核对（含引用归因、装配参数） | 无 |
 | `compare.py` | 并排对照多份报告；**先验可比性，不可比就拒绝出表** | 无 |
@@ -286,18 +295,20 @@ pass@k = 1 - C(n-c, k) / C(n, k)      # n 次采样里 c 次成功
 自由文本里否定句会让子串匹配**反向命中**（正确答案写"并不返回 -1 …"会被判成答错）。
 **一个会误判的字段比没有更糟**，而且它声明了却没有可靠的 producer。
 
-### `oracle` / `null`：这是**校准**，不是成绩
+### `oracle` / `null` / `fabricator`：这是**校准**，不是成绩
 
 没有 LLM API key 时，答案级指标仍然要能被验证 —— 否则它只是没人跑过的代码。
+**真模型**走 `--answerer deepseek`（见下），它自述 `is_calibration=False`，报告里标「模型成绩」。
 
 | answerer | 行为 | 必须 |
 |---|---|---|
 | `oracle` | 直接返回参考答案 | 要点召回 **1.0**（不是 1.0 ⇒ 声明写错了） |
 | `null` | 返回空串 | 要点召回 **0.0**（不是 0 ⇒ 判据在送分） |
+| `fabricator` | 答得像样但引**编的** id | `grounded` 必须 0.0、且被点名 |
 
 `is_calibration` 必须由 answerer **自述**，不说的会被 `evaluate_answers` **拒绝** ——
 默认当成"真模型"是最坏的选择：校准分数会被读成模型成绩，而报告里没有任何东西提醒你。
-报告最上面会印 **`⚠️ 这是校准跑，不是模型成绩`**。
+报告最上面会印 **`⚠️ 这是校准跑，不是模型成绩`**（deepseek 那栏印「模型成绩」）。
 
 ⚠️ `oracle` **不能**证明"要点覆盖了参考答案的全部含义"—— 那需要裁判模型（见 M12）。
 它能证明的是"每条要点的说法确实能在参考答案里找到"。
@@ -738,7 +749,8 @@ dense 的优势几乎全在 medium（+0.185），hard 上反而输 0.052。
 | `null` | 24 | **0.0000** | 0.0000 | 0.0 | — | **0.0000** | **0.0000** | 0 |
 | `fabricator` | 24 | 1.0000 | 1.0000 | 104.5 | **0.0000** | 0.0000 | 0.0000 | **48 条 / 24 题** |
 
-这些数是**判据的上下界**，不是模型成绩。真模型成绩要等接入 LLM（#116）。
+这些数是**判据的上下界**，不是模型成绩。真模型成绩用 `--answerer deepseek` 跑
+（DeepSeek，需要 `DEEPSEEK_API_KEY`；Token/Cost/Latency 那下是模型侧的了，不是填 0）。
 
 `fabricator` 那一行是**自检**：它证明"引用了没给它的来源"这条路径真的会被抓到 ——
 `oracle` 和 `null` 都碰不到它，没有它，`fabricated` 可能是一段永远为空的代码。
@@ -775,12 +787,13 @@ PYTHONPATH=. "$PY_UNIT" -m unittest tests.unit.test_asuka_regression_contract
 ```
 
 用 `unittest`（不是 pytest）。**核心层零第三方依赖**，所以单测跑在零依赖的解释器上。
-上面十条锁的是实证过的缺陷，不是推演出来的担心。当前 **1753 条全绿**。
+上面十条锁的是实证过的缺陷，不是推演出来的担心。当前 **1768 条全绿**。
 
 新增判据一律做**变红验证**（把代码改坏，确认测试真的会红）——
 没红过的测试不算测试。骨架在 `redkit.py`（锚点唯一性断言、残留防护、信号处理）：
 
 ```bash
+python red94.py     # DeepSeek 真模型：7 条变异（生成失败文案 / cost 公式 / 序号引用 / 不可测 / 归一化 / 提示词 [[key]] / 缺 key 早退）
 python red93.py     # 回归对比：27 条变异（口径 / 不可测 / 同源 / 可比性门 / 渲染 / CLI）
 python red92.py     # Context 装配：18 条变异（C-1 / C-3 / C-4 / 取舍顺序）
 python red91.py     # 引用指标：23 条变异
