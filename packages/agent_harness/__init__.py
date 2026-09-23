@@ -45,6 +45,7 @@ from .guardrail import (
 )
 from .harness import Harness, HarnessVerdict
 from .policy import PolicyContext, PolicyDecision, PolicyEngine, PolicyRule, Verdict
+from .policy_document import PolicyDocument, PolicyDocumentError
 from .ports import Clock, ManualClock, SystemClock
 
 __all__ = [
@@ -67,6 +68,8 @@ __all__ = [
     "ManualClock",
     "PolicyContext",
     "PolicyDecision",
+    "PolicyDocument",
+    "PolicyDocumentError",
     "PolicyEngine",
     "PolicyRule",
     "SecretPatternGuardrail",

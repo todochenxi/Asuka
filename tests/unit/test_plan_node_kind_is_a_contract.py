@@ -80,6 +80,7 @@ from packages.agent_domain.intelligence.goal import Budget, Goal
 from packages.agent_domain.intelligence.plan import Plan, PlanNode, PlanNodeKind
 from packages.agent_domain.intelligence.state import State
 from packages.agent_runtime.loop import (
+    PLAN_NODE_ACTION_TYPES,
     SUPPORTED_PLAN_NODE_KINDS,
     AgentLoop,
     StepOutcome,
@@ -87,6 +88,11 @@ from packages.agent_runtime.loop import (
 from packages.agent_runtime.reducer import RUN_FINISHED
 
 from .helpers import new_run
+
+
+def _tool_for(kind: PlanNodeKind) -> str:
+    """M98：`kind='tool'` 的节点必须点名工具，其余 kind 留空。"""
+    return "calculator" if kind is PlanNodeKind.TOOL else ""
 
 
 # ---------------------------------------------------------------- 测试替身
@@ -124,10 +130,15 @@ class OneKindPlanner:
 
 
 class ExecutableThenUnexecutablePlanner:
-    """第一个节点**能跑**，第二个节点声明了运行时做不到的 kind。
+    """第一个节点**能跑**，第二个节点**这份运行时执行不了**。
 
     用来验"查的是整份计划"：如果只查"下一个要跑的节点"，
     第一个节点会先被执行（**副作用已经发生了**），然后才失败。
+
+    ⚠️ M99 之后**五个 kind 全部可执行**，所以"执行不了"不再来自 kind，
+    而来自**这个节点要的资源这台 worker 供不上**（M99 的
+    `PLAN_RESOURCE_UNAVAILABLE`）—— 同一精神：一份整体跑不完的计划，
+    第一个节点也不许跑。
     """
 
     def plan(self, state):  # noqa: ANN001, ANN201
@@ -135,7 +146,11 @@ class ExecutableThenUnexecutablePlanner:
             run_id=state.run_id,
             nodes=(
                 PlanNode(node_id="ok", name="ordinary-task"),
-                PlanNode(node_id="gate", name="needs-a-human", kind="human"),
+                PlanNode(
+                    node_id="gate",
+                    name="needs-a-gpu",
+                    resource_labels=("gpu",),
+                ),
             ),
         )
 
@@ -172,6 +187,15 @@ class _Base(unittest.TestCase):
 
         base = MinimalLoopTest("test_full_loop_reaches_goal")
         base.setUp()
+        # M99：给 worker 一份**自述的**资源能力，这样计划期的 Resource 判据
+        # 才有一个"这个运行时能提供什么"的答案（`_known_resource_labels`）。
+        # 只提供 `cpu`，于是计划里的 `gpu` 标签会被判成供不上。
+        from packages.execution_kernel.scheduler import WorkerCapability
+
+        base.worker.capability = WorkerCapability(
+            executors=frozenset(base.worker.executors),
+            labels=frozenset({"cpu"}),
+        )
         loop = AgentLoop(
             kernel=base.kernel,
             worker=base.worker,
@@ -234,13 +258,15 @@ class TheDeclaredSetIsAClosedSetTest(unittest.TestCase):
 
     def test_every_declared_value_is_accepted(self) -> None:
         for kind in PlanNodeKind:
-            node = PlanNode(node_id="n0", name="x", kind=kind)
+            node = PlanNode(node_id="n0", name="x", kind=kind, tool=_tool_for(kind))
             self.assertIs(node.kind, kind)
 
     def test_every_declared_value_is_accepted_as_a_plain_string(self) -> None:
         """快照与历史调用点给的是字符串 —— 必须收。"""
         for kind in PlanNodeKind:
-            node = PlanNode(node_id="n0", name="x", kind=kind.value)
+            node = PlanNode(
+                node_id="n0", name="x", kind=kind.value, tool=_tool_for(kind)
+            )
             self.assertIs(node.kind, kind)
 
     def test_an_unknown_kind_is_refused(self) -> None:
@@ -285,66 +311,62 @@ class TheDeclaredSetIsAClosedSetTest(unittest.TestCase):
         self.assertIn("tsak", str(ctx.exception))
 
 
-# ============================================================ 3. 运行时拒绝
-class AnUnexecutableKindIsRefusedTest(_Base):
-    """核心：运行时执行不了的 kind → 判死 + 点名理由 + **零副作用**。"""
+# ============================================================ 3. 运行时能力自述
+class TheRuntimeDeclaresWhatItCanExecuteTest(_Base):
+    """M99 之后，**全部五个** kind 都有真实分派路径 —— 集合与声明对齐。"""
 
     def test_the_runtime_declares_what_it_can_execute(self) -> None:
         """运行时必须**自述**能力 —— 否则"它做不到什么"是个秘密。"""
-        self.assertIn(PlanNodeKind.TASK, SUPPORTED_PLAN_NODE_KINDS)
+        self.assertEqual(SUPPORTED_PLAN_NODE_KINDS, frozenset(PlanNodeKind))
+        self.assertEqual(set(PLAN_NODE_ACTION_TYPES), set(PlanNodeKind))
 
-    def test_every_unexecutable_kind_is_refused(self) -> None:
-        unexecutable = [k for k in PlanNodeKind if k not in SUPPORTED_PLAN_NODE_KINDS]
-        self.assertTrue(unexecutable, "这一轮的存在意义就是它们")
-
-        for kind in unexecutable:
+    def test_every_declared_kind_has_a_dispatch_path(self) -> None:
+        """M99 的判据：`SUPPORTED_PLAN_NODE_KINDS` 里的每个 kind，
+        都必须在 `PLAN_NODE_ACTION_TYPES` 里有非空的 Action 集合 ——
+        否则它只是换了个地方说谎（声明支持、实际走到拒）。"""
+        for kind in SUPPORTED_PLAN_NODE_KINDS:
             with self.subTest(kind=kind.value):
-                loop, state = self._new(OneKindPlanner(kind=kind.value))
-                self._script(loop, state.run_id)
+                self.assertTrue(
+                    PLAN_NODE_ACTION_TYPES[kind],
+                    f"{kind.value} 声明为可执行，却没有对应的 Action 集合",
+                )
 
-                outcome = loop.step()
+    def test_agent_dispatches_to_delegation(self) -> None:
+        self.assertEqual(
+            PLAN_NODE_ACTION_TYPES[PlanNodeKind.AGENT],
+            frozenset({ActionType.AGENT_DELEGATION}),
+        )
 
-                self.assertEqual(outcome, StepOutcome.FAILED)
-                self.assertEqual(loop.agent_run.status, AgentRunStatus.FAILED)
-                # ★ 拒绝发生在**任何副作用之前**
-                self.assertEqual(loop.steps, 0)
-                self.assertEqual(loop.steps_of_run, [])
+    def test_decision_is_narrower_than_task(self) -> None:
+        """`decision` 只允许纯决策动作（REPLAN）——放宽到 task 就失去区分力。"""
+        self.assertEqual(
+            PLAN_NODE_ACTION_TYPES[PlanNodeKind.DECISION],
+            frozenset({ActionType.REPLAN}),
+        )
+        self.assertNotIn(
+            ActionType.TOOL_CALL, PLAN_NODE_ACTION_TYPES[PlanNodeKind.DECISION]
+        )
 
-    def test_the_refusal_names_the_node_the_kind_and_the_supported_set(self) -> None:
-        """理由要点齐四样：哪个节点 / 声明了什么 / 支持什么 / 为什么不能凑合。"""
-        loop, state = self._new(OneKindPlanner(kind="human", node_id="gate"))
-        self._script(loop, state.run_id)
 
-        loop.step()
-        reason = _terminal_reason(loop)
+class AnUnknownKindIsRefusedAtConstructionTest(unittest.TestCase):
+    """闭集在**构造期**兜底：未知 kind 连造都造不出来。
 
-        self.assertIn("gate", reason)          # 哪个节点
-        self.assertIn("human", reason)         # 声明了什么
-        self.assertIn("task", reason)          # 运行时支持什么
-        self.assertIn("I-18", reason)          # 这条判据的编号
+    M88 之前 `kind` 只被行尾注释约束（`kind='banana'` 也通过）；
+    M99 之后五个声明的 kind 全部可执行，于是"运行时执行不了某个 kind"
+    这条路径**自然消失** —— 剩下的唯一缺口是拼错了 kind 名，而那在
+    `PlanNode.__post_init__` 就被拒绝（不需要等到计划门）。
+    """
 
-    def test_the_reason_does_not_pretend_it_could_have_worked(self) -> None:
-        """★ 理由必须说清"不能凑合"，否则读的人会以为"当 task 跑"是个降级选项。
+    def test_an_unknown_kind_never_becomes_a_node(self) -> None:
+        with self.assertRaises(InvariantViolation) as ctx:
+            PlanNode(node_id="gate", name="x", kind="banana")
+        self.assertIn("banana", str(ctx.exception))
+        self.assertIn("gate", str(ctx.exception))
 
-        而"当 task 跑"恰恰是 M88 要消灭的那条路。
-        """
-        loop, state = self._new(OneKindPlanner(kind="human"))
-        self._script(loop, state.run_id)
-
-        loop.step()
-        reason = _terminal_reason(loop)
-
-        self.assertIn("fabricate", reason)
-
-    def test_no_step_is_created_for_the_offending_node(self) -> None:
-        """不许**执行**它，也不许**跳过**它 —— 两件事都得验。"""
-        loop, state = self._new(OneKindPlanner(kind="agent", node_id="delegate"))
-        self._script(loop, state.run_id)
-
-        loop.step()
-
-        ids = [s.plan_node_id for s in loop.steps_of_run]
-        self.assertEqual(ids, [], "既没有执行它，也没有为它开一个 Step")
+    def test_a_misspelled_kind_does_not_fall_back_to_task(self) -> None:
+        """M88 要消灭的正是"未知值兜底成 task" —— 拼错必须抛。"""
+        with self.assertRaises(InvariantViolation):
+            PlanNode(node_id="n0", name="x", kind="tsak")
 
 
 # ============================================================ 4. 查整份计划
@@ -352,7 +374,7 @@ class TheWholePlanIsCheckedTest(_Base):
     """核心：查的是**整份计划**，不是"下一个要跑的节点"。"""
 
     def test_an_executable_first_node_is_not_run_when_a_later_node_is_not(self) -> None:
-        """★ 一份 `[好节点, kind='human']` 的计划，**第一个节点也不许跑**。
+        """★ 一份 `[好节点, 执行不了的节点]` 的计划，**第一个节点也不许跑**。
 
         只查"下一个要跑的节点"的话，第一个节点会先被执行 ——
         而这份计划从一开始就不可能被完整执行，**副作用已经白发生了**。
@@ -390,15 +412,25 @@ class ARestoredPlanIsCheckedTooTest(_Base):
     计划有两条来路：`_plan()` 落的，与**快照恢复**带回来的
     （`state_from_dict` 直接 `current_plan=plan`，不走 reducer）。
     判据只挂在 `_plan()` 后面的话，恢复回来那条会**绕过**它 ——
-    然后照旧把 `kind='human'` 当 task 跑掉。
+    然后照旧把执行不了的节点当 task 跑掉。
+
+    M99 之后用 `PLAN_TOOL_NOT_FOUND` 作为"执行不了"的载体（五个 kind 全可执行）。
     """
 
-    def _snapshot_with_plan(self, *, kind: str) -> RunSnapshot:
+    def _snapshot_with_plan(
+        self, *, kind: str = "task", tool: str = "", resource_labels: tuple[str, ...] = ()
+    ) -> RunSnapshot:
         run_id = new_run()
         plan = Plan(
             run_id=run_id,
             nodes=(
-                PlanNode(node_id="restored", name="from-a-snapshot", kind=kind),
+                PlanNode(
+                    node_id="restored",
+                    name="from-a-snapshot",
+                    kind=kind,
+                    tool=tool,
+                    resource_labels=resource_labels,
+                ),
             ),
         )
         state = State(
@@ -433,9 +465,9 @@ class ARestoredPlanIsCheckedTooTest(_Base):
         self.assertNotEqual(outcome, StepOutcome.FAILED)
         self.assertEqual(loop.agent_run.status, AgentRunStatus.RUNNING)
 
-    def test_a_restored_plan_with_an_unexecutable_kind_is_refused(self) -> None:
+    def test_a_restored_plan_that_cannot_run_is_refused(self) -> None:
         loop, _ = self._new(OneKindPlanner(kind="task"))
-        loop.restore(self._snapshot_with_plan(kind="human"))
+        loop.restore(self._snapshot_with_plan(resource_labels=("gpu",)))
 
         outcome = loop.step()
 

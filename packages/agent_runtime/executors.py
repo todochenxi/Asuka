@@ -245,6 +245,12 @@ class LLMCallExecutor:
             "response": {"text": resp.text},
             "model": resp.model_id,
             "deployment": resp.deployment_id,
+            # M94：成本与延迟必须**随结果一起走**。Provider 已经把它们算出来了
+            # （`CompletionResponse.latency_ms` / `metadata["cost_usd"]`），
+            # 但 Executor 此前只搬运 `usage` —— 于是 Asuka 的评测拿到的成本恒为 0，
+            # 而报告里那一栏读起来像"免费"。搬运工漏搬的东西，下游不会报错。
+            "latency_ms": resp.latency_ms,
+            "cost_usd": float((resp.metadata or {}).get("cost_usd") or 0.0),
             "usage": {
                 "prompt_tokens": resp.prompt_tokens,
                 "completion_tokens": resp.completion_tokens,

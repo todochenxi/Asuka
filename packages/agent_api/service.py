@@ -61,6 +61,30 @@ def _outcome_str(outcome: Any) -> str:
     return str(getattr(outcome, "value", outcome))
 
 
+def last_llm_answer(state: Any) -> str:
+    """这条 Run 最近一次 LLM 执行的输出文本；没有就返回空串。
+
+    回答存在 Observation 的 `content["result"]["response"]["text"]` 里 ——
+    它既不在 trace（trace 只记 `status` / `outcome`），也不在 `RunView`。
+    聊天页需要它，所以这里把它读出来。
+
+    读不到就**如实返回空串**，不拿别的字段冒充：`""`（没答）与
+    "答了一句空话"是两件事，混起来会让聊天页把工具调用的输出当成回答。
+    """
+    observations = getattr(state, "observations", None) or ()
+    for observation in reversed(tuple(observations)):
+        content = getattr(observation, "content", None)
+        if not isinstance(content, Mapping):
+            continue
+        result = content.get("result")
+        if not isinstance(result, Mapping):
+            continue
+        response = result.get("response")
+        if isinstance(response, Mapping) and response.get("text"):
+            return str(response["text"])
+    return ""
+
+
 @dataclass
 class InProcessControlPlane:
     """把 `assemble_runtime_stack()` 包成可被 HTTP 调用的服务。"""
@@ -222,6 +246,18 @@ class InProcessControlPlane:
             pending_approval=None,
             cancel_requested=False,
         )
+
+    def answer(self, run_id: str) -> str:
+        """这条 Run 最近一次 LLM 执行的回答（聊天页 `POST /chat` 用）。
+
+        只回答**还活在这一进程里**的 Run —— 聊天页刚开的那条一定在。
+        一条已经不在手上的 Run 返回空串，而不是去猜：
+        回答不落快照，猜出来的东西没有第二种查证方式。
+        """
+        stack = self.runs.get(run_id)
+        if stack is None:
+            return ""
+        return last_llm_answer(getattr(stack.loop, "state", None))
 
     # ------------------------------------------------------------ 推进（F-1）
     def step_run(self, run_id: str) -> RunView:

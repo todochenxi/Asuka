@@ -45,6 +45,7 @@ APPROVAL = "approval.requested"       # 被 Harness 闸门挡住
 APPROVED = "approval.decided"         # 人来答复了
 FINISHED = "run.finished"             # Runtime 声明终态（B-7）
 CANCELLED = "run.cancelled"           # M33 / B-8：谁叫停的、为什么（审计的第一入口）
+GUARDRAIL = "guardrail.rejected"      # M95：输入/输出护栏拦下这一步（H-7）
 RECOVERED = "run.recovered"           # M20：进程重启后从 Snapshot 重新装载
 SNAPSHOT = "snapshot.written"         # M20：落了一个可恢复点
 

@@ -23,6 +23,12 @@ Kernel 语义（FailureClass）由 `agent_runtime.executors.ToolCallExecutor` �
 from .protocols import FunctionInvoker, ToolCall, ToolInvoker
 from .registry import ToolNotFoundError, ToolRegistry
 from .runtime import ToolExecutionError, ToolRuntime
+from .sandbox import (
+    SandboxProfile,
+    SandboxViolation,
+    SandboxedCommandInvoker,
+    SandboxedInvoker,
+)
 from .spec import (
     SideEffect,
     ToolProtocol,
@@ -33,6 +39,10 @@ from .validation import ToolValidationError, validate_input
 
 __all__ = [
     "FunctionInvoker",
+    "SandboxProfile",
+    "SandboxViolation",
+    "SandboxedCommandInvoker",
+    "SandboxedInvoker",
     "SideEffect",
     "ToolCall",
     "ToolExecutionError",

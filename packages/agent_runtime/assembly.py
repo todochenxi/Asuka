@@ -124,6 +124,12 @@ def assemble_runtime_stack(
     #: 所以这里刻意**不给**内存兜底：给了就等于两个进程各有一份，
     #: 看上去装上了，实际上还是没有通道（与 212~214 同款）。
     cancellations: RunCancellationStore | None = None,
+    #: M95：MemoryManager。Loop 在完成时写一条 episodic 记忆，
+    #: ContextAssembler 的 `memory_provider` 在组装时 recall 它 ——
+    #: 二者必须是**同一份**，否则写了没人读得到。
+    memory: Any = None,
+    #: M3：技能注册表。配了就在派生技能子 Run 之前校验技能存不存在。
+    skills: Any = None,
     max_steps: int = 10,
     worker_id: str = "worker-1",
     lease_ttl: timedelta = timedelta(seconds=30),
@@ -208,6 +214,21 @@ def assemble_runtime_stack(
             approval_store=approval_store,
         )
 
+    # M96：装配时给 assembler 补一个 memory_provider —— **只在调用方没给**的时候。
+    # 理由：memory 与 assembler 是两条独立参数，调用方给了 memory 却忘了 provider，
+    # 就会"记得住但读不到"，而两边都不报错（B-7 那种沉默的差）。
+    # subject 用 agent_id：按 run_id recall 永远查不到（每 Run 各记一份）。
+    if (
+        memory is not None
+        and context_assembler is not None
+        and context_assembler.memory_provider is None
+    ):
+        def _provider(request: Any) -> Any:
+            query = request.messages[-1][1] if request.messages else ""
+            return memory.recall(subject=agent_id, query=query)
+
+        context_assembler.memory_provider = _provider
+
     # ⚠️ 不能写 `trace or RunTrace(...)` —— RunTrace 有 `__len__`，
     # 空账本是 falsy，于是调用方传进来的那个会被悄悄换掉。
     # （这是阶段 11 装配时真实踩到的一次：Trace 一直是空的，
@@ -226,6 +247,8 @@ def assemble_runtime_stack(
         model_gateway=gateway,
         tool_runtime=tool_runtime,
         context_assembler=context_assembler,
+        memory=memory,
+        skills=skills,
         trace=trace,
         # R-1：快照存储必须与 `RunRecovery` 用的是同一份（写在这里，读在那边）
         snapshots=snapshots or InMemoryRunSnapshotStore(),

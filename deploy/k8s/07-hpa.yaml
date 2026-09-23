@@ -1,0 +1,104 @@
+# M102 · HPA（M7 Production）。
+#
+# 此前八份清单里一个 HPA 都没有 —— `replicas: 1` 是写死的。
+# 于是"负载上来了"这件事在编排层没有任何出口：要么人手改副本数，
+# 要么接受一条 API 一直排队。
+#
+# ---------------------------------------------------------------------------
+# 为什么是 api 和 worker 两个，而不是八个
+#
+# 只有这两个是**负载随流量走**的：
+#
+#   api     IO 密集（收请求、连库），请求一多就排队
+#   worker  计算密集（真跑 Task），任务积压就落后
+#
+# 另外六个是**循环型控制进程**（sweeper / controller）：
+# 它们的活是"扫一圈、处理一批"，多开一份不会更快 ——
+# 只会让同一个 SUSPENDED 被两个进程同时唤醒。给它们加 HPA
+# 是"看起来更弹"而实际制造竞态。它们该是 1，且只有 1。
+#
+# ---------------------------------------------------------------------------
+# 为什么这一版是 CPU，而不是"队列深度"（刻意，非偷懒）
+#
+# 总览 §M7 写的是"HPA 不能只看 CPU → 业务指标（Queue Depth / Run Latency）"。
+# 那是对的，但**业务指标 HPA 需要一个集群侧的 metrics adapter**
+# （Prometheus Adapter 或 KEDA），AgentOS 仓库里没有它 ——
+# 在这里写一个 `type: External` 的 HPA，会把"没装 adapter 就永远不扩"
+# 伪装成"已经支持队列深度扩缩容"。宁可先给一个真的会生效的 CPU HPA，
+# 把业务指标扩缩容留成一条**看得见的**待办（见架构页 §04）。
+# ---------------------------------------------------------------------------
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agentos-api
+  namespace: agentos
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: agentos-api
+  minReplicas: 1
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  # 缩容要慢、扩容要快 —— 反过来的话，一次抖动会让副本数来回摆，
+  # 而每次扩缩都伴随一次连接重建，比"多开一会儿"贵得多。
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+      selectPolicy: Max
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: agentos-worker
+  namespace: agentos
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: agentos-worker
+  minReplicas: 1
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+      selectPolicy: Max

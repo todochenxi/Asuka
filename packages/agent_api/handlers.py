@@ -21,10 +21,10 @@ def start(agent_id: str, body: dict, idem: str = Header(default="")):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .dto import DecisionRequest, StartRunRequest
-from .errors import ApiError, map_domain_error
+from .errors import ApiError, Conflict, map_domain_error
 from .ports import ControlPlane, require
 
 
@@ -144,6 +144,90 @@ def get_trace(cp: ControlPlane, run_id: str) -> ApiResponse:
     等于让每次"这个 Run 现在怎么样了"都背上一整段历史。
     """
     return _ok(cp.get_trace(run_id).to_dict())
+
+
+@guard
+def get_answer(cp: ControlPlane, run_id: str) -> ApiResponse:
+    """`GET /runs/{run_id}/answer` —— 这条 Run 最近一次 LLM 回答。
+
+    回答是**只读的派生事实**：它存在 State 的 Observation 里，
+    没有独立存储。查询器缺席时返回空串而不是 404 —— 与
+    `list_run_executions` 同一条判据：查询语义，空集不是错误。
+    """
+    answer_of = getattr(cp, "answer", None)
+    answer = str(answer_of(run_id)) if answer_of is not None else ""
+    return _ok({"run_id": run_id, "answer": answer})
+
+
+#: 拼进 prompt 的历史轮数上限。它只是防"会话长到把窗口撑爆"，
+#: 不是业务语义 —— 真要长期记忆该走 Memory，不是把 transcript 无限拉长。
+_MAX_HISTORY_TURNS = 20
+
+
+def _conversation_prompt(history: Any, message: str) -> str:
+    """把多轮对话拼成一条 `user_request`。
+
+    AgentOS 的一条 Run 只认一条 `user_request`（§44），**没有会话对象** ——
+    所以"多轮"是**客户端的事实**：把前几轮连同这一句一起交给模型。
+    这里把它拼清楚，而不是让前端各自拼一份（B-7：同一个事实一处定义）。
+
+    没有历史时**原样返回**这一句，不添任何前缀 —— 单轮请求的 prompt
+    与 M93 之前逐字相同，避免"加了多轮"顺手改掉单轮的行为。
+    """
+    turns: list[tuple[str, str]] = []
+    if isinstance(history, Sequence):
+        for item in history[-_MAX_HISTORY_TURNS:]:
+            if not isinstance(item, Mapping):
+                continue
+            role = str(item.get("role") or "").strip()
+            content = str(item.get("content") or "").strip()
+            if role and content:
+                turns.append((role, content))
+    if not turns:
+        return message
+    lines = ["以下是此前的对话，请结合它回答最后一句：", ""]
+    for role, content in turns:
+        lines.append(f"{'用户' if role == 'user' else '助手'}：{content}")
+    lines.append(f"用户：{message}")
+    return "\n".join(lines)
+
+
+@guard
+def chat(
+    cp: ControlPlane,
+    body: Mapping[str, Any],
+    *,
+    idempotency_key: str = "",
+) -> ApiResponse:
+    """`POST /chat` —— 单轮 / 多轮问答：开一条 Run、推到停下来，带上模型回答。
+
+    它不是新的运行语义：`start_run` + `drive_run` 两步，和页面/CLI 手动
+    做的是同一件事。多出来的只有两样：
+
+        · 多轮：把 `history`（`[{role, content}]`）拼进这一次的 `user_request`
+          —— 运行时的每一轮仍是**独立的一条 Run**，会话是客户端的事实；
+        · 回答：从 State 的 Observation 里读出来（`ControlPlane.answer`）。
+
+    ⚠️ 它**不**保证一定答得出来：如果那条 Run 停在治理闸门上（`suspended`），
+    就没有回答，`answer` 是空串而 `status` 说真话。拿状态冒充答案
+    （或反过来）正是这一层最该避免的那类错。
+    """
+    message = str(require(body, "message"))
+    request = StartRunRequest(
+        agent_id=str(require(body, "agent_id")),
+        user_request=_conversation_prompt(body.get("history"), message),
+        idempotency_key=idempotency_key,
+    )
+    view = cp.start_run(request)
+    try:
+        view = cp.drive_run(view.run_id)
+    except Conflict:
+        # 幂等键回放了一条**终态** Run（`RUN_TERMINAL`）：没必要再推，
+        # 也用不着报错 —— 调用方要的是那条 Run 的答案，它已经在那儿了。
+        pass
+    answer_of = getattr(cp, "answer", None)
+    answer = str(answer_of(view.run_id)) if answer_of is not None else ""
+    return _ok({**view.to_dict(), "answer": answer})
 
 
 @guard

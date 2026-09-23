@@ -40,8 +40,10 @@ from typing import Any, Mapping
 
 from packages.agent_api.handlers import (
     cancel_run,
+    chat,
     decide_approval,
     drive_run,
+    get_answer,
     get_run,
     get_trace,
     list_approvals,
@@ -88,7 +90,7 @@ def build_app(
     fastapi = _fastapi()
     from fastapi.responses import JSONResponse
 
-    app = fastapi.FastAPI(title="AgentOS Control Plane", version="2.1.78")
+    app = fastapi.FastAPI(title="AgentOS Control Plane", version="2.1.80")
 
     if uow is not None:
         _add_transaction_middleware(app, uow)
@@ -128,6 +130,19 @@ def build_app(
         response = drive_run(control_plane, run_id, dict(body or {}))
         return JSONResponse(dict(response.body), status_code=response.status)
 
+    @app.post("/chat")
+    def _chat(
+        body: Mapping[str, Any],
+        idempotency_key: str = fastapi.Header(default="", alias="Idempotency-Key"),
+    ) -> Any:
+        """聊天页的单轮问答入口：开一条 Run、推到停下来，带上模型回答。
+
+        `Idempotency-Key` 走 Header（与 `POST /runs` 同款）—— 它是**传输语义**：
+        聊天页的重发应当拿回同一句回答，而不是多跑一遍、多花一次钱。
+        """
+        response = chat(control_plane, dict(body), idempotency_key=idempotency_key)
+        return JSONResponse(dict(response.body), status_code=response.status)
+
     # ── 叫停（B-8 / 空洞 221）──────────────────────────────────
     # M33 之前这里只有"推"，没有"停"。少一个推进行不行得通看得出来，
     # 少一个叫停看不出来 —— Run 只是继续跑，而没人有办法让它停。
@@ -151,6 +166,12 @@ def build_app(
     def _get_trace(run_id: str) -> Any:
         """账本（F-4）。只增，所以它是排障与审计的入口。"""
         response = get_trace(control_plane, run_id)
+        return JSONResponse(dict(response.body), status_code=response.status)
+
+    @app.get("/runs/{run_id}/answer")
+    def _get_answer(run_id: str) -> Any:
+        """这条 Run 最近一次 LLM 回答（聊天页与控制台详情共用）。"""
+        response = get_answer(control_plane, run_id)
         return JSONResponse(dict(response.body), status_code=response.status)
 
     @app.get("/approvals")
@@ -248,7 +269,10 @@ def _add_transaction_middleware(app: Any, uow: Any) -> None:
 
 
 def _mount_console(app: Any, fastapi: Any) -> None:
-    """把单页控制台挂在 `/` 上（M28）。
+    """把两个页面挂上（M28 / M93）：
+
+        `GET /`          聊天页 —— 问一句、拿一句回答（GPT 式入口）
+        `GET /console`   控制台 —— 看 Run / 账本 / 审批 / 评测的细节
 
     为什么要有一个页面：**没有页面的系统，第一次被看见的时候就是出事的时候。**
     `GET /runs/{id}` 能回答"这个 Run 现在是什么状态"，但回答不了
@@ -259,6 +283,7 @@ def _mount_console(app: Any, fastapi: Any) -> None:
     "多一个进程就多一份装载路径"的代价。
 
     目录不存在就**静默跳过**，不报错 —— 服务的可用性不依赖一个演示页面。
+    `chat.html` 缺失时 `/` 退回控制台，免得主入口 500。
     """
     from pathlib import Path
 
@@ -274,9 +299,22 @@ def _mount_console(app: Any, fastapi: Any) -> None:
 
     app.mount("/static", StaticFiles(directory=str(directory)), name="console-static")
 
+    chat_page = directory / "chat.html"
+    console_page = directory / "index.html"
+
     @app.get("/")
+    def _chat_page() -> Any:
+        return FileResponse(str(chat_page if chat_page.is_file() else console_page))
+
+    @app.get("/console")
     def _console() -> Any:
-        return FileResponse(str(directory / "index.html"))
+        return FileResponse(str(console_page))
+
+    @app.get("/architecture")
+    def _architecture() -> Any:
+        """架构图 + 实现进度（静态页，由 `console/architecture.html` 提供）。"""
+        page = directory / "architecture.html"
+        return FileResponse(str(page if page.is_file() else console_page))
 
 
 def serve(app: Any, *, host: str = "127.0.0.1", port: int = 8000) -> None:

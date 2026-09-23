@@ -158,6 +158,24 @@ class RuntimeConfig:
     """
     labels: frozenset[str] = field(default_factory=frozenset)
     free_slots: int = 1
+    #: M96：预算。**默认不限**（保持现状），配了才拦。
+    #: `CostManager` 早就是 `before_action` 的一环，但组合根从没给过 Limit —— 于是
+    #: `Budget()` 默认 `max_cost=inf`，"超预算 → DENY"这条线接了却没通电。
+    max_cost: float | None = None
+    max_tokens: int | None = None
+    max_steps: int | None = None
+
+    def budget(self) -> Any:
+        """本次启动的 `Budget`。没配任何一项 = `Budget()`（不限）。"""
+        from packages.agent_harness.cost import Budget
+
+        if self.max_cost is None and self.max_tokens is None and self.max_steps is None:
+            return Budget()
+        return Budget(
+            max_cost=self.max_cost if self.max_cost is not None else float("inf"),
+            max_tokens=self.max_tokens,
+            max_steps=self.max_steps,
+        )
 
     @classmethod
     def from_env(
@@ -234,6 +252,9 @@ class RuntimeConfig:
             executors=frozenset(_csv(source, "AGENTOS_EXECUTORS", [])),
             labels=frozenset(_csv(source, "AGENTOS_LABELS", [])),
             free_slots=_int(source, "AGENTOS_FREE_SLOTS", 1),
+            max_cost=_opt_float(source, "AGENTOS_MAX_COST"),
+            max_tokens=_opt_int(source, "AGENTOS_MAX_TOKENS"),
+            max_steps=_opt_int(source, "AGENTOS_MAX_STEPS"),
         )
 
 
@@ -252,6 +273,27 @@ def _csv(source: Mapping[str, str], key: str, default: list[str]) -> list[str]:
     if not raw:
         return default
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _opt_int(source: Mapping[str, str], key: str) -> int | None:
+    """可选整数：没配返回 `None`（= 不限），配了但非法**报错**。"""
+    raw = (source.get(key) or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ConfigurationError(f"{key} must be an integer, got {raw!r}") from exc
+
+
+def _opt_float(source: Mapping[str, str], key: str) -> float | None:
+    raw = (source.get(key) or "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ConfigurationError(f"{key} must be a number, got {raw!r}") from exc
 
 
 def _client(name: str) -> Any:
@@ -900,7 +942,50 @@ _REQUIRED_EXTRAS: dict[str, str] = {
         "table stays empty so no sweeper can adopt it either — add the keyword "
         "parameter and pass it into `assemble_runtime_stack`"
     ),
+    "context_snapshots": (
+        "without it Context snapshots go to process memory and C-5 stops holding "
+        "after a restart: `context_snapshots` stays empty, so 'what did the model "
+        "actually see on that call' becomes unanswerable exactly when it is asked "
+        "most (after a restart) — add the keyword parameter and pass it into the "
+        "ContextAssembler"
+    ),
+    "budget": (
+        "without it the Run's Budget stays the default (max_cost=inf) and "
+        "AGENTOS_MAX_COST / MAX_TOKENS / MAX_STEPS are silently ignored: the Run "
+        "will spend without limit while the config looks like it set a cap — "
+        "accept the keyword parameter and pass it into Harness.default()"
+    ),
+    "memory": (
+        "without it agent memory falls back to process memory: nothing a Run "
+        "learned survives a restart — add the keyword parameter and pass it into "
+        "assemble_runtime_stack()"
+    ),
+    "budget": (
+        "without it the Run's Budget stays the default (max_cost=inf) and "
+        "AGENTOS_MAX_COST / MAX_TOKENS / MAX_STEPS are silently ignored: the Run "
+        "will spend without limit while the config looks like it set a cap — "
+        "accept the keyword parameter and pass it into Harness.default()"
+    ),
 }
+
+#: 一条链上的 MemoryManager：写（Loop._finish）与读（ContextAssembler 的
+#: memory_provider）必须是**同一份** —— 写了没人读得到 = 等于没写。
+_MEMORY: dict[int, Any] = {}
+
+
+def pg_memory_manager(conn: Any) -> Any:
+    """`PostgresMemoryStore` + `MemoryManager`，整个进程**共用一份**。
+
+    按 `conn` 缓存：同一个连接上只应有一个 Manager，否则"写在一份、
+    读另一份"会表现为"记不住"，而两条路径都不会报错。
+    """
+    from packages.agent_context.adapters.memory_postgres import PostgresMemoryStore
+    from packages.agent_context.memory import MemoryManager
+
+    key = id(conn)
+    if key not in _MEMORY:
+        _MEMORY[key] = MemoryManager(PostgresMemoryStore(conn))
+    return _MEMORY[key]
 
 
 def load_stack_factory(
@@ -911,6 +996,9 @@ def load_stack_factory(
     snapshots: Any = None,
     compensations: Any = None,
     cancellations: Any = None,
+    context_snapshots: Any = None,
+    memory: Any = None,
+    budget: Any = None,
 ) -> Callable[[str, Any], Any]:
     """按 `AGENTOS_STACK_PROVIDER` 装载 `(agent_id, approvals) -> RuntimeStack`。
 
@@ -986,6 +1074,9 @@ def load_stack_factory(
         "snapshots": snapshots,
         "compensations": compensations,
         "cancellations": cancellations,
+        "context_snapshots": context_snapshots,
+        "memory": memory,
+        "budget": budget,
     }
     extras: dict[str, Any] = {}
     for key, value in given.items():
@@ -1012,6 +1103,10 @@ def build_control_plane(
     kernel: Any = None,
     compensations: Any = None,
     cancellations: Any = None,
+    context_snapshots: Any = None,
+    memory: Any = None,
+    #: M96：本进程的预算（来自环境）。`None` = 交给 provider 的默认（不限）。
+    budget: Any = None,
     #: M61：agent 注册表。显式传 `None` 之外的值可绕过环境变量（测试用）。
     registry: Any = None,
 ) -> Any:
@@ -1054,6 +1149,7 @@ def build_control_plane(
     就又变成了两个答案。
     """
     from packages.agent_api.service import InProcessControlPlane
+    from packages.agent_context.adapters.postgres import PostgresContextSnapshotStore
     from packages.agent_harness.adapters.postgres import PostgresApprovalStore
     from packages.agent_runtime.adapters.postgres import (
         PostgresChildRunRegistry,
@@ -1095,6 +1191,16 @@ def build_control_plane(
             else pg_compensation_store(conn)
         ),
         "cancellations": cancellations,
+        # M95：Context 快照 → 丢了变错（重启后"模型当时看到了什么"查不到）→ PG。
+        "context_snapshots": (
+            context_snapshots if context_snapshots is not None
+            else PostgresContextSnapshotStore(conn)
+        ),
+        # M96：Memory 的**事实源** → 丢了变错（重启后记不住）→ PG。
+        # 读写是**同一份 Manager**（写了没人读得到 = 等于没写）。
+        "memory": memory if memory is not None else pg_memory_manager(conn),
+        # M96：预算。配了就把这一次启动的限额一路递到 Harness.default()。
+        "budget": budget if budget is not None else config.budget(),
     }
 
     if factory is not None:

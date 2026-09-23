@@ -21,7 +21,13 @@ Evaluation Report
 ```
 
 当前进度：**六指标全部有实现**（Retrieval / Citation / Correctness / Latency / Token / Cost），
-Redis 一类文档端到端跑通。其余五类待做。
+Redis 一类文档端到端跑通。**模型调用归 AgentOS**（Runtime 的 ModelGateway）：Asuka 不再自带
+LLM 客户端，而是把每道题各跑成一条 AgentOS Run（`asuka.agentos_eval`：检索 → 带引用作答），
+再用 `asuka.agentos_adapter` 读 Run 结果评分。其余五类文档待做。
+
+AgentOS 接入边界：AgentOS 负责生产运行、Kernel、Context 和原始审计账本；Asuka 负责答案级
+评测与评测 Trace。适配器要求调用方显式提供 `retrieved`，不从 ContextSnapshot 反推检索结果，
+也不把 Asuka 的 task/sample Run 当成 AgentOS 的 AgentRun。
 
 | 已完成 | 未做 |
 |---|---|
@@ -32,11 +38,12 @@ Redis 一类文档端到端跑通。其余五类待做。
 | Trace：逐步记录 + 审计视图 + 交叉核对 | |
 | **回归对比**：这次 vs 上次，只报警"上次过、这次不过" | |
 | 检索：BM25 与本地 bge-m3 全链路 | |
-| **真 LLM 生成**：DeepSeek 已接入（`--answerer deepseek`，见下） | |
+| **真 LLM 生成**：模型调用在 **AgentOS**（`asuka.agentos_eval`，一题一条 Run） | |
+| **AgentOS 运行结果适配**：`agentos_adapter.py`，真实 Execution → Asuka 报告 / Trace | |
 
 ⚠️ `Correctness` 一直跑校准答案器（oracle/null 是判据上下界）。
-`Latency` / `Token` / `Cost` 在 **`--answerer deepseek`** 下是**真模型侧**的数
-（DeepSeek 返回的 `usage` + 声明单价）；校准答案器填 0 只是"没测"，不是"免费"。
+`Latency` / `Token` / `Cost` 在 **`asuka.agentos_eval`** 下是**真模型侧**的数
+（AgentOS 的 LLM Execution 带回 `usage` + `cost_usd` + `latency_ms`）；校准答案器填 0 只是"没测"，不是"免费"。
 
 ⚠️ 这四项目前测的是**装配之后**的那一份上下文（`asuka/context.py`）：
 `Token` 数的是真喂进 prompt 的 token，`Latency` 把检索和生成分开记。
@@ -89,12 +96,14 @@ export ASUKA_EMBED_MODEL_PATH=.asuka-models/bge-m3
 #   `oracle` 必须 1.0、`null` 必须 0.0 —— 这两个数是**判据的上下界**，不是模型成绩。
 #   `fabricator` 专门去踩"引用了没给它的来源"，证明**编造探测器会响**。
 
-# 7b) **真模型**：DeepSeek（需要 key；Token/Cost/Latency 这下是模型侧的了）
-export DEEPSEEK_API_KEY="sk-..."            # 没有就拒绝出表（退出码 2，提示里点名要设这个变量）
-"$PY_HEAVY" -m asuka.answers redis --answerer deepseek --retriever bm25 --top-k 10 --samples 3
-#   ⚠️ deepseek 会**真实调用** API（每个问题 × 采样次数一次）。报告里标「模型成绩」，
-#   不标「校准」。单价默认 deepseek-chat 公开价，可经 DEEPSEEK_INPUT_COST_PER_MILLION /
+# 7b) **真模型**：由 AgentOS 执行（需要 DEEPSEEK_API_KEY；Token/Cost/Latency 这下是模型侧的了）
+export DEEPSEEK_API_KEY="sk-..."            # 没有就在 Provider 层报错，不静默换人
+"$PY_HEAVY" -m asuka.agentos_eval redis --retriever bm25 --top-k 10
+#   ⚠️ 一题一条 AgentOS Run：Run 里是 TOOL_CALL(kb.search) → LLM_CALL(带引用作答) → FINISH。
+#   Asuka 只读 Run 结果评分（`asuka.agentos_adapter`）。报告里标「模型成绩」，不标「校准」。
+#   单价默认 deepseek-chat 公开价，可经 DEEPSEEK_INPUT_COST_PER_MILLION /
 #   DEEPSEEK_OUTPUT_COST_PER_MILLION 覆盖；base_url 经 DEEPSEEK_BASE_URL 覆盖（自建网关）。
+#   `--limit N` 只跑前 N 题（调试用）。
 
 # 7a) 把窗口调小 —— 看"检到了但装不进预算"这条归因真的会动
 "$PY_HEAVY" -m asuka.answers redis --answerer oracle --retriever bm25 --top-k 10 \
@@ -124,6 +133,34 @@ export DEEPSEEK_API_KEY="sk-..."            # 没有就拒绝出表（退出码 
 ⚠️ `--embedder local` 不能省：`auto` 需要 `ASUKA_EMBED_API_KEY`，**没有就报错，
 不会静默换人**。本地权重这条路必须被显式选中。
 
+## AgentOS 接入
+
+适配器接收一条 `AgentOSSample`，或从已经完成的 `AgentLoop` 提取 LLM Execution：
+
+```python
+from pathlib import Path
+
+from asuka.agentos_adapter import evaluate_samples, samples_from_loop
+
+samples = samples_from_loop(
+    loop,
+    task_id_by_execution={"exec_...": "redis-expire"},
+    questions_by_task={"redis-expire": "How do I set a timeout on a key?"},
+    retrieved_by_execution={"exec_...": ("redis:expire:001", "redis:expire:002")},
+)
+result = evaluate_samples(
+    samples,
+    dataset,
+    retriever="agentos-bm25",
+    top_k=10,
+    corpus_chunks=428,
+)
+result.report.save(Path("asuka/runs/answers/agentos.json"))
+result.trace.save(Path("asuka/runs/traces/agentos.jsonl"))
+```
+
+`retrieved` 与 `context` 是两套不同事实：`retrieved` 是检索边界留下的集合，`context` 是预算之后真正喂给模型的集合。适配器缺少前者会拒绝，避免把“检到了但装不下”误报成“没检到”。
+
 ## 模块
 
 | 文件 | 职责 | 第三方依赖 |
@@ -138,7 +175,8 @@ export DEEPSEEK_API_KEY="sk-..."            # 没有就拒绝出表（退出码 
 | `datasets/` | 具体题目（人工整理，ground truth 来自官方文档） | 无 |
 | `evaluate.py` | 检索指标 + 报告；`recall` 上限一并报出；报告读回时**自洽校验** | 无 |
 | `answers.py` | 答案级指标：规则式必答要点召回 + `pass@k` + **引用核对** + 延迟/Token/成本测量位 | 无 |
-| `deepseek.py` | **真模型答案器**：接 DeepSeek（OpenAI 兼容）；引用自述 + 代价真测；零第三方（标准库 `urllib`） | 无 |
+| `prompting.py` | **提示词与解析**（纯函数）：`build_prompt` / `parse_response` / `prompt_id_for`；零 HTTP | 无 |
+| `agentos_eval.py` | **AgentOS 侧的评测 Agent**：检索工具 + 带引用作答；一题一条 Run；Runner 读结果评分 | 无（复用 AgentOS 运行时） |
 | `context.py` | **装配**：`top_k` 之后再过一道 token 预算（C-1/C-3/C-4），复用内核 `agent_context` | 无 |
 | `trace.py` | 一条 Run 的逐步记录（**可审计**）+ 与报告的交叉核对（含引用归因、装配参数） | 无 |
 | `compare.py` | 并排对照多份报告；**先验可比性，不可比就拒绝出表** | 无 |
@@ -298,7 +336,7 @@ pass@k = 1 - C(n-c, k) / C(n, k)      # n 次采样里 c 次成功
 ### `oracle` / `null` / `fabricator`：这是**校准**，不是成绩
 
 没有 LLM API key 时，答案级指标仍然要能被验证 —— 否则它只是没人跑过的代码。
-**真模型**走 `--answerer deepseek`（见下），它自述 `is_calibration=False`，报告里标「模型成绩」。
+**真模型**走 `asuka.agentos_eval`（见下），它跑的是 AgentOS Run，报告里标「模型成绩」。
 
 | answerer | 行为 | 必须 |
 |---|---|---|
@@ -308,7 +346,7 @@ pass@k = 1 - C(n-c, k) / C(n, k)      # n 次采样里 c 次成功
 
 `is_calibration` 必须由 answerer **自述**，不说的会被 `evaluate_answers` **拒绝** ——
 默认当成"真模型"是最坏的选择：校准分数会被读成模型成绩，而报告里没有任何东西提醒你。
-报告最上面会印 **`⚠️ 这是校准跑，不是模型成绩`**（deepseek 那栏印「模型成绩」）。
+报告最上面会印 **`⚠️ 这是校准跑，不是模型成绩`**（`agentos_eval` 那栏印「模型成绩」）。
 
 ⚠️ `oracle` **不能**证明"要点覆盖了参考答案的全部含义"—— 那需要裁判模型（见 M12）。
 它能证明的是"每条要点的说法确实能在参考答案里找到"。
@@ -749,8 +787,8 @@ dense 的优势几乎全在 medium（+0.185），hard 上反而输 0.052。
 | `null` | 24 | **0.0000** | 0.0000 | 0.0 | — | **0.0000** | **0.0000** | 0 |
 | `fabricator` | 24 | 1.0000 | 1.0000 | 104.5 | **0.0000** | 0.0000 | 0.0000 | **48 条 / 24 题** |
 
-这些数是**判据的上下界**，不是模型成绩。真模型成绩用 `--answerer deepseek` 跑
-（DeepSeek，需要 `DEEPSEEK_API_KEY`；Token/Cost/Latency 那下是模型侧的了，不是填 0）。
+这些数是**判据的上下界**，不是模型成绩。真模型成绩用 `asuka.agentos_eval` 跑
+（由 AgentOS 执行模型调用，需要 `DEEPSEEK_API_KEY`；Token/Cost/Latency 那下是模型侧的了，不是填 0）。
 
 `fabricator` 那一行是**自检**：它证明"引用了没给它的来源"这条路径真的会被抓到 ——
 `oracle` 和 `null` 都碰不到它，没有它，`fabricated` 可能是一段永远为空的代码。
@@ -784,20 +822,25 @@ PYTHONPATH=. "$PY_UNIT" -m unittest tests.unit.test_asuka_citation_contract
 PYTHONPATH=. "$PY_UNIT" -m unittest tests.unit.test_asuka_context_contract
 PYTHONPATH=. "$PY_UNIT" -m unittest tests.unit.test_asuka_trace_contract
 PYTHONPATH=. "$PY_UNIT" -m unittest tests.unit.test_asuka_regression_contract
+PYTHONPATH=. "$PY_UNIT" -m unittest tests.unit.test_asuka_prompting_contract
+PYTHONPATH=. "$PY_UNIT" -m unittest tests.unit.test_asuka_agentos_adapter
+PYTHONPATH=. "$PY_UNIT" -m unittest tests.unit.test_asuka_agentos_eval
 ```
 
 用 `unittest`（不是 pytest）。**核心层零第三方依赖**，所以单测跑在零依赖的解释器上。
-上面十条锁的是实证过的缺陷，不是推演出来的担心。当前 **1768 条全绿**。
+上面这些锁的是实证过的缺陷，不是推演出来的担心。当前 **1807 条全绿**。
 
 新增判据一律做**变红验证**（把代码改坏，确认测试真的会红）——
 没红过的测试不算测试。骨架在 `redkit.py`（锚点唯一性断言、残留防护、信号处理）：
 
 ```bash
-python red94.py     # DeepSeek 真模型：7 条变异（生成失败文案 / cost 公式 / 序号引用 / 不可测 / 归一化 / 提示词 [[key]] / 缺 key 早退）
 python red93.py     # 回归对比：27 条变异（口径 / 不可测 / 同源 / 可比性门 / 渲染 / CLI）
 python red92.py     # Context 装配：18 条变异（C-1 / C-3 / C-4 / 取舍顺序）
 python red91.py     # 引用指标：23 条变异
 ```
+
+> `red94.py`（DeepSeek 真模型）随 `asuka/deepseek.py` 一起删除了 —— 模型调用
+> 已移到 AgentOS（`asuka.agentos_eval`），那份 HTTP 客户端不再存在，变红对象也就没了。
 
 ⚠️ **必须后台跑**：一轮 = 变异数 × 全量套件（约 10s），20 多条就是四五分钟。
 前台被超时杀掉时 `finally` 不执行，变异会**留在源码里**，下一次的"基线"就把残留

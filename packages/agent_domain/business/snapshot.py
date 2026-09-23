@@ -142,6 +142,11 @@ def state_from_dict(data: Mapping[str, Any]) -> State:
                     name=n.get("name", ""),
                     kind=n.get("kind", "task"),
                     depends_on=tuple(n.get("depends_on") or ()),
+                    # M98/M99：新字段必须**读回来** —— 只序列化不反序列化的话，
+                    # 一份从快照恢复的 plan 会丢掉它声明的 tool / 资源，
+                    # 于是计划门对"恢复回来的计划"实际是**瞎的**（A-12：丢了变错）。
+                    tool=n.get("tool", ""),
+                    resource_labels=tuple(n.get("resource_labels") or ()),
                     expected_output=n.get("expected_output"),
                 )
                 for n in (plan_raw.get("nodes") or ())

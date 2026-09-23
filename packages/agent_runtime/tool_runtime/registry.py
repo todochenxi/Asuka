@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Mapping
 
 from .protocols import ToolInvoker
+from .sandbox import SandboxedInvoker, spec_requires_sandbox
 from .spec import ToolSpec
 
 
@@ -42,6 +43,15 @@ class ToolRegistry:
     def register(
         self, spec: ToolSpec, invoker: ToolInvoker, *, make_default: bool = False
     ) -> None:
+        # M101：声明了沙箱协议，就必须真的跑在沙箱里。
+        # 否则 `protocol=SANDBOX` 只是一个"说了却没人管"的枚举值
+        # —— 注册期点名拒绝，比运行时假装隔离好（M88）。
+        if spec_requires_sandbox(spec) and not isinstance(invoker, SandboxedInvoker):
+            raise ValueError(
+                f"tool {spec.qualified_name} declares protocol=sandbox but its invoker "
+                f"({type(invoker).__name__}) is not a SandboxedInvoker; "
+                f"a declared sandbox must be a real sandbox (M101)"
+            )
         key = (spec.name, spec.version)
         if key in self._rows and not make_default:
             # 重复注册同一版本很容易在热加载时无声覆盖 —— 拒绝比静默好

@@ -177,6 +177,81 @@ class LoopTestBase(unittest.TestCase):
         )
 
 
+class FanOutTest(LoopTestBase):
+    """M97：一个 Action 扇出多个 Task，它们属于**同一个 Step**（§2.3）。"""
+
+    def _fan_out_loop(self, branches: list[dict]) -> AgentLoop:
+        loop = AgentLoop(
+            kernel=self.kernel,
+            worker=self.worker,
+            interpreter=ScriptedInterpreter(),
+            planner=self.planner,
+            decision_engine=ScriptedDecisionEngine([]),
+        )
+        state = loop.start("batch add")
+        action = Action(
+            run_id=state.run_id,
+            action_type=ActionType.TOOL_CALL,
+            payload={"tasks": branches},
+        )
+        loop.decision_engine = ScriptedDecisionEngine([action])
+        return loop
+
+    def test_one_action_becomes_many_tasks_on_one_step(self) -> None:
+        loop = self._fan_out_loop(
+            [
+                {"tool": "calculator", "args": {"expr": "1+1"}},
+                {"tool": "calculator", "args": {"expr": "2+2"}},
+                {"tool": "calculator", "args": {"expr": "3+3"}},
+            ]
+        )
+        outcome = loop.step()
+
+        self.assertEqual(outcome.value, "executed")
+        # 一次 `_execute` 把三个分支全部跑完 —— Step 只有一个，Task 有三个。
+        step = loop.current_step
+        assert step is not None
+        self.assertEqual(len(step.task_ids), 3)
+        self.assertEqual(len({t.step_id for t in loop.steps_of_run}), 1)
+
+    def test_the_fan_out_step_status_is_derived_from_all_branches(self) -> None:
+        """Step.status 是**全部** Task 的聚合 —— 三片全 COMPLETED 才 COMPLETED。"""
+        loop = self._fan_out_loop(
+            [
+                {"tool": "calculator", "args": {"expr": "1+1"}},
+                {"tool": "calculator", "args": {"expr": "2+2"}},
+            ]
+        )
+        loop.step()
+        step = loop.current_step
+        assert step is not None
+        self.assertEqual(step.status.value, "completed")
+
+    def test_the_control_a_plain_action_is_still_one_task(self) -> None:
+        """控制组：非扇出 Action 仍然是一个 Step 一个 Task —— 1:N 不改 1:1。"""
+        loop = AgentLoop(
+            kernel=self.kernel,
+            worker=self.worker,
+            interpreter=ScriptedInterpreter(),
+            planner=self.planner,
+            decision_engine=ScriptedDecisionEngine([]),
+        )
+        state = loop.start("one")
+        loop.decision_engine = ScriptedDecisionEngine(
+            [
+                Action(
+                    run_id=state.run_id,
+                    action_type=ActionType.TOOL_CALL,
+                    payload={"tool": "calculator", "args": {"expr": "1+1"}},
+                )
+            ]
+        )
+        loop.step()
+        step = loop.current_step
+        assert step is not None
+        self.assertEqual(len(step.task_ids), 1)
+
+
 class MinimalLoopTest(LoopTestBase):
     def test_full_loop_reaches_goal(self) -> None:
         loop = AgentLoop(

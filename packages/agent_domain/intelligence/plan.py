@@ -69,6 +69,28 @@ class PlanNode:
     name: str
     kind: PlanNodeKind = PlanNodeKind.TASK
     depends_on: tuple[str, ...] = ()
+    #: 这个节点**打算调用哪个工具**（M98 / 空洞 250）。
+    #:
+    #: §32 的 `Plan Validator` 列了 "Tool Exists" 一项，而此前 `PlanNode`
+    #: **连表达它的字段都没有**（"这项连表达都表达不了"）。有了它，计划期
+    #: 才可能回答"这份计划要调的工具，这个运行时有没有"。
+    #:
+    #: ⚠️ 留空 = 不声明（合法）：`kind='task'` 的通用节点本来就不事先知道
+    #: 自己要调什么（那由 DecisionEngine 决定）。只有 `kind='tool'` **必须**
+    #: 声明 `tool` —— 它的语义就是"这一步调这个工具"。
+    tool: str = ""
+    #: 这个节点要求的**资源标签**（M99 / 空洞 250 的 "Resource"）。
+    #:
+    #: §32 的 `Plan Validator` 列了 "Resource" 一项，此前全仓**没有任何
+    #: Resource 概念**（登记为"连表达都表达不了"）。但 Kernel 其实**早就**
+    #: 有执行期的资源匹配：`Task.resource_requirement.labels` ←→
+    #: `WorkerCapability.labels`（`scheduler._matches`）。缺的只是**计划期的
+    #: 声明**：让一份计划能事先说"这一步要 GPU / 要某个标签的 worker"。
+    #:
+    #: 留空 = 不声明要求（合法，走 Kernel 默认的 `ResourceReq()`）。
+    #: 它**不**在这里做匹配校验 —— 那是计划门（`plan_defects`）拿
+    #: "这个集群有哪些 worker 标签"去比的事，领域层不持有集群的拓扑。
+    resource_labels: tuple[str, ...] = ()
     expected_output: str | None = None
 
     def __post_init__(self) -> None:
@@ -95,6 +117,17 @@ class PlanNode:
                     f"PlanNode {self.node_id} has unknown kind {self.kind!r}; "
                     f"expected one of {known}"
                 ) from exc
+
+        # M98：`kind='tool'` 是一个**声明**——它说"这一步调 `tool`"。
+        # 没有 `tool` 的 tool 节点是一句没有宾语的声明：运行时无从校验，
+        # 只能等到执行期撞上 `BAD_PAYLOAD: payload.tool is required`。
+        # 在构造处拒绝，是"声明必须完整"的最早落点。
+        if self.kind is PlanNodeKind.TOOL and not self.tool:
+            raise InvariantViolation(
+                f"PlanNode {self.node_id} declares kind 'tool' but names no tool; "
+                f"a tool node must say which tool (otherwise the declaration has "
+                f"no referent and cannot be validated at plan time)"
+            )
 
 
 @dataclass(frozen=True)

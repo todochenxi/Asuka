@@ -1,4 +1,4 @@
-# AgentOS — 企业级 Agent 平台架构（v2.1.78 最终冻结版）
+# AgentOS — 企业级 Agent 平台架构（v2.1.80 最终冻结版）
 
 > 项目定位：Enterprise Agent Harness & Runtime Platform
 > 架构状态：Final / Frozen
@@ -839,6 +839,21 @@ v2.1.65 相对 v2.1.64：**M77（带着没被处理的失败，不许宣布完�
 在此之前没有任何引擎会产出 REPLAN，那条边只是"通了"而已。详见 §114。
 
 ---
+
+v2.1.80 相对 v2.1.79：**M92（AgentOS → Asuka 评测适配边界）落地后的回写**。
+Asuka 的 Redis 评测 MVP 已有六指标、Trace、回归和 DeepSeek 真模型，但此前真实 AgentOS Run 与 Asuka 评测之间没有交接契约；只能把两套系统并排运行，不能回答“这次 AgentOS Run 实际看到了什么、引用是否有依据、答案代价是多少”。
+
+本轮新增 `asuka.agentos_adapter`：AgentOS 显式提供 LLM Execution、`retrieved` 集合与 ContextSnapshot，适配器转换成 Asuka 的 `AnswerReport` 与 Asuka Trace。`retrieved` 与预算后的 `available` 严格分开；缺失 retrieved、task_id/question/evidence/run_id 不一致均拒绝，不用空值或文本猜测补齐。AgentOS 的 AgentRun 与 Asuka 的 task/sample Run、原始审计账本与评测 Trace 保持不同生命周期。
+新增 **M92 接入契约**：AgentOS 负责生产运行、Context、成本和原始账本；Asuka 负责答案级判据、Citation 归因、评测报告和回归。详见 §129。
+
+v2.1.79 相对 v2.1.78：**M91（PlanNode.kind 的声明必须兑现为对应 Action）落地后的回写**。
+M88 把 `PlanNode.kind` 从行尾注释变成闭集，M90 又把 `ActionType` 的无归宿动作变成运行时可审计的拒绝；但两者之间还隔着一个更窄的断点：
+`kind="tool"` / `kind="human"` 虽然已经被接受为声明，运行时仍可能让 Decision 交回任意其它 Action。
+这样一份声明了"调工具"或"等人"的计划，仍可能被一条 LLM / 普通工具路径静默兑现，账本只会显示动作执行过，不会说明声明没有被满足。
+
+本轮新增 **I-21**：已支持的计划节点必须按 kind 分派；`task` 是通用节点，`tool` 只允许 `TOOL_CALL`，`human` 只允许 `HUMAN_APPROVAL` / `ASK_USER`。
+Action 与节点语义不匹配时，在创建 Step、进入 Harness、提交 Task 或产生 Execution 之前判死，记录 `PLAN_NODE_ACTION_MISMATCH` 及节点、声明、实际 Action 和允许集合。
+`agent` / `decision` 仍没有真实分派能力，继续由 I-18 拒绝；本轮不把没有 producer 的能力伪装成已实现。详见 §128。
 
 v2.1.78 相对 v2.1.77：**M90（`ActionType` 必须是一份契约，不是一个"声明了却没人管"的枚举）落地后的回写**。
 `action.py` 声明了 9 个 `ActionType`；`task_factory.py` 的 `ACTION_TO_TASK` 把其中 6 个映射成真实 Task，
@@ -4217,6 +4232,8 @@ AgentOS Scheduler ≠ Kubernetes Scheduler
 | M80 | A Child Run's Cause Must Travel With Its Result | **子 Run 的死因必须跟着结果一起交给父 Run**：B-12 给子 Run 的终态加上了死因，但那个原因只落在子 Run 自己的 trace 上，没跟着事件走 —— 探针实测父 Run 听到的是子 Run **最后一句自言自语**（`summary`），而预算耗尽那条恰恰是反的：`child run failed: execution exec_xxx attempt#1 COMPLETED (completed)`。★ 不是说漏了，是**说反了**。它有真实消费者：`_reason()` 的产物就是父 State 里 `child_run.finished` 的 `content["error"]`，父 Agent 唯一能看到的线索；I-12 要求重规划换一条路，理由错了就换不对路。新增 **D-37**：`reason` 必填关键字参数，死因跟着 `result` 走；死因缺失时必须说"没记录到"，**不许拿 summary 顶替**（那是用过程冒充结论）。（**已在 v2.1.68 落地，见 §117**） |
 | M81 | A Run Whose Delegation Failed Must Not Announce Completion | **委派失败了的父 Run，不许宣布完成**：按 §0.4 回头查"刚落地的 I-11 能不能被绕过"，探针实测一个委派失败的父 Run 照常 FINISH → `completed`，账本写着 `goal reached`。★ 形状是**同一个事实两条路给出两个答案**：那条委派 Execution 真的被判成了 FAILED，但委派路径不经 Worker，没人给它写 `execution.failed` observation —— State 上只有 `child_run.finished`（说的是"子 Run 完事了"），I-11 从 State 读于是读不到。新增 **I-13**：委派失败必须进 State，且绑定真实 Execution（I-6）。只治 `failed`（取消不是失败 S-15；`unknown` 是不知道 D-19）。⭐ 测试设计上踩到一处：不能断言"最终不是 completed" —— I-11 按上次规划划界，换了形状不同的计划之后完成是**设计允许的**；真正的可观测后果是**不能从委派失败直接走到 FINISH**。详见 §118 |
 | M82 | A Voice-Less Delegation Must Not Announce Completion | **委派没有回音的父 Run，不许宣布完成**：M81 只治了 `failed`，回头查 `unknown` 那扇门 —— 探针实测委派等到上限、Kernel 那条 Execution 确实被判死（不判死它永远挂着），但 State 上只有 `child_run.unknown`，I-11 判据 = 0 → 父 Run 宣布 `completed` / `goal reached`。**与 M81 一字不差的同一句话，换了一扇门进来。**★ 难处：写 `execution_failed` 违反 PR-19（那条子 Run 可能正在别的 worker 上跑得好好的，"判死"是**我们不再等**，不是"它做不成"），不写就是上面这一幕 ⇒ 必须要有第三个 kind。新增 **I-14**：`execution_unresolved` 必须进 State 但不许冒充失败；I-11 判据扩成"**这一步没有被证明成功**"（证明不了的与证明失败的同等对待）。`cancelled` 仍不在此列 —— S-15 说取消是父侧主动选择，父 Run 自己知道，不构成"被隐瞒的失败"。⭐ 变红验证第一轮 M4 没红，漏在**测试自己**：reducer 末尾有兜底分支，只断言 `obs.kind` 存在是守不住分支的 —— 要断言"它把这一步当结束了"（从 `active_tasks` 摘掉、进 `completed_tasks`）。详见 §119 |
+| M92 | AgentOS to Asuka Evaluation Adapter | **真实 AgentOS Run 到 Asuka 评测的第一阶段接入**：新增 `asuka.agentos_adapter`，把 LLM Execution、显式 `retrieved`、ContextSnapshot 的 `available` / `dropped_budget`、答案文本、引用与代价转换为 Asuka `AnswerReport` 与 Asuka Trace。两套 Run / Trace 生命周期不合并；缺 retrieved、task_id/question/evidence/run_id 不一致均拒绝，不从 ContextSnapshot 反推检索结果。11 条适配器单测；**4 变异全红**；全量单测 1787 → 1798（**已在 v2.1.80 落地，见 §129**） |
+| M91 | A Plan Kind Must Dispatch Its Declared Action | **计划节点的声明必须兑现为对应 Action**：M88 已把 `PlanNode.kind` 变成闭集，M90 已让无归宿的 `ActionType` 诚实拒绝，但 `task` / `tool` / `human` 之间仍可能静默错配。新增 **I-21**：`task` 允许当前可执行 Action，`tool` 只允许 `TOOL_CALL`，`human` 只允许 `HUMAN_APPROVAL` / `ASK_USER`；不匹配在创建 Step、进入 Harness、提交 Task 之前判死，账本记录 `PLAN_NODE_ACTION_MISMATCH`、节点声明、实际 Action 与允许集合。`agent` / `decision` 没有真实分派能力，继续由 I-18 拒绝，不把没有 producer 的能力伪装成已实现。6 条单元契约测试；**6 变异全红**；单测 1393 → 1399（**已在 v2.1.79 落地，见 §128**） |
 | M90 | An Action Type Is A Contract, Not A Comment | **`ActionType` 必须是一份契约，不是一个"声明了却没人管"的枚举**：`action.py` 声明了 9 个 `ActionType`，`task_factory.py` 的 `ACTION_TO_TASK` 把 6 个映射成真实 Task、另外 3 个（`FINISH`/`WAIT`/`REPLAN`）映射成 `None` 并各配一句注释 —— 而 `None` 这一个值同时承担了**三种完全不同的意思**：① 有 Task 交给 Kernel、② 没有 Task 但由 Loop 自己处理（FINISH/REPLAN）、③ **没有 Task、也没有任何一层处理它**（WAIT）。前两种是"设计如此"，第三种是洞；**用同一个 `None` 表达它们，读代码的人和运行时都分不出来**。探针（`probe90.py` 场景 1）把 9 个**逐个走了一遍**，实测前 8 个各有归宿（有 Task / 挂起等审批 / Loop 自己收终态），**只有 `WAIT` 掉进一个未捕获的 `InvariantViolation`**；而 `run()` 里没有 try/except ⇒ **异常冲出整条 Run，trace 一条都没有，Run 停在非终态**（实测 `trace 条目: []` / `有 run.finished 吗: False` / `Run 状态: created`）。一条**已经跑了几步、花过钱**的 Run 就这么没了，而账本读起来像什么都没发生 —— **比说假话还坏**（与 M89 的"沉默"同族，但更重：沉默至少还留了痕）。那句注释"等待由 Wake-up Controller 管"描述的是一条**不存在的连接**：那个 Controller 的输入是 `Suspension`（一条挂起的 Execution），而 `wait` 动作**不产生 Task → 不产生 Execution → 不可能有 Suspension**，且在 Harness 之前就抛了、连挂起的机会都没有。更要紧的是那条路**本来就没接通**（`probe90.py` 场景 3，AST 扫描只认真正传给 `suspend(...)` 的）：`SuspensionReason.HUMAN_APPROVAL` / `CHILD_AGENT` / `CHILD_SKILL` 在生产代码里**真的被设过**，而 `TIMER` **只有测试设过**、`EXTERNAL_EVENT` **全仓零引用** —— `execution.py` 里 `SuspensionReason` 的 docstring **自己写下过这个病**（"M25 之前 `CHILD_AGENT` 被冻结在这里，但全仓库没有任何一处设置过它 —— 和 A-3（幂等键接到 Redis）是同一种病：概念冻结了，实现从没跟上"）。新增 **I-20**：运行时必须在**执行任何动作之前**确认它**执行得了**；执行不了 → 判死 + 点名理由，且**不许执行它**（编造"我做到了"）、**不许跳过它**（编造"它做过了"）、**不许让它崩在一个没有账本记录的异常上**（一条跑了几步的 Run 整条消失而账本像什么都没发生）、**不许 REPLAN 糊过去**（决策本身没错，错的是这个运行时做不到 —— 让 DecisionEngine"再选一个"等于告诉它"你选错了"，**那是一句假话**，且真因会被顶替，D-37）。⭐ 三个集合**不手写、从 `ACTION_TO_TASK` 推导**（`TASK_PRODUCING_ACTION_TYPES` / `LOOP_HANDLED_ACTION_TYPES` / `UNEXECUTABLE_ACTION_TYPES` / `EXECUTABLE_ACTION_TYPES`；三者互斥且覆盖全集已实证 `True`）—— 手写白名单会在 `ActionType` 新增成员时**静默漏掉**它，而那正是这一族洞的成因（与 M88 的 `SUPPORTED_PLAN_NODE_KINDS` 同一处置）。⭐ 理由刻意要点齐五样：**哪个动作类型 / 声明了什么 / 支持什么 / 为什么不能凑合 / 正确的替代路径是什么** —— 少最后一样的话，读的人只知道"失败了"，不知道该往哪走（`SkillExecutor` 的 `SKILL_NOT_WORKER_EXECUTABLE` 是模板）。⭐ `TaskFactory.from_action()` 里那句 `mapping is None` 的报错**拆成两句**：`I-4` = **调用方的 bug**（FINISH/REPLAN 该由 Loop 处理，不该走到这里）、`I-20` = **能力的缺口**（声明了但没有任何一层执行它）—— 混成一句 "produces no Task"，读的人分不出该改调用方还是该补实现。⭐ 补的时候 1353 条既有测试**一条不红**（第五次同款：M85 1287 / M87 1319 / M88 1334 / M89 1353）—— `WAIT` 从来没有 producer，**那条路一次都没被走过**。24 条单元测试（六组：控制组 5 / 集合推导 7 / 声明为真 2 含穷尽性 / 拒绝 4 / 整条 Run 存活 3 / 两种"没有 Task"可区分 3）；**9 变异全红**（M7 / M8 各自恰好红 1 条 = 隔离干净）；单测 1369 → 1393。详见 §127 |
 | M89 | A Plan Belongs To Its Run | **一份计划必须属于它被执行的这条 Run**：`Plan.run_id` 从来不是装饰 —— `__post_init__` 要求它非空、快照序列化它、恢复路径（`snapshot.py:138`）在缺失时**回填这条 Run 的 id**，**代码认为两者应当相等**；可规划路径（`_plan()`）**从不比对**（全仓 grep 为空）。于是一份声称属于 `run_someone_else` 的计划被**照单全收** —— 成为这条 Run 的 `current_plan`，节点被实例化成 Step 照常往下走，而**账本上没有任何一处说「这不是这条 Run 的计划」**（probe89.py 修前实测 `两者相等吗: False` / `实际实例化的 Step: ['n0']`）。这不是编出来的场景：**一个按目标文本做缓存的 Planner、一个「计划建一次就复用」的实现，都会正好长成这样**。新增 **I-19**：运行时必须在**执行这份计划之前**确认它属于**这条 Run**；不属于就判死 + 点名两个 run_id，且**不许执行、不许跳过、不许「再换一份计划」糊过去** —— 计划本身没错，让 Planner 再换一份等于告诉它「你的计划有问题」，**那是一句假话**，而且最终 FAILED 的理由会被 I-12 那句 "same shape" 冲淡（**真正的死因被顶替了**，D-37）。⭐ 落地形状与 I-18 **共用同一道门**：`loop.py` 的 §32 Plan Validator 区块，`PlanDefect(code, detail)` + `plan_defects(plan, *, run_id)`，两个错误码 `PLAN_BELONGS_TO_ANOTHER_RUN` / `PLAN_NODE_KIND_NOT_EXECUTABLE`；刻意分成 `code` + `detail` 两半（PR-19：合成一句话两者都会被稀释），且**两条缺陷同时成立时两条都要报**（报一条就返回的话，运维修完 kind 才发现「计划还是别人的」）。⭐ 顺带把 §32 承诺的 `Plan Validator` **建了起来 —— 只建它真的做得到的那部分**：七项逐项查完，**DAG Cycle / Dependency 真的做了**（`assert_acyclic()` / I-16 的 `_next_plan_node()`），**Permission / Risk / Budget 三项换了时机**（Harness `before_action()` / `RiskLevel` 策略 / Loop 的预算计数 —— 都在**执行期逐步**拦，不是计划期一次性），**Tool Exists / Resource 两项连表达都表达不了**（`PlanNode` **没有** `tool` 字段；全仓没有 Resource 概念）。这张归属表直接写进 `loop.py` 的模块级注释 —— **把事实写清楚，比造一个看起来像门的空壳诚实**。⭐ 补的时候 1353 条既有测试**一条不红**（第四次同款：M85 1287 / M87 1319 / M88 1334）—— 既有测试的替身 Planner 全部写着 `run_id=state.run_id` ⇒ 此前**碰巧成立**。⭐ 判据刻意钉在**每一次 step 都过**的位置而不是 `_plan()` 后面：计划有第二条来路 —— **快照恢复**（`state_from_dict` 直接 `current_plan=plan`，不走 reducer），只挂在规划路径上的话恢复回来那条会**绕过**它。16 条单元测试（三组控制组 + 一条反向边界：老快照没写 `run_id` 时回填是**合法**的，不许被误伤）；**8 变异全红**（M7 / M8 各自恰好红 1 条 = 隔离干净）；单测 1353 → 1369。详见 §126 |
 | M88 | A Declared Kind Is A Contract, Not A Comment | **`PlanNode.kind` 必须是一份契约，不是写在注释里的愿望**：`plan.py` 的 `kind: str = "task"  # task / tool / agent / human / decision` 把**五个值只放在行尾注释里** —— 类型是 `str`，`PlanNode.__post_init__` 完全不看它，运行时 `_ensure_step()` 也只读 `node.node_id` / `node.name`。同项目的 `ObservationSource` / `ChildRunKind` / `RiskLevel` / `ActionType` 全是 `str, Enum` + `__post_init__` 校验，这是**唯一的例外**。探针实测：`kind='banana'` / `''` / `'TASK'` **全部静默通过**；而 `kind='human'`（计划声明「这一步要人签字」）的节点被**当普通 task 跑完**，Run 报 COMPLETED、`approval.requested` **0 条** —— **没有任何人签过字**；`kind='agent'`（声明要委派）在本地跑完、**0 个子 Run**，照样 COMPLETED。这不是「少了个功能」，是**系统主动说了假话**（与 `SkillExecutor` 的 `SKILL_NOT_WORKER_EXECUTABLE` 同一族病，那份 docstring 自己写着「正确的行为不是假装把技能跑一遍，而是把话说清楚」）。新增 **I-18**：`kind` 是**闭集**（`PlanNodeKind`；未知值**拒绝**，**不做「兜底成 task」** —— 那正是本轮要消灭的行为）；运行时必须**自述**它真的能执行的集合（`SUPPORTED_PLAN_NODE_KINDS`，现只有 `task`），计划里出现集合外的 kind 就**在产生任何副作用之前**判死 + 点名理由 —— 不许执行它、不许跳过它、不许当 task 跑。⭐ 补的时候 1334 条既有测试**一条不红** ⇒ 此前**碰巧成立**（全仓 `PlanNode(` 只有 `snapshot.py` 一个生产构造点，测试里一个带 `kind=` 的都没有）——第三次同款（M85 1287 / M87 1319）。⭐ 判据刻意钉在**每一次 step 都过**的位置而不是 `_plan()` 后面：计划有第二条来路 —— **快照恢复**（`state_from_dict` 直接 `current_plan=plan`，不走 reducer），只挂在规划路径上的话，恢复回来那条会**绕过**它（M85 的「判据要住在所有路径的汇合处」）。⭐ 查的是**整份计划**不是「下一个要跑的节点」：一份 `[好节点, kind='human']` 的计划，第一个节点也**不许跑** —— 否则副作用白发生了，而这份计划从一开始就跑不完。19 条单元测试（含三组控制组）；**8 变异全红**（M5 恰好红 1 条 = 快照恢复那条）；单测 1334 → 1353。详见 §125 |
@@ -15407,4 +15424,234 @@ trace 一条都没有，Run 停在非终态。**这比说假话更坏 —— 它
 
 > **`None` 如果有三种意思，那它一种都不是。**
 > **读代码的人和运行时，都分不出来。**
+
+---
+
+# 128. M91 —— 计划节点的声明必须兑现为对应 Action
+
+## 128.1 起因：M88 的声明已经是真的，但还没有兑现
+
+M88 把 `PlanNode.kind` 从行尾注释变成了闭集，M90 又把 `ActionType` 的无归宿动作变成了运行时可审计的拒绝。
+但两者之间还隔着一个更窄的断点：`kind="tool"` / `kind="human"` 虽然已经被接受为声明，运行时仍可能让 Decision 交回任意其它 Action。
+
+于是一个声明“调工具”的节点可以收到 `LLM_CALL`，一个声明“等人”的节点可以收到普通 `TOOL_CALL`。
+Task 可能成功，账本也可能显示动作执行过，但计划声明的语义从未被满足。**声明与能力的差如果不继续传到分派边界，I-18 只证明了“它是什么”，没有证明“它按自己说的方式发生了”。**
+
+## 128.2 形状：节点语义与动作语义各走各的
+
+```text
+PlanNode.kind                 Decision.selected_action
+      │                                  │
+      │  tool / human                    │  llm_call / tool_call / ...
+      └──────────────┐      ┌───────────┘
+                     ▼      ▼
+                 M88 只校验值；M90 只校验动作有无归宿
+                         │
+                         ▼
+                 没有 I-21 时可能静默错配
+```
+
+M90 的 `EXECUTABLE_ACTION_TYPES` 只回答“这个 Runtime 能不能执行这个 Action”。
+I-21 回答的是另一个问题：“这个 Action 是否兑现了当前计划节点的声明”。两道门不能合并：前者是能力，后者是语义一致性。
+
+## 128.3 用户决策与范围
+
+本轮只落地**已有真实执行路径**：
+
+- `task`：通用节点，允许当前 `EXECUTABLE_ACTION_TYPES`；
+- `tool`：只允许 `TOOL_CALL`，走已有 Native Tool → Kernel 路径；
+- `human`：只允许 `HUMAN_APPROVAL` / `ASK_USER`，走已有 Harness 审批闸门；
+- `agent` / `decision`：仍不支持，继续由 I-18 在计划期拒绝。
+
+刻意不把 `agent` 扩进支持集合：虽然已有 `AGENT_DELEGATION` Action，但按 kind 分派到子 Run 还需要把计划节点、spawner 能力和委派语义完整接起来；本轮不以“有一个 Action 映射”为理由冒充能力已经闭环。
+
+## 128.4 新增不变量 I-21
+
+> **已支持的 PlanNode.kind 必须兑现为允许的 ActionType。**
+> `task` 是通用节点；`tool` 只接受 `TOOL_CALL`；`human` 只接受 `HUMAN_APPROVAL` / `ASK_USER`。
+> 不匹配必须在创建 Step、进入 Harness、提交 Task 或产生 Execution 之前判死，并在账本里点名真正的节点、声明和实际动作。
+
+落点是 `AgentLoop._step()` 中 I-20 能力门之后、`_ensure_step()` / Harness / Kernel 之前。
+I-20 先处理 `WAIT` 这类“运行时根本执行不了”的动作，避免节点错配掩盖更底层的能力缺口；I-21 随后处理“动作能执行，但不是这个节点声明的动作”。
+
+新增机器可读错误码 `PLAN_NODE_ACTION_MISMATCH`，人读理由包含：节点 id、声明的 kind、实际 ActionType、允许的 ActionType 集合，以及“不能把另一种动作当成已兑现”的原因。
+
+## 128.5 判据为什么不创建 Step
+
+I-21 必须在 `_ensure_step()` 之前。若先创建 Step 再检查，账本会留下一个看似已经开始的节点；若先进入 Harness，审批表会留下一个本不该提出的请求；若先提交 Task，外部世界已经发生副作用。
+
+因此错配的实测结果是：`StepOutcome.FAILED`、Run `FAILED`、`steps == 0`、`steps_of_run == []`，且没有审批、Task 或 Execution。
+这不是为了“少写一条记录”，而是为了不伪造“这个声明已经开始执行”。
+
+## 128.6 探针实测（`probe12.py`）
+
+- `tool + TOOL_CALL`：`EXECUTED`，产生 1 个 Step，真正进入 Kernel；
+- `tool + LLM_CALL`：`FAILED`，0 个 Step，账本理由含 `PLAN_NODE_ACTION_MISMATCH`、`tool`、`llm_call`；
+- `human + HUMAN_APPROVAL`：`WAITING_APPROVAL`，产生审批请求，`steps == 0`；
+- `human + TOOL_CALL`：`FAILED`，0 个 Step，理由同时点名 `human`、`tool_call` 与允许的 `human_approval`；
+- `agent` / `decision`：仍由 I-18 在计划门拒绝。
+
+探针的分支只读真实结果（是否真的产生 Step / 审批），不根据“应该发生什么”推断结论；这遵循 M89 对“读旧世界”断言的纪律。
+
+## 128.7 测试与变红验证
+
+新增 `tests/unit/test_plan_node_kind_dispatch.py`（6 条）：能力集合的闭集控制、`task` 通用性、`tool` 正常路径与错配拒绝、`human` 审批路径与错配拒绝。
+同时更新 M88/M89 中原本把 `human` 当作“未支持控制组”的测试，改用仍未支持的 `agent`，避免测试把“当前已支持的 kind”误判为缺口。
+
+`red12.py` 逐条变异并立即恢复：
+
+| 变异 | 内容 | 结果 |
+|---|---|---|
+| M1 | 删除 I-21 整道门 | 红 2 |
+| M2 | 让错配判据永远返回 `None` | 红 2 |
+| M3 | `tool` 放宽为所有 Action | 红 2 |
+| M4 | `human` 放宽为所有 Action | 红 2 |
+| M5 | 能力集合退回只支持 `task` | 红 7 |
+| M6 | 节点查询永远返回 `None` | 红 2 |
+
+**6/6 全红，0 跳过，0 静默。** 变红脚本基线先跑完整单元层，使用 UTF-8 容错、单次超时、磁盘备份和逐条还原；变异运行期间没有残留源文件变更。
+
+## 128.8 真 PG 与测试结果
+
+本轮没有新增 PostgreSQL schema 或持久化字段：I-21 是 Runtime 在产生持久化副作用之前的语义门，不需要把同一事实再复制进数据库。
+完整单元测试 **1787 条全绿**（其中 AgentOS 里程碑相关规模 1393 → 1399）；既有真 PG 集成测试 **209 条保持全绿**。
+
+## 128.9 空洞表
+
+| # | 形状 | 处置 |
+|---|---|---|
+| 247 | `SUPPORTED_PLAN_NODE_KINDS` 只有 `task` | **本轮闭合**：真实接通 `tool` / `human` 两条已有执行路径；`agent` / `decision` 仍诚实拒绝 |
+| 250 | §32 的 Validator 仍有 5 项不在计划期 | **仍登记不治**：Permission / Risk / Budget 换了执行期；Tool Exists / Resource 仍无可表达机制 |
+| 255 | `PlanNode.kind` 与 `Decision.selected_action` 曾可静默错配 | **M91 本轮闭合**（I-21） |
+
+## 128.10 冻结的是什么
+
+M88 冻结的是：**声明必须先成为真约束。**
+M90 冻结的是：**每个 Action 必须有真实归宿。**
+
+这一轮冻结的是：
+
+> **声明成为真约束之后，还必须一路兑现到实际分派。**
+> **“能执行”不等于“兑现了这个节点要做的事”。**
+
+I-18、I-20、I-21 合起来才闭合这条链：值合法 → 动作有归宿 → 动作兑现节点语义。
+
+---
+
+# 129. M92 —— AgentOS 到 Asuka 的评测适配边界
+
+## 129.1 起因：两边各有一半，但真实 Run 还接不上
+
+Asuka 的 Redis 评测 MVP 已经具备检索、Citation、Correctness、Context、Trace、Latency、Token、Cost 与回归对比；AgentOS 则已经具备真实的 AgentRun、Execution、ContextSnapshot、CostManager 与 append-only 原始账本。
+
+此前两边的复用停在底层类型：Asuka 已使用 `packages.agent_context` 和 `packages.agent_evaluation`，但没有一份交接契约把真实 AgentOS Run 转成 Asuka 的答案级样本。结果只能把两套系统并排运行，无法严格回答：
+
+- 这次 AgentOS Run 实际检索留下了哪些片？
+- 哪些片真的喂给模型，哪些被预算丢掉？
+- 模型回答和引用是否有依据？
+- 这次答案花了多少 token、延迟和成本？
+
+这不是把两个 Runtime 合并的问题。它是**生产运行结果 → 离线评测输入**的边界问题。
+
+## 129.2 形状：`retrieved` 与 `available` 不是一个集合
+
+AgentOS 的 `ContextSnapshot` 记录的是一次模型调用真正看到的 Context；它能回答 `available`，但不能回答检索管线在预算前留下了哪些 `retrieved`。
+
+```text
+AgentOS Retriever
+    └─ retrieved: 检索边界留下
+          └─ ContextAssembler
+                ├─ available: 真正喂给模型
+                └─ dropped_budget: 检到了但装不下
+
+Asuka Adapter
+    ├─ retrieved → 检索归因
+    ├─ available → Citation grounded
+    └─ dropped_budget → 预算归因
+```
+
+如果适配器从 `ContextSnapshot.items` 反推 retrieved，被预算丢掉的片就会消失；Asuka 随后会把“检到了但装不下”误报成“检索没检到”。所以 `retrieved` 必须由 AgentOS 检索边界显式交给适配器，缺失就拒绝。
+
+## 129.3 新增交接契约
+
+`asuka.agentos_adapter.AgentOSSample` 是适配层唯一的样本输入，包含：
+
+- AgentOS `agentos_run_id` / `execution_id`；
+- Asuka `task_id` / `question`；
+- `Answer`（文本、citations、prompt/completion tokens、latency、cost、error）；
+- 检索留下的 `retrieved`；
+- ContextSnapshot 转来的 `context` 与 `dropped_budget`；
+- AgentOS 终态，仅写入 Asuka Trace，不改变 Asuka 的评测 Run。
+
+`evaluate_samples()` 负责把样本转换为 `AnswerScore` / `AnswerReport`，并生成 Asuka 的五段 Trace：`run.started` → `retrieval` → `generation` → `scoring` → `run.finished`。
+
+`samples_from_loop()` 是真实运行的薄提取器：从 AgentOS `task.submitted`、`execution.observed`、Kernel Task 和 Attempt 结果中提取 LLM Execution；它要求调用方提供 `execution → task_id`、`task_id → question` 与 `execution → retrieved` 三张映射，不用文本或 Execution id 猜题目身份。
+
+## 129.4 边界与不变量
+
+> **M92 接入契约：AgentOS 负责生产运行、Context、成本和原始审计账本；Asuka 负责答案级判据、Citation 归因、评测报告和评测 Trace。**
+
+具体守点：
+
+1. AgentOS 的 AgentRun 与 Asuka 的 task/sample Run 不合并；
+2. AgentOS 原始 `RunTrace` 与 Asuka 评测 Trace 不合并；
+3. `retrieved` 与 ContextSnapshot 的 `available` 不混合；
+4. 缺字段、题目漂移、Dataset 未 resolve、跨 AgentOS Run 混样均拒绝；
+5. AgentOS 不 import Asuka，生产 Runtime 不依赖离线评测模块；
+6. Asuka 不重新执行 AgentOS 的模型调用、工具调用或成本扣费。
+
+## 129.5 探针实测（`probe96.py`）
+
+一个 AgentOS 样本实测得到：
+
+- AgentOS Run：`run_agentos_probe96`；
+- Asuka `mean_recall`：`1.0`；
+- `grounded`：`1.0`；
+- `retrieved`：`['redis:expire:001', 'redis:expire:002']`；
+- `available`：`['redis:expire:001']`；
+- 第二片带着明确的 `token budget exhausted` 原因进入 `dropped_budget`；
+- Asuka Trace 首尾和中间事件完整：`run.started / retrieval / generation / scoring / run.finished`。
+
+## 129.6 测试与变红验证
+
+新增 `tests/unit/test_asuka_agentos_adapter.py`（11 条），覆盖：
+
+- 样本到报告 / Trace 的完整转换；
+- `retrieved` 与 `available` 的分离；
+- 预算丢弃原因保真；
+- Citation 引用未提供片时判为 fabricated；
+- 缺 retrieved、未知 task、question 漂移、未 resolve evidence、跨 Run 混样拒绝；
+- 从真实 AgentOS Loop 提取 LLM Execution，以及缺 retrieved 映射拒绝。
+
+`red96.py` 的第一版 M1 锚点在代码重构后命中 0 次，按纪律没有把它算作验证；修正锚点后重跑：
+
+| 变异 | 内容 | 结果 |
+|---|---|---|
+| M1 | 把 `retrieved` 与 `available` 混成同一集合 | 红 1 |
+| M2 | 删除 retrieved 缺失门 | 红 1 |
+| M3 | 删除未知 task 拒绝门 | 红 1 |
+| M4 | 删除 question 同一性门 | 红 1 |
+
+**4/4 全红，0 跳过，0 静默。** 适配器专项 11 条测试全绿。
+
+## 129.7 真 PG 与测试结果
+
+本轮没有新增 PostgreSQL 表或迁移。适配发生在读取 AgentOS 已经落下的事实之后，不复制一份评测状态回 PG；生产持久化仍由 AgentOS 原始存储负责。
+
+全量单元测试 **1798 条全绿**；此前真 PostgreSQL 集成测试 **209 条保持全绿**。本轮没有改变 Kernel、迁移、K8s 运行时或 AgentOS API 的执行语义。
+
+## 129.8 空洞表
+
+| # | 形状 | 处置 |
+|---|---|---|
+| 250 | §32 的 Validator 仍有 5 项不在计划期 | **仍登记不治**：Permission / Risk / Budget 换了执行期；Tool Exists / Resource 仍无可表达机制 |
+| 256 | AgentOS 真实 Run 与 Asuka 评测之间没有显式交接契约 | **M92 本轮闭合**：`AgentOSSample` + `evaluate_samples()` + `samples_from_loop()` |
+| 257 | 适配器无法从 ContextSnapshot 区分 retrieved 与 available | **M92 本轮闭合**：retrieved 必须显式提供，available 从 ContextSnapshot 读取 |
+
+## 129.9 冻结的是什么
+
+> **生产运行和离线评测可以接起来，但不能因此变成同一套 Run。**
+> **AgentOS 负责“发生了什么”；Asuka 负责“这次发生得好不好”。**
+
+这条边界让后续可以继续接入更多文档类型、更多检索器和更多模型，而不把评测逻辑塞进 AgentOS Runtime，也不让 Asuka 伪装成生产执行引擎。
 

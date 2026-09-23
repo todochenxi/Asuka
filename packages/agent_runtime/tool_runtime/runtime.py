@@ -49,6 +49,7 @@ from typing import Any, Mapping
 
 from .protocols import ToolCall
 from .registry import ToolNotFoundError, ToolRegistry
+from .sandbox import SandboxViolation
 from .spec import SideEffect, ToolResult, ToolSpec
 from .validation import ToolValidationError, validate_input
 
@@ -124,6 +125,10 @@ class ToolRuntime:
             output = invoker.invoke(call)
         except ToolExecutionError:
             raise
+        except SandboxViolation as err:
+            # M101：沙箱边界被越过 —— 带上它自己点名的 code，别糊成 TOOL_FAILED。
+            # 默认不重试（retryable=False）：同一条命令 + 同一个 profile 会得到同一个结果。
+            raise ToolExecutionError(err.code, err.message, retryable=err.retryable) from err
         except Exception as err:                          # noqa: BLE001
             raise ToolExecutionError("TOOL_FAILED", str(err), retryable=True) from err
 

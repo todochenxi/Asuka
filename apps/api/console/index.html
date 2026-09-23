@@ -449,6 +449,69 @@ pre.payload{
 .mono-s{font-family:var(--mono); font-size:12px; color:var(--fg-mute)}
 .sep{height:1px; background:var(--border-soft); margin:14px 0}
 
+/* ============================================================
+   Evaluation test desk
+   ============================================================ */
+.eval-hero{display:flex; align-items:flex-start; gap:16px; padding:16px 18px; margin-bottom:16px;
+  background:linear-gradient(100deg,var(--brand-dim),oklch(0.19 0 0)); border:1px solid oklch(0.66 0.19 264 / 28%);
+  border-radius:var(--radius-l)}
+.eval-hero .hero-mark{width:38px;height:38px;display:grid;place-items:center;flex:0 0 38px;border-radius:10px;background:var(--brand);color:#fff}
+.eval-hero .hero-mark svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.eval-hero h3{font-size:15px;font-weight:600;margin-bottom:3px}
+.eval-hero p{font-size:12.5px;color:var(--fg-mute);max-width:78ch}
+.eval-stage-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.eval-stage{padding:11px 10px;background:var(--panel-2);border:1px solid var(--border-soft);border-radius:var(--radius);min-width:0}
+.eval-stage.ok{border-color:oklch(0.75 0.17 155 / 35%)}
+.eval-stage .stage-top{display:flex;align-items:center;gap:7px;margin-bottom:6px}
+.eval-stage .stage-num{font-family:var(--mono);font-size:10px;color:var(--fg-subtle)}
+.eval-stage .stage-name{font-size:12px;font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.eval-stage .stage-status{font-size:11px;color:var(--fg-subtle)}
+.eval-stage.ok .stage-status{color:var(--ok)}
+.eval-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:16px}
+.eval-panel{background:var(--panel);border:1px solid var(--border-soft);border-radius:var(--radius-l);padding:16px}
+.eval-panel h3{font-size:13.5px;font-weight:600;margin-bottom:3px}
+.eval-panel .panel-note{font-size:11.5px;color:var(--fg-subtle);margin-bottom:13px}
+.eval-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:14px}
+.eval-metric{padding:10px;background:var(--panel-2);border:1px solid var(--border-soft);border-radius:var(--radius)}
+.eval-metric .mk{font-size:10.5px;color:var(--fg-subtle);text-transform:uppercase;letter-spacing:.05em}
+.eval-metric .mv{font-family:var(--mono);font-size:18px;font-weight:650;margin-top:4px}
+.eval-metric.ok .mv{color:var(--ok)}
+.eval-metric.warn .mv{color:var(--warn)}
+.eval-metric.bad .mv{color:var(--bad)}
+.eval-flow{display:grid;grid-template-columns:1fr 24px 1fr 24px 1fr;gap:7px;align-items:stretch}
+.eval-box{min-height:76px;padding:10px;background:var(--bg-deep);border:1px solid var(--border-soft);border-radius:var(--radius)}
+.eval-box .eb-title{font-size:11px;color:var(--fg-subtle);margin-bottom:6px}
+.eval-box .eb-body{font-family:var(--mono);font-size:11px;line-height:1.5;word-break:break-word}
+.eval-arrow{display:grid;place-items:center;color:var(--brand);font-size:17px}
+.eval-evidence{display:flex;flex-direction:column;gap:7px}
+.eval-evidence-item{display:flex;align-items:flex-start;gap:8px;padding:9px 10px;border-radius:var(--radius-s);background:var(--panel-2);border:1px solid var(--border-soft);font-size:12px}
+.eval-evidence-item .e-dot{width:7px;height:7px;border-radius:50%;background:var(--fg-subtle);margin-top:5px;flex:0 0 7px}
+.eval-evidence-item.retrieved .e-dot{background:var(--info)}
+.eval-evidence-item.available .e-dot{background:var(--ok)}
+.eval-evidence-item.dropped .e-dot{background:var(--warn)}
+.eval-evidence-item code{font-family:var(--mono);font-size:11px;color:var(--fg)}
+.eval-evidence-item span{display:block;color:var(--fg-subtle);font-size:11px;margin-top:2px}
+.eval-command{display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:var(--radius-s);background:var(--bg-deep);border:1px solid var(--border-soft);margin-bottom:7px}
+.eval-command:last-child{margin-bottom:0}
+.eval-command code{flex:1;font-family:var(--mono);font-size:11px;color:var(--fg-mute);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.eval-command .cmd-label{font-size:11px;color:var(--fg-subtle);white-space:nowrap}
+.eval-upload{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;border:1px dashed var(--border);border-radius:var(--radius);background:var(--bg-deep);margin-top:10px}
+.eval-upload span{font-size:11.5px;color:var(--fg-subtle)}
+.eval-upload input{max-width:190px;font-size:11px}
+.eval-status{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--fg-subtle)}
+.eval-status .dot{width:6px;height:6px}
+.eval-live-meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:12px}
+.eval-live-meta .lm{padding:9px 10px;background:var(--panel-2);border:1px solid var(--border-soft);border-radius:var(--radius)}
+.eval-live-meta .lk{font-size:10.5px;color:var(--fg-subtle);margin-bottom:3px}
+.eval-live-meta .lv{font-family:var(--mono);font-size:12px;word-break:break-all}
+.eval-live-timeline{max-height:360px;overflow:auto;padding-top:2px}
+.eval-live-timeline .empty{padding:20px 12px}
+.eval-live-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:12px}
+.eval-live-actions .hint{font-size:11px;color:var(--fg-subtle)}
+@media(max-width:720px){.eval-live-meta{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:1080px){.eval-stage-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.eval-grid{grid-template-columns:1fr}}
+@media(max-width:720px){.eval-stage-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.eval-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.eval-flow{grid-template-columns:1fr}.eval-arrow{transform:rotate(90deg);min-height:20px}}
+
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms !important; animation-iteration-count:1 !important;
     transition-duration:.01ms !important}
@@ -469,6 +532,8 @@ pre.payload{
     <div class="hdr-meta">
       <span class="chip"><span class="dot" id="hl"></span><span id="hl-text">连接中</span></span>
       <span class="chip">v<b id="ver">—</b></span>
+      <a class="btn btn-sm btn-ghost" href="/architecture" title="架构与进度">架构</a>
+      <a class="btn btn-sm btn-ghost" href="/" title="回到对话">对话</a>
       <button class="btn btn-sm btn-ghost" id="btn-refresh" title="重新拉取">
         <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
         刷新
@@ -499,6 +564,14 @@ pre.payload{
         <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>
         账本
       </button>
+
+      <div class="nav-label">评测</div>
+      <button class="nav-i" data-view="eval">
+        <svg viewBox="0 0 24 24"><path d="M4 19V5M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/></svg>
+        测试台
+        <span class="nav-count">M92</span>
+      </button>
+
       <button class="nav-i" data-view="api">
         <svg viewBox="0 0 24 24"><path d="M8 6 3 12l5 6M16 6l5 6-5 6"/></svg>
         API
@@ -645,6 +718,7 @@ pre.payload{
               <dt>agent</dt><dd id="v-agent">—</dd>
               <dt>步数</dt><dd id="v-steps">0</dd>
               <dt>最后产出</dt><dd id="v-outcome" class="plain">（还没走过）</dd>
+              <dt>最后回答</dt><dd id="v-answer" class="plain">（还没有回答）</dd>
               <dt>正在等</dt><dd id="v-wait">（不等任何人）</dd>
             </dl>
 
@@ -690,6 +764,15 @@ pre.payload{
               </button>
             </div>
           </div>
+        </div>
+
+        <div class="card" id="harness-card" hidden>
+          <div class="card-h">
+            <svg viewBox="0 0 24 24"><path d="M12 3l8 4v6c0 5-3.5 7.5-8 8-4.5-.5-8-3-8-8V7z"/><path d="M12 8v4l3 2"/></svg>
+            <h2>Harness</h2>
+            <span class="hint">Context 装配 / 护栏 —— 来自账本</span>
+          </div>
+          <div id="harness-body"></div>
         </div>
 
         <div class="card" id="gate-card" hidden>
@@ -780,6 +863,136 @@ pre.payload{
         </div>
       </section>
 
+      <!-- ---------- 测试台 ---------- -->
+      <section class="view" id="v-eval">
+        <div class="vhead">
+          <h2>测试台</h2>
+          <p>把 AgentOS 的真实运行事实交给 Asuka 评测。这里先提供本地样本预览和测试命令，不会伪造后端结果。</p>
+        </div>
+
+        <div class="eval-hero">
+          <div class="hero-mark"><svg viewBox="0 0 24 24"><path d="M4 19V5M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/></svg></div>
+          <div>
+            <h3>AgentOS → Asuka 评测链</h3>
+            <p>AgentOS 负责真实 Run、Context、成本和原始账本；Asuka 负责答案评分、Citation 归因、报告和回归。<b>retrieved</b> 与 <b>available</b> 必须分开。</p>
+          </div>
+          <span class="eval-status" style="margin-left:auto"><span class="dot live"></span><span id="eval-mode">本地预览</span></span>
+        </div>
+
+        <div class="card">
+          <div class="card-h">
+            <svg viewBox="0 0 24 24"><path d="M4 12h16M12 4v16"/><circle cx="12" cy="12" r="9"/></svg>
+            <h2>测试层级</h2>
+            <span class="hint">当前基线已验证</span>
+          </div>
+          <div class="eval-stage-grid">
+            <div class="eval-stage ok"><div class="stage-top"><span class="stage-num">01</span><span class="stage-name">适配器单测</span></div><div class="stage-status">11 条 · 全绿</div></div>
+            <div class="eval-stage ok"><div class="stage-top"><span class="stage-num">02</span><span class="stage-name">接入探针</span></div><div class="stage-status">retrieved / available</div></div>
+            <div class="eval-stage ok"><div class="stage-top"><span class="stage-num">03</span><span class="stage-name">变红验证</span></div><div class="stage-status">red96 · 4/4</div></div>
+            <div class="eval-stage ok"><div class="stage-top"><span class="stage-num">04</span><span class="stage-name">全量单测</span></div><div class="stage-status">1798 条 · 全绿</div></div>
+            <div class="eval-stage ok"><div class="stage-top"><span class="stage-num">05</span><span class="stage-name">真 PG 集成</span></div><div class="stage-status">209 条 · 全绿</div></div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:16px" id="eval-live-card">
+          <div class="card-h">
+            <svg viewBox="0 0 24 24"><path d="M4 12h16M12 4v16"/><circle cx="12" cy="12" r="9"/></svg>
+            <h2>真实提问 · 实时追踪</h2>
+            <span class="hint" id="eval-live-status">未开始</span>
+          </div>
+          <div class="notice info" style="margin-bottom:13px"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg><div>提交后页面会调用 AgentOS：创建 Run → 单步推进 → 查询状态和 trace → 直到终态或等待审批。每一步都来自后端账本，不是前端推测。</div></div>
+          <div class="grid g2">
+            <div>
+              <div class="grid g2">
+                <div class="field"><label for="eval-agent-real">Agent</label><input id="eval-agent-real" class="mono" value="agent-it" list="agent-options"></div>
+                <div class="field"><label for="eval-live-delay">单步间隔（ms）</label><input id="eval-live-delay" type="number" min="200" step="100" value="800"></div>
+              </div>
+              <div class="field"><label for="eval-question-real">我要问的问题</label><textarea id="eval-question-real" style="min-height:106px">compute 6*7</textarea></div>
+              <div class="eval-live-actions">
+                <span class="hint">当前会话同源调用 API，不需要复制命令</span>
+                <div class="row">
+                  <button class="btn btn-ghost btn-sm" id="btn-eval-resume" disabled>继续追踪</button>
+                  <button class="btn btn-bad btn-sm" id="btn-eval-stop" disabled>停止轮询</button>
+                  <button class="btn btn-primary" id="btn-eval-ask">提问并开始追踪</button>
+                </div>
+              </div>
+            </div>
+            <div>
+              <div class="eval-live-meta">
+                <div class="lm"><div class="lk">run_id</div><div class="lv" id="eval-live-run">—</div></div>
+                <div class="lm"><div class="lk">状态</div><div class="lv" id="eval-live-run-status">—</div></div>
+                <div class="lm"><div class="lk">步数</div><div class="lv" id="eval-live-steps">0</div></div>
+                <div class="lm"><div class="lk">最后产出</div><div class="lv" id="eval-live-outcome">—</div></div>
+              </div>
+              <div class="eval-live-timeline tl" id="eval-live-timeline"><div class="empty"><div class="t">还没有真实事件</div>输入问题后，后端的每一次推进会出现在这里。</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="eval-grid" style="margin-top:16px">
+          <div class="eval-panel">
+            <h3>本地样本预览</h3>
+            <div class="panel-note">用一条 AgentOSSample 预览 Asuka 的评分逻辑；不会调用模型或写入后端。</div>
+            <div class="grid g2">
+              <div class="field"><label for="eval-task">task_id</label><input id="eval-task" class="mono" value="redis-expire"></div>
+              <div class="field"><label for="eval-run">agentos_run_id</label><input id="eval-run" class="mono" value="run_agentos_preview"></div>
+            </div>
+            <div class="field"><label for="eval-question">question</label><textarea id="eval-question">How do I set a timeout on a key?</textarea></div>
+            <div class="field"><label for="eval-answer">answer</label><textarea id="eval-answer">Use EXPIRE key seconds to set a timeout.</textarea></div>
+            <div class="grid g2">
+              <div class="field"><label for="eval-retrieved">retrieved（逗号分隔）</label><input id="eval-retrieved" class="mono" value="redis:expire:001, redis:expire:002"></div>
+              <div class="field"><label for="eval-available">available（真正喂入）</label><input id="eval-available" class="mono" value="redis:expire:001"></div>
+            </div>
+            <div class="grid g2">
+              <div class="field"><label for="eval-citations">citations（逗号分隔）</label><input id="eval-citations" class="mono" value="redis:expire:001"></div>
+              <div class="field"><label for="eval-dropped">dropped_budget（逗号分隔）</label><input id="eval-dropped" class="mono" value="redis:expire:002"></div>
+            </div>
+            <div class="row end">
+              <label class="btn btn-ghost btn-sm" for="eval-file">导入 JSON 样本</label>
+              <input id="eval-file" type="file" accept="application/json,.json" hidden>
+              <button class="btn btn-ghost btn-sm" id="btn-eval-fill">填充示例</button>
+              <button class="btn btn-primary" id="btn-eval-score">预览评分</button>
+            </div>
+            <div class="eval-upload"><span>JSON 格式见 <code>asuka.agentos_adapter.AgentOSSample</code></span><span id="eval-file-name">未导入文件</span></div>
+          </div>
+
+          <div class="eval-panel">
+            <h3>评测结果</h3>
+            <div class="panel-note">规则式本地预览；真实结果通过终端命令生成 Report / Trace。</div>
+            <div class="eval-metrics">
+              <div class="eval-metric ok"><div class="mk">要点召回</div><div class="mv" id="eval-recall">—</div></div>
+              <div class="eval-metric ok"><div class="mk">grounded</div><div class="mv" id="eval-grounded">—</div></div>
+              <div class="eval-metric"><div class="mk">上下文片数</div><div class="mv" id="eval-context-size">—</div></div>
+              <div class="eval-metric warn"><div class="mk">预算丢弃</div><div class="mv" id="eval-drop-count">—</div></div>
+            </div>
+            <div class="eval-flow">
+              <div class="eval-box"><div class="eb-title">检索留下</div><div class="eb-body" id="eval-flow-retrieved">—</div></div>
+              <div class="eval-arrow">→</div>
+              <div class="eval-box"><div class="eb-title">模型看到</div><div class="eb-body" id="eval-flow-available">—</div></div>
+              <div class="eval-arrow">→</div>
+              <div class="eval-box"><div class="eb-title">模型引用</div><div class="eb-body" id="eval-flow-cited">—</div></div>
+            </div>
+            <div class="sep"></div>
+            <div class="eval-evidence" id="eval-evidence"></div>
+            <div id="eval-result-note" style="margin-top:12px"></div>
+          </div>
+        </div>
+
+        <div class="grid g2" style="margin-top:16px">
+          <div class="card">
+            <div class="card-h"><svg viewBox="0 0 24 24"><path d="M8 6 3 12l5 6M16 6l5 6-5 6"/></svg><h2>快速命令</h2><span class="hint">点击复制</span></div>
+            <div class="eval-command"><span class="cmd-label">适配器</span><code>PYTHONPATH=. C:/Users/19644/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe -m unittest tests.unit.test_asuka_agentos_adapter</code><button class="btn btn-sm btn-ghost eval-copy" data-cmd="PYTHONPATH=. C:/Users/19644/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe -m unittest tests.unit.test_asuka_agentos_adapter">复制</button></div>
+            <div class="eval-command"><span class="cmd-label">探针</span><code>PYTHONPATH=. C:/Users/19644/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe -u probe96.py</code><button class="btn btn-sm btn-ghost eval-copy" data-cmd="PYTHONPATH=. C:/Users/19644/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe -u probe96.py">复制</button></div>
+            <div class="eval-command"><span class="cmd-label">变红</span><code>PYTHONPATH=. C:/Users/19644/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe -u red96.py</code><button class="btn btn-sm btn-ghost eval-copy" data-cmd="PYTHONPATH=. C:/Users/19644/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe -u red96.py">复制</button></div>
+          </div>
+          <div class="card">
+            <div class="card-h"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M7 9h10M7 13h6"/></svg><h2>验收规则</h2><span class="hint">不能静默降级</span></div>
+            <div class="notice info" style="margin-bottom:9px"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg><div><b>retrieved ≠ available</b>：检索到但预算丢掉的片，不能算模型看见过。</div></div>
+            <div class="notice warn"><svg viewBox="0 0 24 24"><path d="M12 3l9 17H3z"/><path d="M12 9v4M12 17h.01"/></svg><div>当前 AgentOS LLM 结果默认不保证有 <code>citations</code>；没有自述时，Citation 显示为不可测，而不是 0。</div></div>
+          </div>
+        </div>
+      </section>
+
       <!-- ---------- API ---------- -->
       <section class="view" id="v-api">
         <div class="vhead">
@@ -829,6 +1042,8 @@ const state = {
   history: [],
   version: "",
   health: null,
+  answer: "",
+  evalLive: { running: false, runId: "", timer: null },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -937,7 +1152,7 @@ function statusMeta(v) {
 
 function badgeHtml(v) {
   const m = statusMeta(v);
-  return '<span class="badge ' + esc(m.cls) + '"><span class="dot"></span>' +
+  return '<span class="badge ' + esc(m.cls) + '" id="v-status"><span class="dot"></span>' +
     esc(m.text) + "</span>";
 }
 
@@ -1007,6 +1222,7 @@ function renderRun() {
   $("v-agent").textContent = v.agent_id;
   $("v-steps").textContent = v.step_count;
   $("v-outcome").textContent = v.last_outcome || "（还没走过）";
+  $("v-answer").textContent = state.answer || "（还没有回答）";
   $("v-wait").textContent = v.waiting_for || "（不等任何人）";
   $("v-replay").hidden = !v.replayed;
   $("v-cancel").hidden = !v.cancel_requested;
@@ -1019,6 +1235,45 @@ function renderRun() {
       "<div>它是 <code>suspended</code> 但 <code>waiting_for</code> 是空的 —— " +
       "不是在等任何人。这通常意味着状态没有被重新派生（B-11）。再点一次推进它会继续。</div></div>"
     : "";
+  renderHarness();
+}
+
+function renderHarness() {
+  /* M95：把账本里与 Harness 有关的事实摊出来 —— Context 装配与护栏。
+     数据只来自 trace（`context.built` / `guardrail.rejected`），不新增运行语义。 */
+  const card = $("harness-card");
+  const body = $("harness-body");
+  if (!card || !body) return;
+  const entries = (state.trace && state.trace.entries) || [];
+  const ctx = entries.filter(function (e) { return e.kind === "context.built"; });
+  const guard = entries.filter(function (e) { return e.kind === "guardrail.rejected"; });
+  if (!ctx.length && !guard.length) { card.hidden = true; return; }
+  card.hidden = false;
+
+  const parts = [];
+  if (ctx.length) {
+    const p = ctx[ctx.length - 1].payload || {};
+    parts.push(
+      '<div class="notice info" style="margin-bottom:8px"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg><div>' +
+      '<b>Context 装配</b>：装配 ' + ctx.length + ' 次（每次 LLM 调用一份）· 最近一次 ' +
+      '<code>' + esc(p.snapshot_id || "—") + '</code> · <b>' + esc(p.total_tokens) + '</b> tokens · 预算丢弃 <b>' + esc(p.dropped) + '</b> 片' +
+      '</div></div>'
+    );
+  }
+  if (guard.length) {
+    const rows = guard.map(function (e) {
+      const p = e.payload || {};
+      const fs = (p.findings || []).map(function (f) {
+        return '<span class="tag">' + esc(f.guardrail) + ' · ' + esc(f.severity) + '</span> ' + esc(f.message);
+      }).join("<br>");
+      return '<div style="margin-top:4px"><b>' + esc(p.stage) + '</b>：' + (fs || "—") + '</div>';
+    }).join("");
+    parts.push(
+      '<div class="notice warn"><svg viewBox="0 0 24 24"><path d="M12 3l9 17H3z"/><path d="M12 9v4M12 17h.01"/></svg><div>' +
+      '<b>护栏拦下</b>（' + guard.length + ' 次）' + rows + '</div></div>'
+    );
+  }
+  body.innerHTML = parts.join("");
 }
 
 function renderApprovals() {
@@ -1100,6 +1355,7 @@ function renderTrace() {
       payload + sv +
     "</div>";
   }).join("");
+  renderHarness();
 }
 
 function renderApi(spec) {
@@ -1133,6 +1389,194 @@ function renderOverviewAlert() {
       "<div>有 <b>" + n + "</b> 条审批在等人签字 —— 它们对应的 Run 现在挂在闸门上，" +
       "不会自己往下走。去「审批」视图处理。</div></div>"
     : "";
+}
+
+/* ============================================================
+   Asuka 测试台
+   ============================================================ */
+function splitEval(value) {
+  return String(value || "").split(",").map(function (x) { return x.trim(); }).filter(Boolean);
+}
+function evalSample() {
+  return {
+    agentos_run_id: $("eval-run").value.trim(),
+    task_id: $("eval-task").value.trim(),
+    question: $("eval-question").value.trim(),
+    answer: $("eval-answer").value.trim(),
+    retrieved: splitEval($("eval-retrieved").value),
+    available: splitEval($("eval-available").value),
+    citations: splitEval($("eval-citations").value),
+    dropped: splitEval($("eval-dropped").value),
+  };
+}
+function renderEvalResult(sample) {
+  const answer = sample.answer.toLowerCase();
+  const points = [answer.indexOf("expire") >= 0, answer.indexOf("timeout") >= 0];
+  const hits = points.filter(Boolean).length;
+  const recall = hits / points.length;
+  const fabricated = sample.citations.filter(function (id) { return sample.available.indexOf(id) < 0; });
+  const grounded = sample.citations.length ? (sample.citations.length - fabricated.length) / sample.citations.length : null;
+  $("eval-recall").textContent = hits + "/" + points.length;
+  $("eval-grounded").textContent = grounded == null ? "—" : grounded.toFixed(2);
+  $("eval-context-size").textContent = String(sample.available.length);
+  $("eval-drop-count").textContent = String(sample.dropped.length);
+  $("eval-flow-retrieved").textContent = sample.retrieved.join("\n") || "（空）";
+  $("eval-flow-available").textContent = sample.available.join("\n") || "（空）";
+  $("eval-flow-cited").textContent = sample.citations.join("\n") || "（未自述）";
+  const evidence = $("eval-evidence");
+  const rows = [];
+  sample.retrieved.forEach(function (id) {
+    const available = sample.available.indexOf(id) >= 0;
+    const dropped = sample.dropped.indexOf(id) >= 0;
+    rows.push('<div class="eval-evidence-item ' + (dropped ? "dropped" : (available ? "available" : "retrieved")) + '">' +
+      '<span class="e-dot"></span><div><code>' + esc(id) + '</code><span>' +
+      (dropped ? "检索到 · 预算丢弃" : (available ? "检索到 · 已喂入" : "检索到 · 未进入 Context")) +
+      '</span></div></div>');
+  });
+  fabricated.forEach(function (id) {
+    if (sample.retrieved.indexOf(id) < 0) rows.push('<div class="eval-evidence-item dropped"><span class="e-dot"></span><div><code>' + esc(id) + '</code><span>引用但不在 available · fabricated</span></div></div>');
+  });
+  evidence.innerHTML = rows.join("") || '<div class="empty" style="padding:15px">没有 retrieved 片段</div>';
+  $("eval-result-note").innerHTML = (fabricated.length
+    ? '<div class="notice bad"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg><div>发现 <b>' + fabricated.length + '</b> 条 fabricated 引用：' + esc(fabricated.join(", ")) + '</div></div>'
+    : '<div class="notice info"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg><div>本地预览完成：要点召回 <b>' + recall.toFixed(2) + '</b>，当前没有 fabricated 引用。</div></div>');
+}
+function fillEvalExample() {
+  $("eval-task").value = "redis-expire";
+  $("eval-run").value = "run_agentos_preview";
+  $("eval-question").value = "How do I set a timeout on a key?";
+  $("eval-answer").value = "Use EXPIRE key seconds to set a timeout.";
+  $("eval-retrieved").value = "redis:expire:001, redis:expire:002";
+  $("eval-available").value = "redis:expire:001";
+  $("eval-citations").value = "redis:expire:001";
+  $("eval-dropped").value = "redis:expire:002";
+  renderEvalResult(evalSample());
+  toast("info", "已填充示例", "现在可以修改答案或 citations，再点预览评分");
+}
+async function importEvalSample(file) {
+  if (!file) return;
+  try {
+    const raw = JSON.parse(await file.text());
+    const answer = raw.answer || {};
+    const available = raw.available || raw.context || [];
+    $("eval-run").value = raw.agentos_run_id || "";
+    $("eval-task").value = raw.task_id || "";
+    $("eval-question").value = raw.question || "";
+    $("eval-answer").value = typeof answer === "string" ? answer : (answer.text || "");
+    $("eval-retrieved").value = (raw.retrieved || []).join(", ");
+    $("eval-available").value = Array.isArray(available) ? available.map(function (x) { return typeof x === "string" ? x : x.key; }).join(", ") : "";
+    $("eval-citations").value = (answer.citations || raw.citations || []).join(", ");
+    $("eval-dropped").value = (raw.dropped_budget || []).map(function (x) { return Array.isArray(x) ? x[0] : x.key; }).join(", ");
+    $("eval-file-name").textContent = file.name;
+    renderEvalResult(evalSample());
+    toast("ok", "样本已导入", "已转换为本地预览，不会自动提交到后端");
+  } catch (err) {
+    toast("er", "JSON 导入失败", "文件不是有效的 AgentOSSample JSON");
+  }
+}
+function evalLiveIsStopped(v) {
+  if (!v) return true;
+  return ["completed", "failed", "cancelled", "suspended"].indexOf(String(v.status)) >= 0 || !!v.pending_approval || !!v.waiting_for;
+}
+function renderEvalLiveRun(v) {
+  if (!v) return;
+  $("eval-live-run").textContent = v.run_id || "—";
+  $("eval-live-run-status").textContent = v.status || "—";
+  $("eval-live-steps").textContent = v.step_count == null ? "0" : String(v.step_count);
+  $("eval-live-outcome").textContent = v.last_outcome || "—";
+  $("eval-live-status").textContent = v.pending_approval ? "等待审批" : (v.waiting_for ? "等待外部结果" : (v.status || "已连接"));
+}
+function renderEvalLiveTrace(t) {
+  const el = $("eval-live-timeline");
+  const entries = t && t.entries ? t.entries : [];
+  if (!entries.length) {
+    el.innerHTML = '<div class="empty"><div class="t">账本还没有事件</div>等待后端写入第一步。</div>';
+    return;
+  }
+  el.innerHTML = entries.map(function (e, i) {
+    const km = kindMeta(e.kind);
+    const ids = [];
+    if (e.step_id) ids.push("step " + e.step_id);
+    if (e.task_id) ids.push("task " + e.task_id);
+    if (e.execution_id) ids.push("exec " + e.execution_id);
+    const payload = e.payload && Object.keys(e.payload).length
+      ? '<pre class="payload">' + esc(JSON.stringify(e.payload, null, 2)) + '</pre>' : "";
+    const served = e.served && Object.keys(e.served).length
+      ? '<pre class="payload">served ' + esc(JSON.stringify(e.served, null, 2)) + '</pre>' : "";
+    return '<div class="tl-e k-' + km.c + '" style="animation-delay:' + Math.min(i * 18, 260) + 'ms">' +
+      '<div class="tl-top"><span class="tl-kind">' + esc(e.kind || "?") + '</span>' +
+      '<span class="tag">' + esc(km.g) + '</span><span class="tl-seq">#' + esc(e.seq) + ' · ' + esc(fmtTime(e.at)) + '</span></div>' +
+      (e.summary ? '<div class="tl-sum">' + esc(e.summary) + '</div>' : "") +
+      (ids.length ? '<div class="tl-ids">' + ids.map(function (x) { return '<span class="tag">' + esc(x) + '</span>'; }).join("") + '</div>' : "") +
+      payload + served + '</div>';
+  }).join("");
+  el.scrollTop = el.scrollHeight;
+}
+async function pullEvalLive(run_id) {
+  const r = await api("GET", "/runs/" + encodeURIComponent(run_id));
+  if (!r.ok) {
+    $("eval-live-status").textContent = "查询失败";
+    toast("er", "实时 Run 查询失败", esc(errMsg(r)));
+    return null;
+  }
+  state.runId = run_id;
+  state.run = r.data;
+  state.answer = await fetchAnswer(run_id);
+  renderEvalLiveRun(r.data);
+  renderRun();
+  const tr = await api("GET", "/runs/" + encodeURIComponent(run_id) + "/trace");
+  if (tr.ok) {
+    state.trace = tr.data;
+    renderEvalLiveTrace(tr.data);
+    renderTrace();
+  }
+  return r.data;
+}
+function stopEvalLive(message) {
+  state.evalLive.running = false;
+  if (state.evalLive.timer) clearTimeout(state.evalLive.timer);
+  state.evalLive.timer = null;
+  $("btn-eval-stop").disabled = true;
+  $("btn-eval-resume").disabled = !state.evalLive.runId;
+  if (message) $("eval-live-status").textContent = message;
+}
+async function evalLiveTick() {
+  const run_id = state.evalLive.runId;
+  if (!run_id || !state.evalLive.running) return;
+  const v = await pullEvalLive(run_id);
+  if (!v) { stopEvalLive("查询失败"); return; }
+  if (evalLiveIsStopped(v)) {
+    stopEvalLive(v.pending_approval ? "等待审批" : (v.waiting_for ? "等待外部结果" : "已到终态"));
+    toast(v.pending_approval ? "info" : "ok", "后端已停止推进", "状态 " + (v.status || "unknown") + " · 每一步已写入账本");
+    await refreshAll();
+    return;
+  }
+  const r = await api("POST", "/runs/" + encodeURIComponent(run_id) + "/step", {});
+  if (!r.ok && r.status !== 409) {
+    stopEvalLive("推进失败");
+    toast("er", "后端推进失败", esc(errMsg(r)));
+    return;
+  }
+  if (r.ok) { state.run = r.data; renderEvalLiveRun(r.data); renderRun(); }
+  const delay = Math.max(200, Number($("eval-live-delay").value) || 800);
+  state.evalLive.timer = setTimeout(evalLiveTick, delay);
+}
+async function startEvalLive() {
+  const agent_id = $("eval-agent-real").value.trim();
+  const request = $("eval-question-real").value.trim();
+  if (!agent_id || !request) { toast("er", "Agent 和问题都必填", "真实提问需要一个 agent_id 和 user_request"); return; }
+  stopEvalLive();
+  const btn = $("btn-eval-ask");
+  busy(btn, true, "创建 Run 中");
+  const v = await startRun(agent_id, request, "", btn);
+  busy(btn, false);
+  if (!v) { $("eval-live-status").textContent = "创建失败"; return; }
+  state.evalLive.runId = v.run_id;
+  $("btn-eval-stop").disabled = false;
+  $("btn-eval-resume").disabled = true;
+  state.evalLive.running = true;
+  $("eval-live-status").textContent = "实时推进中";
+  await evalLiveTick();
 }
 
 /* ============================================================
@@ -1188,11 +1632,19 @@ async function loadRun(run_id, opts) {
   }
   state.runId = run_id;
   state.run = r.data;
+  state.answer = await fetchAnswer(run_id);
   renderRun();
   renderRunList();
   const tr = $("trace-rid");
   if (tr) tr.value = run_id;
   return true;
+}
+
+async function fetchAnswer(run_id) {
+  /* M93：回答是只读的派生事实（`GET /runs/{id}/answer`），
+     读不到就留空 —— 不拿别的字段冒充"答过了"。 */
+  const a = await api("GET", "/runs/" + encodeURIComponent(run_id) + "/answer");
+  return (a.ok && a.data && a.data.answer) ? String(a.data.answer) : "";
 }
 
 async function loadTrace(run_id) {
@@ -1268,6 +1720,7 @@ async function advance(run_id, mode) {
   busy(btn, false);
   if (!r.ok) { toast("er", "推进失败", esc(errMsg(r))); return; }
   state.run = r.data;
+  state.answer = await fetchAnswer(run_id);
   renderRun();
   const o = r.data.last_outcome;
   toast((r.data.status === "suspended") ? "info" : "ok", "推进完成",
@@ -1421,14 +1874,52 @@ $("btn-trace-use").addEventListener("click", function () {
   loadTrace(state.runId);
 });
 
+$("btn-eval-ask").addEventListener("click", startEvalLive);
+$("btn-eval-stop").addEventListener("click", function () {
+  stopEvalLive("已停止轮询，Run 本身没有被取消");
+  toast("info", "已停止轮询", "AgentOS Run 仍然存在，可稍后点击继续追踪");
+});
+$("btn-eval-resume").addEventListener("click", async function () {
+  if (!state.evalLive.runId) return;
+  state.evalLive.running = true;
+  $("btn-eval-stop").disabled = false;
+  $("btn-eval-resume").disabled = true;
+  $("eval-live-status").textContent = "继续查询中";
+  await evalLiveTick();
+});
+$("btn-eval-fill").addEventListener("click", fillEvalExample);
+$("btn-eval-score").addEventListener("click", function () {
+  renderEvalResult(evalSample());
+  toast("ok", "预览完成", "这是本地规则式评分，不会调用模型");
+});
+$("eval-file").addEventListener("change", function (e) {
+  importEvalSample(e.target.files && e.target.files[0]);
+});
+document.addEventListener("click", function (e) {
+  const copy = e.target.closest(".eval-copy");
+  if (!copy) return;
+  const cmd = copy.dataset.cmd || "";
+  navigator.clipboard && navigator.clipboard.writeText(cmd).then(function () {
+    toast("ok", "命令已复制", "可以粘贴到 Git Bash 执行");
+  }).catch(function () { toast("info", "复制失败", "请手动复制命令"); });
+});
+
 /* ============================================================
    启动
    ============================================================ */
 (async function init() {
   loadHistory();
   renderRunList();
+  renderEvalResult(evalSample());
   await refreshAll();
-  if (state.history.length) await loadRun(state.history[0].run_id, { quiet: true });
+  // M93：聊天页的「查看详情」带 ?run=<id> 过来 —— 直接选中那一条并跳到 Runs。
+  const wanted = new URLSearchParams(location.search).get("run");
+  if (wanted) {
+    await loadRun(wanted, { quiet: true });
+    go("runs");
+  } else if (state.history.length) {
+    await loadRun(state.history[0].run_id, { quiet: true });
+  }
 })();
 </script>
 </body>

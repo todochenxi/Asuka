@@ -79,6 +79,18 @@ EXECUTABLE_ACTION_TYPES: frozenset[ActionType] = (
 RISK_PRIORITY = {"low": 0, "medium": -1, "high": -2}
 
 
+def _is_fan_out(action: Action) -> bool:
+    """一个 Action 是否声明了**扇出**（§2.3：Step → Task = 1:N）。
+
+    扇出的载体是 `action.payload["tasks"]`：一个 `{tool, args}` 的列表。
+    刻意**不**新造一个 `ActionType.FAN_OUT` —— 那会多一个"声明了却没人管"的
+    枚举值（M88/M90 的老毛病）。扇出是**同一个 Action 产生多个 Task**，
+    不是一种新的动作。
+    """
+    tasks = action.payload.get("tasks")
+    return isinstance(tasks, (list, tuple)) and len(tasks) > 0
+
+
 class TaskFactory:
     """把 Action 变成 Task。这是 Runtime → Kernel 的唯一入口。"""
 
@@ -91,6 +103,72 @@ class TaskFactory:
         *,
         step_id: str | None = None,
         extra_payload: Mapping[str, Any] | None = None,
+    ) -> Task:
+        """单个 Task。**扇出 Action 走 `from_actions()`** —— 见那里的理由。"""
+        if _is_fan_out(action):
+            raise InvariantViolation(
+                "I-4: this action declares fan-out (payload['tasks']); it yields "
+                "several Tasks and must go through from_actions(), not from_action() "
+                "— otherwise the extra branches are silently dropped"
+            )
+        return self._build(action, step_id=step_id, extra_payload=extra_payload, branch=None)
+
+    def from_actions(
+        self,
+        action: Action,
+        *,
+        step_id: str | None = None,
+        extra_payload: Mapping[str, Any] | None = None,
+    ) -> list[Task]:
+        """一个 Action → **一个或多个** Task（基线 §2.3：`Step : Task = 1 : N`）。
+
+        ------------------------------------------------------------------
+        为什么扇出是"同一 Action 多个分支"
+
+        一个 Step 是"逻辑执行节点"（做什么），它可以被拆成多个可调度的 Task
+        （谁去跑）：fan-out / parallel / batch / DAG。它们**属于同一个 Step**，
+        所以 `step_id` 是同一个 —— 这正是 B-6 那句"`Step.add_task()` 支持 1:N"。
+
+        ------------------------------------------------------------------
+        `tasks` 列表为什么是 `{tool, args}` 而不是完整的 Action
+
+        子任务只表达"还要做这几件事"，动作类型取自**父 Action**（`action_type` /
+        `risk_level` / `timeout` / `run_id` 全部继承）。让每个分支各写一份完整
+        Action，就会冒出"这个分支的 risk 和父不一样吗"这类没有答案的问题。
+
+        非扇出 Action（没有 `payload["tasks"]`）⇒ 返回**恰好一个** Task ——
+        于是所有既有路径的语义一字不改（1:1 是 1:N 的特例）。
+        """
+        if not _is_fan_out(action):
+            return [self._build(action, step_id=step_id, extra_payload=extra_payload, branch=None)]
+
+        tasks: list[Task] = []
+        for index, branch in enumerate(action.payload["tasks"]):
+            if not isinstance(branch, Mapping):
+                raise InvariantViolation(
+                    f"I-4: fan-out branch #{index} must be a mapping like "
+                    f"{{'tool': ..., 'args': ...}}, got {type(branch).__name__}"
+                )
+            # 分支覆盖 `payload`（tool / args），但 `tool` 缺失要让 `_build` 去报 ——
+            # 与单任务路径同一条判据（ToolCallExecutor 也要 payload.tool）。
+            tasks.append(
+                self._build(
+                    action,
+                    step_id=step_id,
+                    extra_payload=extra_payload,
+                    branch=branch,
+                )
+            )
+        return tasks
+
+    # ------------------------------------------------------------ 内部
+    def _build(
+        self,
+        action: Action,
+        *,
+        step_id: str | None,
+        extra_payload: Mapping[str, Any] | None,
+        branch: Mapping[str, Any] | None,
     ) -> Task:
         mapping = ACTION_TO_TASK.get(action.action_type)
         if mapping is None:
@@ -113,6 +191,12 @@ class TaskFactory:
         task_type, executor_type = mapping
 
         payload = dict(action.to_task_kwargs()["payload"])
+        if branch is not None:
+            # 分支只覆盖"做什么"（tool / args），其余继承父 Action。
+            payload.update(dict(branch))
+            # 扇出标记：`tasks` 列表**不进 Task payload**（它描述的是父子关系，
+            # 不是这一片要执行什么），否则每个分支都会背上整张列表。
+            payload.pop("tasks", None)
         payload.update(extra_payload or {})
         # risk_level 跟下去，Worker / Harness 才能按风险决定是否放行
         payload["risk_level"] = action.risk_level.value

@@ -9,6 +9,23 @@ metadata:
   namespace: agentos
 spec:
   replicas: 1
+  # M102 · 滚动更新 / 金丝雀 / 回滚（M7）。
+  #
+  # `maxUnavailable: 0` + `maxSurge: 1` = **零停机**：先起一个新 Pod，
+  # 等它过 readiness（真的连一次库）再摘掉一个旧的。少了这条，
+  # 默认的 25%/25% 会在只有一个副本时先把唯一的旧 Pod 摘掉 ——
+  # 那一刻 Service 后面一个 endpoint 都没有。
+  #
+  # 金丝雀与回滚都不需要额外清单，K8s 原生就有：
+  #   金丝雀   `kubectl set image ... && kubectl rollout pause ...`
+  #            （新 Pod 只接一份流量，盯一会儿）
+  #   放量     `kubectl rollout resume ...`
+  #   回滚     `kubectl rollout undo ...`（ReplicaSet 保留上一版，秒回）
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: agentos-api
@@ -25,7 +42,7 @@ spec:
         # 于是"忘记先跑迁移 Job"不会变成一次上线事故，
         # 只会变成多跑几次空操作。
         - name: migrate
-          image: agentos:2.1.78-b1
+          image: agentos:2.1.80-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.migrate", "apply"]
           env:
@@ -42,7 +59,7 @@ spec:
               readOnly: true
       containers:
         - name: api
-          image: agentos:2.1.78-b1
+          image: agentos:2.1.80-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.api"]
           env:

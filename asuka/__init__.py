@@ -72,6 +72,8 @@
 from __future__ import annotations
 
 __all__ = [
+    "agentos_adapter",
+    "agentos_eval",
     "answers",
     "compare",
     "context",
@@ -81,6 +83,7 @@ __all__ = [
     "evaluate",
     "index",
     "kb",
+    "prompting",
     "regression",
     "splitters",
     "textutil",

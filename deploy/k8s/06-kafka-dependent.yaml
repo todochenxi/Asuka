@@ -61,7 +61,7 @@ spec:
     spec:
       containers:
         - name: outbox-publisher
-          image: agentos:2.1.78-b1
+          image: agentos:2.1.80-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.outbox_publisher"]
           env:
@@ -103,7 +103,7 @@ spec:
     spec:
       containers:
         - name: child-run-consumer
-          image: agentos:2.1.78-b1
+          image: agentos:2.1.80-b1
           imagePullPolicy: IfNotPresent
           command: ["python", "-m", "apps.child_run_consumer"]
           env:

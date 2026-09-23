@@ -26,6 +26,14 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from packages.agent_context.assembler import ContextAssembler
+from packages.agent_harness.cost import Budget
+from packages.agent_harness.guardrail import (
+    GuardrailEngine,
+    SecretPatternGuardrail,
+    SensitiveTopicGuardrail,
+)
+from packages.agent_harness.harness import Harness
 from packages.agent_runtime.model_gateway import (
     CompletionRequest,
     CompletionResponse,
@@ -148,6 +156,16 @@ def build_model_gateway() -> ModelGateway:
 # 智能体栈（M24）
 # ---------------------------------------------------------------------------
 
+#: 聊天页用的 agent（M93）。它的目标是"问一句、拿一句回答"，
+#: 所以**不**走治理闸门（`approval_at_step=0`）—— 否则每问一句都要先去
+#: 控制台点一次批准，聊天根本没法用。
+#:
+#: 审批演示用**别的** agent id（控制台里填 `agent-it` 即可）：审批这条路由
+#: 治理层触发（`risk_level >= HIGH` → `REQUIRE_APPROVAL`），不由智能体决定，
+#: 所以"要不要审批"是**栈的配置**，不是这一次请求的字段 —— 用 agent id 选栈
+#: 正好落在 `make_stack(agent_id, approvals)` 这个既有入口上。
+CHAT_AGENT_ID = "agent-chat"
+
 
 class DemoInterpreter:
     """把用户请求变成一个 Goal。"""
@@ -255,7 +273,7 @@ class DemoDecisionEngine:
             action = Action(
                 run_id=state.run_id,
                 action_type=ActionType.LLM_CALL,
-                payload={"prompt": "hello"},
+                payload={"prompt": state.goal.objective},
             )
         elif self.approval_at_step and self.calls == self.approval_at_step:
             # 一个会**在外部世界留状态**的动作（`note.write` 是 WRITE 工具）。
@@ -280,6 +298,9 @@ def build_stack_factory(
     snapshots: Any = None,
     compensations: Any = None,
     cancellations: Any = None,
+    context_snapshots: Any = None,
+    memory: Any = None,
+    budget: Any = None,
     approval_at_step: int = 0,
 ) -> Any:
     """`AGENTOS_STACK_PROVIDER` 的实现：返回 `(agent_id, approvals) -> RuntimeStack`。
@@ -310,9 +331,42 @@ def build_stack_factory(
     )
 
     gateway = build_model_gateway()
+    if config is not None:
+        model_provider = str(getattr(config, "model_provider", "") or "")
+        if model_provider:
+            module_name, _, attr = model_provider.partition(":")
+            if module_name and attr:
+                import importlib
+
+                gateway = getattr(importlib.import_module(module_name), attr)()
     tool_runtime = build_tool_runtime()
     interpreter = DemoInterpreter()
     planner = DemoPlanner()
+    # M95：把 Harness 的两样"有模块、没接线"接上 ——
+    #   · ContextAssembler：Runtime 组装 Context 并发快照（C-2；loop 早已支持，只是没人传）
+    #   · 护栏：OUTPUT 阶段真的查密钥泄漏；INPUT 阶段的敏感词表默认空（不误伤）
+    # 两者都不改变没有它们时的行为：没有 assembler 就不发快照，没有规则就永远 passed。
+    #
+    # M96：memory_provider 接到**同一份** MemoryManager —— Loop 写（完成时一条
+    # episodic）、Assembler 读，写和读必须是同一份，否则"记不住"而两边都不报错。
+    def _memory_provider(agent_id: str):
+        def provider(request: Any) -> Any:
+            if memory is None:
+                return ()
+            query = request.messages[-1][1] if request.messages else ""
+            return memory.recall(subject=agent_id, query=query)
+
+        return provider
+
+    def _assembler_for(agent_id: str) -> ContextAssembler:
+        kwargs: dict[str, Any] = {"memory_provider": _memory_provider(agent_id)}
+        if context_snapshots is not None:
+            kwargs["snapshots"] = context_snapshots
+        return ContextAssembler(**kwargs)
+
+    guardrails = GuardrailEngine(
+        guardrails=(SecretPatternGuardrail(), SensitiveTopicGuardrail())
+    )
     # 共享一份：登记处是**跨 Run 的账本**，不是某个 Run 的私有状态
     # （与 approvals / compensations 同一条判据）。
     registry = child_registry if child_registry is not None else ChildRunRegistry()
@@ -327,17 +381,25 @@ def build_stack_factory(
         spawner = InProcessChildRunSpawner(
             factory=make_stack, approvals=approvals, registry=registry
         )
+        # 聊天 agent 不触发审批闸门（M93）：见 `CHAT_AGENT_ID`。
+        step_for_approval = 0 if agent_id == CHAT_AGENT_ID else approval_at_step
+        harness = Harness.default(
+            budget=budget or Budget(), approval_store=approvals, guardrails=guardrails
+        )
         return assemble_runtime_stack(
             agent_id=agent_id,
             interpreter=interpreter,
             planner=planner,
             # 每个 Run 一个 DecisionEngine：它是**有状态的**（第几步了），
             # 跨 Run 共享会让第二个 Run 直接 FINISH。
-            decision_engine=DemoDecisionEngine(approval_at_step=approval_at_step),
+            decision_engine=DemoDecisionEngine(approval_at_step=step_for_approval),
             gateway=gateway,
             tool_runtime=tool_runtime,
             kernel=kernel,
             clock=clock,
+            harness=harness,
+            context_assembler=_assembler_for(agent_id),
+            memory=memory,
             approval_store=approvals,
             snapshots=snapshots,
             compensations=compensations,
@@ -356,6 +418,9 @@ def build_approval_demo_stack_factory(
     snapshots: Any = None,
     compensations: Any = None,
     cancellations: Any = None,
+    context_snapshots: Any = None,
+    memory: Any = None,
+    budget: Any = None,
 ) -> Any:
     """`AGENTOS_STACK_PROVIDER` 的**带审批**变体：第 2 步会被治理层拦下。
 
@@ -384,10 +449,14 @@ def build_approval_demo_stack_factory(
         snapshots=snapshots,
         compensations=compensations,
         cancellations=cancellations,
+        context_snapshots=context_snapshots,
+        memory=memory,
+        budget=budget,
     )
 
 
 __all__ = [
+    "CHAT_AGENT_ID",
     "build_approval_demo_stack_factory",
     "build_model_gateway",
     "build_stack_factory",

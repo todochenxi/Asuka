@@ -61,11 +61,16 @@ class PolicyRule:
     tools: frozenset[str] | None = None
     tenants: frozenset[str] | None = None
     min_risk: RiskLevel | None = None
+    #: M101：按 `PolicyContext.attributes` 精确匹配（策略即数据要能表达"环境"）。
+    #: 全部键都要相等才算命中；缺一个键就是不匹配。
+    attributes: Mapping[str, Any] | None = None
     priority: int = 0
 
     def __post_init__(self) -> None:
         if not self.name:
             raise InvariantViolation("PolicyRule.name is required")
+        if self.attributes is not None:
+            object.__setattr__(self, "attributes", dict(self.attributes))
 
     def matches(self, action: Action, ctx: PolicyContext) -> bool:
         if self.action_types is not None and action.action_type not in self.action_types:
@@ -78,6 +83,10 @@ class PolicyRule:
                 return False
         if self.tenants is not None and ctx.tenant_id not in self.tenants:
             return False
+        if self.attributes is not None:
+            for key, expected in self.attributes.items():
+                if ctx.attributes.get(key) != expected:
+                    return False
         return True
 
 
@@ -106,7 +115,18 @@ class PolicyEngine:
         for rule in sorted(self.rules, key=lambda r: -r.priority):
             if rule.matches(action, ctx):
                 return PolicyDecision(verdict=rule.verdict, rule=rule.name, reason=rule.reason)
-        return PolicyDecision(verdict=self.default_verdict, rule="default", reason="")
+        # M101 抓到的真 bug：`default_verdict=DENY` 以前会**当场抛 H-1**
+        # （`PolicyDecision` 要求非 ALLOW 必须带 reason，而这里给了空串）。
+        # 后果不是"默认拒绝不生效"，而是"引擎一走到默认分支就崩" ——
+        # 一份 `default: deny` 的策略根本表达不出来。默认拒绝的 reason 就是
+        # "没有任何规则命中"，把它写出来既满足 H-1，也让审计读得到原因。
+        if self.default_verdict is Verdict.ALLOW:
+            return PolicyDecision(verdict=Verdict.ALLOW, rule="default", reason="")
+        return PolicyDecision(
+            verdict=self.default_verdict,
+            rule="default",
+            reason="no rule matched; the policy's explicit default verdict applies",
+        )
 
     # ------------------------------------------------------------ 便捷构造
     @classmethod

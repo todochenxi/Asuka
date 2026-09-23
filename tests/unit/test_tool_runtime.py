@@ -21,6 +21,8 @@ from packages.agent_domain.execution.task import ExecutorType, Task, TaskType
 from packages.agent_runtime.executors import ToolCallExecutor
 from packages.agent_runtime.tool_runtime import (
     FunctionInvoker,
+    SandboxedCommandInvoker,
+    SandboxProfile,
     SideEffect,
     ToolCall,
     ToolExecutionError,
@@ -265,12 +267,34 @@ class BoundaryTest(unittest.TestCase):
                     self.assertNotIn("execution_kernel", s, f"{path.name}: {s}")
 
     def test_t6_protocol_is_just_a_field(self) -> None:
-        """T-6：换个协议不需要换 Runtime —— 只换 Invoker。"""
+        """T-6：换个协议不需要换 Runtime —— 只换 Invoker。
+
+        ⚠️ M101 收窄了它**一处**：`protocol=SANDBOX` 必须配一个
+        `SandboxedInvoker` —— 声明了沙箱就得真的跑在沙箱里（见下一条）。
+        """
         for protocol in ToolProtocol:
+            if protocol is ToolProtocol.SANDBOX:
+                continue
             reg = ToolRegistry()
             reg.register(spec("t", "1.0.0", protocol=protocol), RecordingInvoker())
             result = ToolRuntime(reg).call("t", {})
             self.assertIs(result.protocol, protocol)
+
+    def test_a_declared_sandbox_needs_a_real_sandbox_invoker(self) -> None:
+        """M101：`protocol=sandbox` 配裸 Invoker 是句谎话 —— 注册期拒绝。"""
+        reg = ToolRegistry()
+        with self.assertRaises(ValueError) as ctx:
+            reg.register(
+                spec("t", "1.0.0", protocol=ToolProtocol.SANDBOX), RecordingInvoker()
+            )
+        self.assertIn("sandbox", str(ctx.exception).lower())
+
+        # 配了真的沙箱 Invoker 就能注册（协议字段本身照常保留）
+        reg.register(
+            spec("t", "1.0.0", protocol=ToolProtocol.SANDBOX),
+            SandboxedCommandInvoker(profile=SandboxProfile()),
+        )
+        self.assertTrue(reg.has("t"))
 
 
 class TimeoutTest(unittest.TestCase):

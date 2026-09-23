@@ -73,6 +73,8 @@ from packages.agent_domain.intelligence.state import State
 from packages.agent_runtime.loop import (
     PLAN_BELONGS_TO_ANOTHER_RUN,
     PLAN_NODE_KIND_NOT_EXECUTABLE,
+    PLAN_RESOURCE_UNAVAILABLE,
+    PLAN_TOOL_NOT_FOUND,
     AgentLoop,
     PlanDefect,
     StepOutcome,
@@ -124,14 +126,14 @@ class ForeignPlanPlanner:
 
 
 class ForeignAndUnexecutablePlanner:
-    """两个缺陷**同时**成立：计划是别人的，而且里面有跑不了的 kind。"""
+    """两个缺陷**同时**成立：计划是别人的，且有个节点运行时跑不了。"""
 
     def plan(self, state):  # noqa: ANN001, ANN201
         return Plan(
             run_id=new_run(),
             nodes=(
                 PlanNode(node_id="n0", name="zero"),
-                PlanNode(node_id="gate", name="needs-a-human", kind="human"),
+                PlanNode(node_id="gate", name="needs-a-gpu", resource_labels=("gpu",)),
             ),
         )
 
@@ -164,6 +166,13 @@ class _Base(unittest.TestCase):
 
         base = MinimalLoopTest("test_full_loop_reaches_goal")
         base.setUp()
+        # M99：给 worker 一份**自述的**资源能力，计划期的 Resource 判据才有答案。
+        from packages.execution_kernel.scheduler import WorkerCapability
+
+        base.worker.capability = WorkerCapability(
+            executors=frozenset(base.worker.executors),
+            labels=frozenset({"cpu"}),
+        )
         loop = AgentLoop(
             kernel=base.kernel,
             worker=base.worker,
@@ -351,24 +360,47 @@ class PlanDefectsIsTheOneGateTest(unittest.TestCase):
             run_id=new_run(),
             nodes=(
                 PlanNode(node_id="ok", name="ordinary"),
-                PlanNode(node_id="gate", name="needs-a-human", kind="human"),
+                PlanNode(
+                    node_id="gate",
+                    name="needs-a-missing-tool",
+                    kind="tool",
+                    tool="tool-this-runtime-lacks",
+                ),
             ),
         )
-        codes = [d.code for d in plan_defects(plan, run_id=new_run())]
+        codes = [
+            d.code
+            for d in plan_defects(
+                plan, run_id=new_run(), known_tools=frozenset({"some-tool"})
+            )
+        ]
 
         self.assertIn(PLAN_BELONGS_TO_ANOTHER_RUN, codes)
-        self.assertIn(PLAN_NODE_KIND_NOT_EXECUTABLE, codes)
+        self.assertIn(PLAN_TOOL_NOT_FOUND, codes)
 
-    def test_a_matching_plan_with_an_unexecutable_kind_reports_only_the_kind(self) -> None:
-        """反向隔离：归属对得上时，理由里**不许**出现归属那条码。"""
+    def test_a_matching_plan_with_an_unexecutable_node_reports_only_that(self) -> None:
+        """反向隔离：归属对得上时，理由里**不许**出现归属那条码。
+
+        M99：五个 kind 全部可执行，"执行不了"改由 `PLAN_TOOL_NOT_FOUND` 承载。
+        """
         run_id = new_run()
         plan = Plan(
             run_id=run_id,
-            nodes=(PlanNode(node_id="gate", name="h", kind="human"),),
+            nodes=(
+                PlanNode(
+                    node_id="gate",
+                    name="needs-a-missing-tool",
+                    kind="tool",
+                    tool="tool-this-runtime-lacks",
+                ),
+            ),
         )
-        codes = [d.code for d in plan_defects(plan, run_id=run_id)]
+        codes = [
+            d.code
+            for d in plan_defects(plan, run_id=run_id, known_tools=frozenset({"some-tool"}))
+        ]
 
-        self.assertEqual(codes, [PLAN_NODE_KIND_NOT_EXECUTABLE])
+        self.assertEqual(codes, [PLAN_TOOL_NOT_FOUND])
 
 
 # ============================================================ 4. 恢复路径
@@ -461,7 +493,7 @@ class TheTwoDefectsDoNotHideEachOtherTest(_Base):
         reason = _terminal_reason(loop)
 
         self.assertIn(PLAN_BELONGS_TO_ANOTHER_RUN, reason)
-        self.assertIn(PLAN_NODE_KIND_NOT_EXECUTABLE, reason)
+        self.assertIn(PLAN_RESOURCE_UNAVAILABLE, reason)
         self.assertIn("gate", reason)          # 哪个节点跑不了
         self.assertEqual(loop.steps, 0)
 

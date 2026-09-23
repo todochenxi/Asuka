@@ -71,6 +71,7 @@ from packages.agent_domain.intelligence.state import State
 from packages.agent_harness.approval import ApprovalRequest, ApprovalStatus, HumanLoop
 from packages.agent_harness.harness import Harness
 from packages.agent_context.assembler import ContextAssembler, ContextRequest
+from packages.agent_context.memory import MemoryLayer
 from packages.agent_harness.policy import PolicyContext, Verdict
 from packages.execution_kernel.kernel import ExecutionKernel
 from packages.execution_kernel.worker import Worker, WorkerOutcome
@@ -92,6 +93,7 @@ from .trace import (
     CHECKPOINT,
     CONTEXT,
     FINISHED,
+    GUARDRAIL,
     OBSERVED,
     COMPENSATION_DEFERRED,
     COMPENSATION_DONE,
@@ -198,6 +200,23 @@ def _child_verb(outcome: str) -> str:
     )
 
 
+def _findings(findings: Any) -> list[dict[str, str]]:
+    """护栏结论的可序列化形式（进账本，所以只留字符串字段）。"""
+    return [
+        {
+            "guardrail": str(f.guardrail),
+            "stage": f.stage.value,
+            "severity": f.severity.value,
+            "message": str(f.message),
+        }
+        for f in findings
+    ]
+
+
+def _finding_text(findings: Any) -> str:
+    return "; ".join(f"{f.guardrail}: {f.message}" for f in findings)
+
+
 #: I-18：这个运行时**真的能执行**的 `PlanNode.kind` 集合。
 #:
 #: 现在只有 `TASK`，这不是"还没做完"，而是**事实**：
@@ -223,7 +242,51 @@ def _child_verb(outcome: str) -> str:
 #:
 #: M12 落地真正的按 kind 分派时，这个集合随之扩大 ——
 #: 扩大的那一刻，"声明"与"能力"重新对齐，拒绝自动消失。
-SUPPORTED_PLAN_NODE_KINDS: frozenset[PlanNodeKind] = frozenset({PlanNodeKind.TASK})
+#:
+#: M99：`agent` 与 `decision` 也进来了。它们此前是**诚实拒绝**（I-18）——
+#: 因为那时运行时没有对应的分派路径。现在有了：
+#:
+#:   · `agent`     → `ActionType.AGENT_DELEGATION`（派生子 Run，M25 早就在跑）
+#:   · `decision`  → `ActionType.REPLAN` 之外的纯决策步其实不产生 Action……
+#:                   但它在下层没有独立执行路径，所以见下方 `PLAN_NODE_ACTION_TYPES`
+#:                   的说明：`decision` 允许的是一组**不产生副作用**的动作。
+#:
+#: ⚠️ "进来"必须**真实**：每加一个 kind，`PLAN_NODE_ACTION_TYPES` 里就要有对应的
+#: Action 集合，否则它只是换了个地方说谎（声明支持、实际走到拒）。
+SUPPORTED_PLAN_NODE_KINDS: frozenset[PlanNodeKind] = frozenset(
+    {
+        PlanNodeKind.TASK,
+        PlanNodeKind.TOOL,
+        PlanNodeKind.HUMAN,
+        PlanNodeKind.AGENT,
+        PlanNodeKind.DECISION,
+    }
+)
+
+#: M12 / I-21：计划节点的声明必须和 Decision 交回的 Action 对得上。
+#:
+#: `task` 是通用节点，允许所有当前可执行的 Action；其余都是有语义的声明，
+#: 不能被一个看似合法但完全不同的 Action 静默替代。
+#:
+#: | kind       | 允许的 Action | 落到哪条执行路径 |
+#: |---|---|---|
+#: | `task`     | 所有可执行 Action | 通用 |
+#: | `tool`     | `TOOL_CALL` | `TaskType.TOOL_CALL` |
+#: | `human`    | `HUMAN_APPROVAL` / `ASK_USER` | 审批闸门 |
+#: | `agent`    | `AGENT_DELEGATION` | 派生子 Run（M25） |
+#: | `decision` | `REPLAN`（纯决策，不产生 Task） | Loop 的重规划分支 |
+#:
+#: ⚠️ `decision` 只允许 `REPLAN`：它是**唯一**"不产生副作用、由 Loop 自己处理"
+#: 的决策动作（`FINISH` 是终态，归 `task` 的通用路径，不在这里再开一口）。
+#: 给 `decision` 放宽到 `EXECUTABLE_ACTION_TYPES` 的话，"这是一个纯决策节点"
+#: 就退化成了 `task` 的同义词 —— 声明再次失去区分力。
+PLAN_NODE_ACTION_TYPES: Mapping[PlanNodeKind, frozenset[ActionType]] = {
+    PlanNodeKind.TASK: EXECUTABLE_ACTION_TYPES,
+    PlanNodeKind.TOOL: frozenset({ActionType.TOOL_CALL}),
+    PlanNodeKind.HUMAN: frozenset({ActionType.HUMAN_APPROVAL, ActionType.ASK_USER}),
+    PlanNodeKind.AGENT: frozenset({ActionType.AGENT_DELEGATION}),
+    PlanNodeKind.DECISION: frozenset({ActionType.REPLAN}),
+}
 
 
 # ============================================================================
@@ -236,27 +299,29 @@ SUPPORTED_PLAN_NODE_KINDS: frozenset[PlanNodeKind] = frozenset({PlanNodeKind.TAS
 #
 # 并列出 Validator 要检查的七项。M87 实证「全仓没有 Plan Validator」
 # （`plan.py` 的 docstring 曾把它说成"这里做领域级兜底"，把唯一的检查
-# 说成了备份）。M89 把这道门**建了起来 —— 只建它真的做得到的那部分**。
+# 说成了备份）。M89 把这道门**建了起来 —— 只建它真的做得到的那部分**；
+# M98（空洞 250）又补了 "Tool Exists" 一项。
 #
 # 七项逐项的真实归属（写在这里，是为了让读代码的人不必再去 grep 一遍）：
 #
 # | §32 的检查项 | 状态 | 实际住在哪 / 为什么不在 |
 # |---|---|---|
-# | DAG Cycle   | ✅ 有人做   | `Plan.assert_acyclic()` —— 领域层，构造时 |
-# | Dependency  | ✅ 有人做   | `_next_plan_node()`（I-16）—— 运行时取节点时 |
+# | DAG Cycle   | ✅ 计划期   | `Plan.assert_acyclic()` —— 领域层，构造时（这道门之前） |
+# | Dependency  | ✅ 计划期   | 同上一格：无环 ⇒ 必然有入口，构造期已拒（见下方"不需要再做一遍"）|
+# | Tool Exists | ✅ 计划期   | `plan_defects()` 的 `PLAN_TOOL_NOT_FOUND`（M98；`PlanNode.tool`）|
 # | Permission  | ⚠️ 换了时机 | Harness `before_action()` —— **每个动作执行前**，不是计划期 |
 # | Risk        | ⚠️ 换了时机 | Harness 的 `RiskLevel` 策略 —— 同上，逐步 |
 # | Budget      | ⚠️ 换了时机 | Loop 的 `steps >= budget` —— **执行时**拦，不是计划期 |
-# | Tool Exists | ❌ 无机制   | `PlanNode` **没有** `tool` 字段 —— 这项连表达都表达不了 |
-# | Resource    | ❌ 无机制   | 全仓没有任何 Resource 概念 |
+# | Resource    | ❌ 无机制   | 全仓没有任何 Resource 概念 —— 登记不治，不假装 |
 #
-# ⇒ 差的不是"七项里少做了几项"，是**一道门的位置**：
-#   §32 说计划**在执行之前**被审过一遍；实际是**每一步执行时**被审。
-#   后者允许"先跑了三个节点才发现这条路走不通" —— 而副作用已经发生了。
+# ⇒ Permission / Risk / Budget 三项**刻意不搬进计划期**：它们是**反复发生**的
+#   约束（每个动作、每次执行都要过），一次性检查冒充不了持续约束。
+#   §32 说"计划在执行之前被审过一遍"—— 这句话对**结构性**缺陷成立
+#   （上面三格 ✅），对**持续性**约束不成立，而后者本就该在执行期逐步拦。
+#   Resource 连表达都没有 —— 那是**登记不治**，不是"待办"。
 #
 # 下面 `plan_defects()` 就是那道门，它只做"**计划期一次性就能判死**的
-# 结构性问题"。它**不假装**做了另外五项：上面表里的"换了时机"与"无机制"
-# 都是**事实**，不是待办 —— 把事实写清楚，比造一个看起来像门的空壳诚实。
+# 结构性问题"。它**不假装**做了另外那几项。
 # ============================================================================
 
 #: 这份计划不是给这条 Run 的（I-19）。
@@ -264,6 +329,12 @@ PLAN_BELONGS_TO_ANOTHER_RUN = "PLAN_BELONGS_TO_ANOTHER_RUN"
 
 #: 计划里有运行时执行不了的 `PlanNode.kind`（I-18）。
 PLAN_NODE_KIND_NOT_EXECUTABLE = "PLAN_NODE_KIND_NOT_EXECUTABLE"
+
+#: 计划要调的工具，这个运行时**不认识**（M98 / §32 的 "Tool Exists"）。
+PLAN_TOOL_NOT_FOUND = "PLAN_TOOL_NOT_FOUND"
+
+#: 计划要求的资源标签，这个运行时**供不上**（M99 / §32 的 "Resource"）。
+PLAN_RESOURCE_UNAVAILABLE = "PLAN_RESOURCE_UNAVAILABLE"
 
 
 @dataclass(frozen=True)
@@ -309,8 +380,14 @@ def _unsupported_kinds_reason(offenders: list[PlanNode]) -> str:
     )
 
 
-def plan_defects(plan: Plan, *, run_id: str) -> list[PlanDefect]:
-    """**计划期**能判死的缺陷（§32 的「Plan Validator」，M89 落地）。
+def plan_defects(
+    plan: Plan,
+    *,
+    run_id: str,
+    known_tools: frozenset[str] | None = None,
+    available_resources: frozenset[str] | None = None,
+) -> list[PlanDefect]:
+    """**计划期**能判死的缺陷（§32 的「Plan Validator」）。
 
     调用点只有一个：`AgentLoop._step()` 的入口，**在 `decision_engine.decide()`
     与任何 Task 之前**。所以这里的每一条判据都自动获得两条性质：
@@ -322,6 +399,12 @@ def plan_defects(plan: Plan, *, run_id: str) -> list[PlanDefect]:
 
     参数里的 `run_id` 是**这条 Run** 的 id，由调用方给 —— 领域层不该知道
     "现在跑的是谁"（B-7），所以归属判据只能住在这里，不能住进 `Plan`。
+
+    `known_tools` 是**运行时真正认识的工具名集合**（M98）。它由调用方给：
+    ToolRegistry 属于 Runtime，不该让领域层去读（B-7）。给 `None` = 不校验
+    工具存在性（"这条进程没有工具表"是合法情形，比如纯 LLM 的测试栈）——
+    刻意**不**把 `None` 当成"没有工具"，否则一次没接工具表的装配会让每份
+    plan 都判死（静默的坑）。
     """
     defects: list[PlanDefect] = []
 
@@ -354,7 +437,110 @@ def plan_defects(plan: Plan, *, run_id: str) -> list[PlanDefect]:
             PlanDefect(PLAN_NODE_KIND_NOT_EXECUTABLE, _unsupported_kinds_reason(offenders))
         )
 
+    # ③ M98 / §32 的 "Tool Exists"：计划声明的工具，运行时认识吗？
+    #
+    # 这一项此前**连表达都表达不了**（`PlanNode` 没有 `tool` 字段）。现在有了，
+    # 于是它从"无机制"变成"计划期可判"。只查 `kind='tool'` 的节点：
+    # `kind='task'` 的通用节点不事先声明工具，它调什么由 Decision 决定。
+    #
+    # ⚠️ `known_tools is None` = **不校验**（见 docstring），不是"没有工具"。
+    if known_tools is not None:
+        missing = _unknown_tools(plan, known_tools)
+        if missing:
+            defects.append(
+                PlanDefect(PLAN_TOOL_NOT_FOUND, _unknown_tools_reason(missing, known_tools))
+            )
+
+    # ④ M99 / §32 的 "Resource"：计划要求的资源标签，这个运行时供得上吗？
+    #
+    # Kernel **早就**在执行期做资源匹配（`Task.resource_requirement.labels`
+    # ←→ `WorkerCapability.labels`）。计划期此前**连表达都没有** —— 现在
+    # `PlanNode.resource_labels` 让它可表达、`plan_defects` 让它可判。
+    #
+    # ⚠️ 同上：`available_resources is None` = **不校验**，不是"没有资源"。
+    if available_resources is not None:
+        short = _unavailable_resources(plan, available_resources)
+        if short:
+            defects.append(
+                PlanDefect(
+                    PLAN_RESOURCE_UNAVAILABLE,
+                    _unavailable_resources_reason(short, available_resources),
+                )
+            )
+
     return defects
+
+
+#: §32 的 Dependency 一项**不需要在这里再做一遍**（M98 实测）：
+#: 领域层 `Plan.__post_init__` 的 `assert_acyclic()` 已经拒绝一切带环的依赖图，
+#: 而**一份有限的无环图必然至少有一个入度为 0 的源头节点** —— 也就是"没有入口"
+#: 这种计划在**构造期**就已经被拒了（实测：`a→b→a` / `a→b→c→a` 都抛
+#: "Plan contains a cycle"）。M87 / I-16 之后运行时按"依赖都完成"取节点，
+#: 它面对的永远是一份有入口的图。
+#: ⇒ 在这里再写一条"没有入口就判死"是**一条永远不会响的判据** ——
+#:    那比没有更糟：它看起来像一道门，而门后什么都没有。
+
+
+def _unknown_tools(plan: Plan, known: frozenset[str]) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for n in plan.nodes:
+        if n.kind is PlanNodeKind.TOOL and n.tool and n.tool not in known:
+            out.append((n.node_id, n.tool))
+    return out
+
+
+def _unknown_tools_reason(missing: list[tuple[str, str]], known: frozenset[str]) -> str:
+    declared = ", ".join(f"{nid}->{tool!r}" for nid, tool in missing)
+    return (
+        f"plan names tool(s) this runtime does not have: {declared}; "
+        f"known tools are {sorted(known)} — a tool node whose tool is missing "
+        f"cannot be executed (M98 / §32 'Tool Exists')"
+    )
+
+
+def _unavailable_resources(
+    plan: Plan, available: frozenset[str]
+) -> list[tuple[str, tuple[str, ...]]]:
+    """计划里**要求的标签供不上**的节点：`(node_id, 缺的标签)`。"""
+    out: list[tuple[str, tuple[str, ...]]] = []
+    for n in plan.nodes:
+        missing = tuple(x for x in n.resource_labels if x not in available)
+        if missing:
+            out.append((n.node_id, missing))
+    return out
+
+
+def _unavailable_resources_reason(
+    short: list[tuple[str, tuple[str, ...]]], available: frozenset[str]
+) -> str:
+    declared = ", ".join(f"{nid} needs {list(labels)}" for nid, labels in short)
+    return (
+        f"plan requires resource label(s) this runtime cannot provide: {declared}; "
+        f"available labels are {sorted(available)} — the scheduler would never "
+        f"place such a task, so the plan could not complete (M99 / §32 'Resource')"
+    )
+
+
+PLAN_NODE_ACTION_MISMATCH = "PLAN_NODE_ACTION_MISMATCH"
+
+
+def _plan_node_action_reason(node: PlanNode, action: Action) -> str | None:
+    """返回计划节点与 Decision Action 不一致时的可审计理由（I-21）。
+
+    `PlanNode.kind` 是 Intelligence 对这一步语义的声明；它不能只在
+    计划期被接受，随后又让一个完全不同的 Action 偷渡过去。这里不做
+    能力兜底：不支持的 `agent` / `decision` 已由 I-18 在更早的计划门拒绝。
+    """
+    allowed = PLAN_NODE_ACTION_TYPES.get(node.kind)
+    if allowed is None or action.action_type in allowed:
+        return None
+    allowed_values = sorted(kind.value for kind in allowed)
+    return (
+        f"node {node.node_id!r} declares kind {node.kind.value!r}, but the Decision "
+        f"selected action {action.action_type.value!r}; allowed action types for "
+        f"this kind are {allowed_values}. The runtime must not execute a different "
+        f"action and pretend it fulfilled the node's declaration (I-21)."
+    )
 
 
 def _plan_defects_reason(defects: list[PlanDefect]) -> str:
@@ -522,9 +708,17 @@ class AgentLoop:
     model_gateway: ModelGateway | None = None
     tool_runtime: ToolRuntime | None = None
 
+    #: M3：技能注册表。配了就在**派生之前**校验 `SKILL_CALL` 的技能存不存在。
+    #: `None` = 不校验（维持"技能即自由命名"的既有行为）。
+    skills: Any = None
+
     #: M17：Context 组装器（C-11 —— **组装归 Runtime**）。
     #: 只有 LLM_CALL 会用到它；没有配置就按老样子只发 prompt。
     context_assembler: ContextAssembler | None = None
+
+    #: M95：MemoryManager。完成时写一条 episodic 记忆；ContextAssembler 的
+    #: `memory_provider` 从**同一份**里 recall（写了没人读得到 = 等于没写）。
+    memory: Any = None
 
     #: §44 六要素之一。Trace 不进 State —— 见 trace.py 的理由。
     trace: RunTrace = field(default_factory=RunTrace)
@@ -635,7 +829,83 @@ class AgentLoop:
             goal=goal,
             state=self.state,
         )
+        # H-7：输入护栏。拦下 → 这条 Run 直接 FAILED，不进入决策链。
+        # 没有护栏时不改变任何行为（默认 `GuardrailEngine()` 零规则 ⇒ passed）。
+        self._guard_input(user_request)
         return self.state
+
+    def _guard_input(self, user_request: str) -> bool:
+        """INPUT 阶段护栏。`False` = 已判死，调用方不要再往前走。"""
+        if self.harness is None:
+            return True
+        verdict = self.harness.check_input(
+            user_request, context={"run_id": self.state.run_id, "stage": "input"}
+        )
+        if verdict.passed:
+            return True
+        self._trace(
+            GUARDRAIL,
+            payload={"stage": "input", "findings": _findings(verdict.findings)},
+        )
+        self._declare_terminal(
+            AgentRunStatus.FAILED,
+            reason=f"guardrail[input] rejected: {_finding_text(verdict.findings)}",
+        )
+        return False
+
+    def _guard_output(self, text: str) -> StepOutcome | None:
+        """OUTPUT 阶段护栏：BLOCK → 判死；REVIEW → 挂起等人（H-7）。
+
+        `None` = 放行；返回某个 `StepOutcome` = 已经处理掉了，调用方直接用它作结果。
+        """
+        if self.harness is None or not text:
+            return None
+        verdict = self.harness.check_output(
+            text, context={"run_id": self.state.run_id, "stage": "output"}
+        )
+        if verdict.passed:
+            return None
+        self._trace(
+            GUARDRAIL,
+            payload={"stage": "output", "findings": _findings(verdict.findings)},
+        )
+        if verdict.needs_review:
+            # H-7：REVIEW 不是 FAILED —— 它要求**人看一眼**再决定。
+            # 复用同一条 HITL 链（真的在 Kernel 里造一条 SUSPENDED 的审批执行），
+            # 所以它活得过重启、有超时、可审计。
+            return self._suspend_for_guardrail("output", verdict)
+        self._declare_terminal(
+            AgentRunStatus.FAILED,
+            reason=f"guardrail[output] rejected: {_finding_text(verdict.findings)}",
+        )
+        return self._record(StepOutcome.FAILED)
+
+    def _suspend_for_guardrail(self, stage: str, verdict: Any) -> StepOutcome:
+        """把一次 REVIEW 变成**人能看见的那张闸门**（复用 `_suspend_for_approval`）。
+
+        审批问题里要写清：这是**护栏**拦的（不是 Policy 的风险闸门），
+        哪一条、什么原文 —— 否则人在审批界面上只会看到一句"需要批准"，
+        却不知道要他对什么点头。
+
+        ⚠️ `pending_action` 在收尾路径上是 `None`（`_finish()` 本来不经过 Action）。
+        这里用**刚刚执行完的那一步**的代表性 Action 来代替：审批卡上要能说清
+        "是哪一次输出触发了这条护栏"。
+        """
+        assert self.harness is not None
+        state = self.state
+        assert state is not None
+        reason = f"guardrail[{stage}]: {_finding_text(verdict.findings)}"
+        representative = self.pending_action or Action(
+            run_id=state.run_id,
+            action_type=ActionType.FINISH,
+            rationale=reason,
+        )
+        self.pending_action = representative
+        request = self.harness.approvals.request(representative, reason=reason)
+        shim = type(
+            "_GuardrailVerdict", (), {"approval": request, "reasons": (reason,)}
+        )()
+        return self._suspend_for_approval(representative, shim)
 
     def run(self) -> State:
         """跑到终态为止（FINISHED / BUDGET_EXHAUSTED / 等待审批 / 等待子 Run）。
@@ -667,6 +937,10 @@ class AgentLoop:
         用前者代替后者，就必然在某个角落转不完。
         """
         assert self.state is not None, "call start() first"
+        # M95：`start()` 可能已经把 Run 判成终态（输入护栏拦下）。终态不可推进 ——
+        # 直接返回，而不是进去撞一个 "already failed; cannot become running"。
+        if self.agent_run is not None and self.agent_run.is_terminal:
+            return self.state
         while True:
             outcome = self.step()
             if outcome in (
@@ -1087,7 +1361,12 @@ class AgentLoop:
         # 而且最终 FAILED 的理由会被 I-12 那句 "same shape" 冲淡 ——
         # **真正的死因被顶替了**（D-37 同理：终态理由必须是真正的死因）。
         if state.current_plan is not None:
-            defects = plan_defects(state.current_plan, run_id=state.run_id)
+            defects = plan_defects(
+                state.current_plan,
+                run_id=state.run_id,
+                known_tools=self._known_tools(),
+                available_resources=self._known_resource_labels(),
+            )
             if defects:
                 self._declare_terminal(
                     AgentRunStatus.FAILED,
@@ -1148,6 +1427,25 @@ class AgentLoop:
                 reason=_unexecutable_action_reason(action),
             )
             return self._record(StepOutcome.FAILED)
+
+        # ── I-21：Action 必须兑现当前计划节点的 kind 声明 ──
+        #
+        # 这道门在 `_ensure_step()`、Harness 与 Kernel 之前，所以不匹配时
+        # 没有 Step、审批、Task 或 Execution 被伪造出来。`task` 是通用节点；
+        # `tool` / `human` 则要求对应的 ActionType。`agent` / `decision`
+        # 早已在计划门被拒，不在这里假装有能力。
+        #
+        # 它位于 I-20 之后是刻意的：不可执行的 Action（例如 WAIT）必须由
+        # I-20 说出真实能力缺口，而不是被一份节点语义错误盖掉。
+        node = self._plan_node_for_next_action()
+        if node is not None:
+            mismatch = _plan_node_action_reason(node, action)
+            if mismatch is not None:
+                self._declare_terminal(
+                    AgentRunStatus.FAILED,
+                    reason=f"{PLAN_NODE_ACTION_MISMATCH}: {mismatch}",
+                )
+                return self._record(StepOutcome.FAILED)
 
         if action.action_type is ActionType.FINISH:
             # I-11：带着**没被处理过的失败**不许宣布完成。
@@ -1242,6 +1540,11 @@ class AgentLoop:
             payload={"approval_id": approval.approval_id, "decided_by": by, "approved": True},
         )
         self._clear_pending()
+        # M95：护栏的收尾闸门。被挂起的是"声明完成"这个动作本身 ——
+        # 人放行之后**不是**去执行一个 FINISH（那会产生不了 Task，I-4），
+        # 而是让收尾逻辑继续（同样的输出护栏不会二次触发，因为我们已经过过一次）。
+        if action.action_type is ActionType.FINISH:
+            return self._finish(guardrails_cleared=True)
         return self._execute(action)
 
     def reject(self, by: str = "human", comment: str = "") -> StepOutcome:
@@ -1387,6 +1690,27 @@ class AgentLoop:
         ad-hoc 步**，账本上读不出任何区别（M82 的"把存在当成被处理"同族）。
         """
         return self._plan_has_unconsumed_nodes(plan) and self._next_plan_node(plan) is None
+
+    def _plan_node_for_next_action(self) -> PlanNode | None:
+        """找出将接收下一次 Action 的计划节点，但不创建 Step（I-21）。
+
+        这个查询必须发生在 `_ensure_step()` 之前：Action 不匹配时，连
+        Runtime 的 Step 也不应被伪造出来，更不能让 Harness / Kernel 看到它。
+        如果当前 Step 正在等待恢复，它不会进入 `_step()` 的决策路径；
+        重新决策时只会走到已完成 Step 之后的下一个节点。
+        """
+        state = self.state
+        if state is None or state.current_plan is None:
+            return None
+        plan = state.current_plan
+        if self.current_step is not None and not self._step_is_done():
+            try:
+                return plan.node(self.current_step.plan_node_id)
+            except KeyError:
+                # I-16 已经保证正常路径不会出现这种状态；若未来破坏它，
+                # 交给现有的计划缺陷门而不是凭一个名字猜节点语义。
+                return None
+        return self._next_plan_node(plan)
 
     def _ensure_step(self) -> Step:
         """取出当前 Step，没有就开一个（基线 §3.1：Step 由 Runtime 动态产生）。
@@ -1832,7 +2156,10 @@ class AgentLoop:
             run_id=state.run_id,
             action_type=ActionType.HUMAN_APPROVAL,
             payload={
-                "question": action.rationale or f"approve {action.action_type.value}",
+                "question": (
+                    action.rationale
+                    or f"approve {action.action_type.value}"
+                ),
                 "approval_id": approval.approval_id,
                 "blocked_action_id": action.action_id,
                 "blocked_action_type": action.action_type.value,
@@ -1968,6 +2295,18 @@ class AgentLoop:
 
         kind = child_run_kind_of(action.action_type)
         assert kind is not None
+
+        # M3：调技能之前先问注册表**这个技能存不存在**。
+        #
+        # 此前"技能"没有定义，`SKILL_CALL` 直接拿 `payload["skill"]` 当 target
+        # 派了一条子 Run —— 一个拼错的技能名会派出一条注定失败的子 Run，
+        # 而父 Run 要等它跑完才知道。有注册表之后，"技能存不存在"在**派生之前**
+        # 就能判死（与 Tool Exists / PlanNode 分派同一精神：宁可拒绝）。
+        #
+        # ⚠️ 注册表**可选**：没配 = 不校验（维持"技能即自由命名"的既有行为）。
+        # 把它当必填，会让所有不关心技能的老栈在派生时集体判死。
+        if kind is ChildRunKind.SKILL and not self._skill_is_known(action):
+            return self._record(StepOutcome.FAILED)
 
         step = self._ensure_step()
         task = self.task_factory.from_action(
@@ -2816,57 +3155,70 @@ class AgentLoop:
         # TaskFactory 默认会 `new_step_id()` —— 那等于每个 Task 开一个 Step，
         # 把 `Step : Task = 1 : N`（基线 §4）悄悄降成 1:1，扇出能力随之消失。
         step = self._ensure_step()
-        task = self.task_factory.from_action(
+        # M97：一个 Action 可以产生**多个** Task（扇出 / §2.3）。它们属于**同一个
+        # Step** —— 这正是"Step 是逻辑节点、Task 是可调度单元"的意思。
+        tasks = self.task_factory.from_actions(
             action, step_id=step.step_id, extra_payload=self._context_payload(action)
         )
-        execution = self.kernel.submit(task)             # X-1：交棒
-        step.add_task(task.task_id)
-        self._trace(
-            SUBMITTED,
-            step_id=step.step_id,
-            task_id=task.task_id,
-            execution_id=execution.execution_id,
-            attempt_no=execution.current_attempt_no,
-            payload={"action_type": action.action_type.value},
-        )
+        executions = []
+        for task in tasks:
+            execution = self.kernel.submit(task)         # X-1：交棒
+            step.add_task(task.task_id)
+            executions.append((task, execution))
+            self._trace(
+                SUBMITTED,
+                step_id=step.step_id,
+                task_id=task.task_id,
+                execution_id=execution.execution_id,
+                attempt_no=execution.current_attempt_no,
+                payload={"action_type": action.action_type.value},
+            )
 
-        # 走真正的调度路径（Scheduler → Atomic Claim → Executor）
-        outcomes = self.worker.run_once(limit=1)
-        outcome = outcomes.get(execution.execution_id, WorkerOutcome.FAILED)
+        # 走真正的调度路径（Scheduler → Atomic Claim → Executor）。
+        # ⚠️ `limit=len(executions)`：**一次把这一步的活全跑完**。
+        # 用 `limit=1` 的话，扇出的第 2..N 个 Task 会被留在 PENDING，
+        # 而 Step.status 会因此一直是 PENDING —— 这一步看起来永远没做完。
+        outcomes = self.worker.run_once(limit=len(executions))
 
-        self._observe(execution.execution_id, outcome)
-
-        # S-1：正向执行留下副作用 → 登记一笔"待撤销"。
-        # 必须在这里记，因为**只有这一刻**同时握着 Action（含逆操作声明）
-        # 与执行结果（撤销参数要从结果里取）。事后再记，这两样都拿不到了。
-        self._record_compensation(action, step, task.task_id, execution.execution_id)
-
-        after = self.kernel.repository.get(execution.execution_id)
-        attempt_no = after.current_attempt_no if after else 1
-        result = self._attempt_result(execution.execution_id, attempt_no)
-        self._trace(
-            OBSERVED,
-            step_id=step.step_id,
-            task_id=task.task_id,
-            execution_id=execution.execution_id,
-            attempt_no=attempt_no,
-            # 记**实际服务值**（model / deployment / version），不是请求值
-            served=served_from_result(result),
-            payload={
-                "status": self.kernel.status_of(execution.execution_id).value,
-                "outcome": outcome.value,
-            },
-        )
+        # 逐个观察 + 登记补偿：每个 Task 都是独立的一次执行。
+        last_execution_id = ""
+        last_outcome = WorkerOutcome.FAILED
+        for task, execution in executions:
+            outcome = outcomes.get(execution.execution_id, WorkerOutcome.FAILED)
+            self._observe(execution.execution_id, outcome)
+            # S-1：正向执行留下副作用 → 登记一笔"待撤销"。
+            # 必须在这里记，因为**只有这一刻**同时握着 Action（含逆操作声明）
+            # 与执行结果（撤销参数要从结果里取）。事后再记，这两样都拿不到了。
+            self._record_compensation(action, step, task.task_id, execution.execution_id)
+            after = self.kernel.repository.get(execution.execution_id)
+            attempt_no = after.current_attempt_no if after else 1
+            result = self._attempt_result(execution.execution_id, attempt_no)
+            self._trace(
+                OBSERVED,
+                step_id=step.step_id,
+                task_id=task.task_id,
+                execution_id=execution.execution_id,
+                attempt_no=attempt_no,
+                # 记**实际服务值**（model / deployment / version），不是请求值
+                served=served_from_result(result),
+                payload={
+                    "status": self.kernel.status_of(execution.execution_id).value,
+                    "outcome": outcome.value,
+                },
+            )
+            self._charge(steps=1, result=result)
+            last_execution_id = execution.execution_id
+            last_outcome = outcome
 
         self.steps += 1
         self._sync_after_execution()
-        # 记账交给 Harness —— 预算是拦截条件，不是事后账单
-        self._charge(steps=1, result=result)
         # L-5：Step 完成也要落 Run Checkpoint（§14 第一行表格）
         if self._step_is_done():
             self._write_run_checkpoint(reason="step completed")
         return self._record(
-            StepOutcome.EXECUTED if outcome is WorkerOutcome.COMPLETED else StepOutcome.FAILED
+            StepOutcome.EXECUTED
+            if last_outcome is WorkerOutcome.COMPLETED
+            else StepOutcome.FAILED
         )
 
     # ------------------------------------------------------------ 补偿（M10）
@@ -3038,6 +3390,82 @@ class AgentLoop:
                 },
             )
 
+    def _last_llm_text(self) -> str:
+        """最近一次 LLM 执行的输出文本（输出护栏要过目它）。"""
+        state = self.state
+        if state is None:
+            return ""
+        for observation in reversed(state.observations):
+            content = observation.content if isinstance(observation.content, Mapping) else {}
+            result = content.get("result")
+            if not isinstance(result, Mapping):
+                continue
+            response = result.get("response")
+            if isinstance(response, Mapping) and response.get("text"):
+                return str(response["text"])
+        return ""
+
+    def _known_tools(self) -> frozenset[str] | None:
+        """运行时**真正认识**的工具名集合；没有工具表时返回 `None`（= 不校验）。
+
+        ⚠️ `None` 与"空集"是两件事：`None` = "这条进程没有工具表"（纯 LLM 测试栈），
+        空集 = "有工具表但一个都没注册"。把前者当后者，会让每一次没接工具表的
+        装配都对每份计划报 `PLAN_TOOL_NOT_FOUND` —— 静默的坑。
+        """
+        runtime = self.tool_runtime
+        registry = getattr(runtime, "registry", None)
+        if registry is None:
+            return None
+        try:
+            return frozenset(registry.specs().keys())
+        except Exception:  # noqa: BLE001 - 工具表自述不了就退回"不校验"
+            return None
+
+    def _skill_is_known(self, action: Action) -> bool:
+        """M3：派生技能子 Run 之前，确认注册表认识这个技能。
+
+        `skills is None` = 不校验（见字段注释）。认识就 `True`；
+        不认识就**判死 + 点名**并返回 `False`（不派子 Run、不产生副作用）。
+        """
+        registry = self.skills
+        if registry is None:
+            return True
+        name = str(action.payload.get("skill") or action.payload.get("name") or "")
+        if not name or registry.has(name):
+            return True
+        known = sorted(registry.specs())
+        self._declare_terminal(
+            AgentRunStatus.FAILED,
+            reason=(
+                f"SKILL_NOT_FOUND: action {action.action_id!r} calls skill {name!r} "
+                f"which is not registered; known skills are {known or '(none)'} — "
+                f"the runtime refuses to spawn a child run for an unknown skill (M3)"
+            ),
+        )
+        return False
+
+    def _known_resource_labels(self) -> frozenset[str] | None:
+        """这个 worker **实际能提供**的资源标签；说不出来时返回 `None`（= 不校验）。
+
+        来源是 `WorkerCapability.labels`（`scheduler._matches` 就是拿它和
+        `Task.resource_requirement.labels` 比的）。计划门拿它回答
+        §32 的 "Resource"：**这份计划要的标签，这个运行时供不供得上**。
+
+        ⚠️ 同 `_known_tools`：`None` = "这个 worker 说不清自己的标签"，
+        不是"一个标签都没有"。把前者当后者会让每一份带 `resource_labels`
+        的计划都判死 —— 而那可能只是一个没配 capability 的测试替身。
+        """
+        capability = getattr(self.worker, "capability", None)
+        if capability is None:
+            return None
+        labels = getattr(capability, "labels", None)
+        if labels is None:
+            return None
+        try:
+            return frozenset(str(x) for x in labels)
+        except Exception:  # noqa: BLE001
+            return None
+
     def _context_payload(self, action: Action) -> Mapping[str, Any] | None:
         """M17：LLM 调用之前组装 Context，并留下 Snapshot（C-2 / C-5 / C-11）。
 
@@ -3057,15 +3485,8 @@ class AgentLoop:
         state = self.state
         assert state is not None
 
-        build = self.context_assembler.build(
-            ContextRequest(
-                run_id=state.run_id,
-                model_id=str(action.payload.get("model") or ""),
-                system=str(action.payload.get("system") or state.goal.objective),
-                messages=(("user", state.goal.objective),),
-                runtime_state={"step": self.steps, "completed": len(state.completed_tasks)},
-            )
-        )
+        build = self.context_assembler.build(self._context_request(action, state))
+        rendered = build.render()
         self._trace(
             CONTEXT,
             step_id=self.current_step.step_id if self.current_step else "",
@@ -3075,22 +3496,72 @@ class AgentLoop:
                 "dropped": len(build.plan.dropped),
             },
         )
+        # M95：装配出来的这一份**就是**喂给模型的 prompt —— 否则快照会"记一份、
+        # 模型看另一份"，而 C-2 的意义恰恰是"这次模型看到的到底是什么"。
         return {
-            "context": list(build.render()),
+            "prompt": "\n\n".join(rendered),
+            "context": list(rendered),
             "context_snapshot_id": build.snapshot.snapshot_id,
         }
 
+    def _context_request(self, action: Action, state: State) -> ContextRequest:
+        """把一次 LLM Action 变成装配请求（来源全部**显式**，C-1）。"""
+        payload = action.payload
+        messages = payload.get("messages")
+        if not messages:
+            messages = (("user", str(payload.get("prompt") or state.goal.objective)),)
+        return ContextRequest(
+            run_id=state.run_id,
+            model_id=str(payload.get("model") or ""),
+            system=str(payload.get("system") or ""),
+            messages=tuple((str(role), str(text)) for role, text in messages),
+            knowledge=self._knowledge_items(payload.get("knowledge")),
+            runtime_state={"step": self.steps, "completed": len(state.completed_tasks)},
+        )
+
+    def _knowledge_items(self, raw: Any) -> tuple[Any, ...]:
+        """`[{key, text, citation, score}]` → `ContextItem`（C-10：必须带 citation）。"""
+        from packages.agent_context.items import knowledge_chunk
+
+        if not raw:
+            return ()
+        out: list[Any] = []
+        for entry in raw:
+            if not isinstance(entry, Mapping):
+                continue
+            key = str(entry.get("key") or "")
+            text = str(entry.get("text") or "")
+            if not key or not text:
+                continue
+            out.append(
+                knowledge_chunk(
+                    key,
+                    text,
+                    citation=str(entry.get("citation") or key),
+                    score=float(entry.get("score") or 0.0),
+                )
+            )
+        return tuple(out)
+
     def _charge(self, *, steps: int, result: Mapping[str, Any] | None) -> None:
-        """L-3：Token 用量必须回到 CostManager，否则预算这条线是断的。
+        """L-3：Token / 成本必须回到 CostManager，否则预算这条线是断的。
 
         后果不是"少一张账单"这么轻。`CostManager` 是 `before_action` 的一环
-        （预算耗尽 → DENY），如果 `spent_tokens` 永远是 0，那么
-        `Budget.max_tokens` 就是一条接了但没通电的线 ——
-        超 token 的 Run 会一直跑到把钱烧完才停。
+        （预算耗尽 → DENY），如果 `spent_tokens` / `spent_cost` 永远是 0，那么
+        `Budget.max_tokens` / `Budget.max_cost` 就是接了但没通电的线 ——
+        超预算的 Run 会一直跑到把钱烧完才停。
+
+        ⚠️ M96：`cost_usd` 一直没被搬过来 —— 于是 `max_cost` 无论配多少都不生效。
+        Executor 已经把它放进结果里（`LLMCallExecutor` 的 `cost_usd`），
+        这里只是**多读一个字段**。
         """
         assert self.harness is not None
         usage = (result or {}).get("usage") or {}
-        self.harness.charge(steps=steps, tokens=int(usage.get("total_tokens", 0)))
+        self.harness.charge(
+            steps=steps,
+            tokens=int(usage.get("total_tokens", 0)),
+            cost=float((result or {}).get("cost_usd") or 0.0),
+        )
 
     def _trace(self, kind: str, **kwargs: Any) -> None:
         self.trace.append(kind, **kwargs)
@@ -3134,9 +3605,16 @@ class AgentLoop:
         attempt = attempts.get(execution_id, attempt_no)
         return attempt.result if attempt is not None else None
 
-    def _finish(self) -> StepOutcome:
+    def _finish(self, *, guardrails_cleared: bool = False) -> StepOutcome:
         state = self.state
         assert state is not None
+        # H-7 / M95：出声之前先过输出护栏。BLOCK → 判死；REVIEW → 挂起等人。
+        # `guardrails_cleared=True` 表示这一步刚刚**被人放行过**
+        # （护栏收尾闸门被批准）—— 不能拿同一条规则再拦一次，否则永远出不去。
+        if not guardrails_cleared:
+            guard = self._guard_output(self._last_llm_text())
+            if guard is not None:
+                return guard
         self._apply(
             Observation(run_id=state.run_id, kind=RUN_FINISHED, summary="goal reached")
         )
@@ -3145,7 +3623,30 @@ class AgentLoop:
         # 所有 Step 也可能确实都 COMPLETED 了但 Agent 判断目标没达成。
         # 所以"跑完了"这件事只能从这里显式传下去（否则 Run 会停在一个中间态）。
         self._declare_terminal(AgentRunStatus.COMPLETED, reason="goal reached")
+        self._remember()
         return self._record(StepOutcome.FINISHED)
+
+    def _remember(self) -> None:
+        """M95：把这条 Run 的结局写成一条 episodic 记忆。
+
+        ⚠️ `subject` 用 `agent_id`，**不是** `run_id`：run_id 每次都不同，
+        按它 recall 永远查不到东西 —— 那不是"记得住"，是"每个 Run 各记一份、
+        谁也读不到"，而且它看起来完全正常。
+        """
+        state = self.state
+        if self.memory is None or state is None:
+            return
+        content = str(state.goal.objective)
+        answer = self._last_llm_text()
+        if answer:
+            content = f"{content}\n=> {answer[:1000]}"
+        self.memory.remember(
+            layer=MemoryLayer.EPISODIC,
+            subject=self.config.agent_id,
+            content=content,
+            source_run_id=state.run_id,
+            kind="run_outcome",
+        )
 
     def _declare_terminal(self, status: AgentRunStatus, *, reason: str) -> None:
         """B-7：终态只能由 Runtime 声明，且必须留痕。

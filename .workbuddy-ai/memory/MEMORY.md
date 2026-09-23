@@ -6,9 +6,9 @@
 ## AgentOS 平台
 企业级 Agent 平台，价值在可靠/可观测/可审计，不是"多智能"。
 50+ 冻结不变量（B/R/S/D/X/A/E/I/L/C/PR/O），口号：**宁可拒绝，不许编造**。
-规模 v2.1.78：258 py / 18 迁移 / 1393 单测 / 209 集成测试。
+规模 v2.1.80：20 迁移 / 全仓 1954 单测 / 209 集成测试。
 里程碑纪律（skill `agentos-milestone`）：空洞→实现→测试→变红验证→冻结基线。
-下一轮入口：空洞 250（§32 Plan Validator 只建了计划期那半，归属 M12 智能层）。
+M91 已闭合空洞 247（PlanNode.kind → Action 分派），冻结为 v2.1.79；M92 已闭合 AgentOS → Asuka 评测交接空洞 256/257，冻结为 v2.1.80；M93 交付 GPT 式聊天页（`/`）+ 控制台移到 `/console` + 多轮会话；M94 把 Asuka 的 LLM 调用搬进 AgentOS（删掉 Asuka 自带客户端）；M95 已闭合 Harness 的三个「有模块、没接线」尾账（Context 装配+快照落 PG / Memory 读写 / 输入·输出护栏含 REVIEW→审批）。**M96 补齐 Cost 预算（`AGENTOS_MAX_COST/TOKENS/STEPS`，默认不限）与 Memory 落 PG（020）**，Harness 六项全部接进运行时。**M97 补齐 Task Factory 一对多（扇出，`from_actions` + `payload["tasks"]`）**，Runtime 六项名副其实。**M98 收窄空洞 250**：§32 七项里 DAG Cycle / Dependency / Tool Exists 归计划期（新增 `PlanNode.tool` + `PLAN_TOOL_NOT_FOUND`），Permission·Risk·Budget **刻意**留执行期，Resource 无机制——归属表写进 `loop.py`。**M99 收口空洞 250 + M12 智能层首项**：`PlanNode.kind` 五种（task/tool/human/agent/decision）全部真分派；§32 的 Resource 落地（`PlanNode.resource_labels` + `PLAN_RESOURCE_UNAVAILABLE`，复用 Kernel 早已有的 `ResourceReq`/`WorkerCapability` 匹配）；顺带修 `state_from_dict` 不回读新字段的真 bug。**M100 梳理 M 层路线图并落地两项**：M3 Skill Runtime（`skill_runtime/`：SkillSpec 三种形态 + SkillRegistry + 派生前校验 `SKILL_NOT_FOUND`）、M5 Hybrid Search（RRF `HybridRetriever`）+ Rerank（`LexicalRerank`）。**M101 落地 M9 企业治理上半（OPA + Sandbox）**：Policy-as-Code（`agent_harness/policy_document.py`，严格加载——未知 effect/字段/action_type 加载期拒绝 P-1、`default` 必填 P-2、PDP/PEP 分离 P-3；顺带修 `PolicyEngine` 默认 DENY 会当场抛 H-1 的真 bug）+ Sandbox（`tool_runtime/sandbox.py`，`SandboxProfile` + `SandboxedCommandInvoker`；**只声称守得住的**：硬超时/输出上限/环境白名单/禁 shell/干净 cwd/声明路径，**不**提供网络/文件系统隔离旋钮；`protocol=sandbox` 必须配 `SandboxedInvoker`）。**M102 落地 M7 生产上半（CI/CD + HPA + 滚动/回滚）**：`.github/workflows/ci.yml`（unit 零依赖 / integration 真 PG + 拒绝"跳过变绿" / deploy 清单校验 / image 构建四作业）+ `deploy/k8s/07-hpa.yaml`（api/worker CPU HPA + behavior）+ `04-api.yaml` 加 `RollingUpdate{maxSurge:1,maxUnavailable:0}`（零停机，原生 pause=金丝雀 / undo=回滚）；**业务指标 HPA（队列深度）刻意不做**——需集群侧 metrics adapter，写个 External HPA 会把"没装 adapter 就不扩"伪装成"已支持"。**M103 落地 M4 连接上半（MCP）**：`packages/agent_runtime/connectivity/`——JSON-RPC 2.0 核心（J-1/2/3：版本、result/error 恰一、id 必须匹配）+ Transport（`InMemoryTransport` / `StdioTransport`，**request/send 必须分开**——通知走 send，否则 stdio 会在 readline 上死锁）+ MCP 客户端/`McpInvoker`/`register_mcp_tools`（MC-1 无名字拒绝、MC-2 只有 `readOnlyHint` 才是 READ，其余 UNKNOWN⇒T-2 要幂等键）。M 层未落地剩：M4 A2A、M5 Knowledge Versioning、M7 业务指标 HPA、M9 IAM/Vault、M13（Future Ext）。
 
 ## Asuka 子系统（同 repo `asuka/`，技术文档知识库评测 MVP）
 语料 redis.io 官方 MD（428 chunks）；24 题人工任务集（三档难度各 8）；97 必答要点。
@@ -16,11 +16,13 @@
 
 六指标全实现：Retrieval / Citation / Correctness / Latency / Token / Cost。
 + 回归对比（这次 vs 上次，复用 `agent_evaluation.regression`）。
-+ 真模型 `deepseek.py`（DeepSeekAnswerer，零第三方 urllib，引用自述 [[key]]，代价真测）。
++ 真模型：**模型调用归 AgentOS**（`packages/agent_runtime/model_gateway/deepseek.py`）；Asuka 不再自带 LLM 客户端。
+  评测入口 `python -m asuka.agentos_eval`：**一题一条 AgentOS Run**（TOOL_CALL kb.search → LLM_CALL 带引用作答 → FINISH），
+  Asuka 只读 Run 结果评分（`asuka.agentos_adapter`，B2 允许多 Run 进一次评测）。提示词/解析留在 `asuka/prompting.py`。
 
 核心层零第三方（textutil/corpus/splitters/kb/dataset/evaluate/compare/answers/
 context/trace/regression/deepseek 顶层 import 全标准库），重活惰性 import。
-单测 **1768 条全绿**（零依赖解释器）。
+单测 **1798 条全绿**（零依赖解释器；含 M91 与 M92 适配器）。
 变红脚本：red91(引用23)/red92(Context18)/red93(回归27)/red94(deepseek7)，骨架 redkit。
 
 ⭐ 三条同源纪律（详 skill `asuka-eval`）：
@@ -30,9 +32,7 @@ context/trace/regression/deepseek 顶层 import 全标准库），重活惰性 i
 
 ⭐ 关键判据纪律（详 skill）：答案级主判据不用 LLM-as-Judge（偏爱长输出），改规则式必答要点召回，判据只住 `RequiredPoint.matched_by()` 一处；"没测≠答对"（points_total==0 ⇒ recall=None 印 `—`）；引用 cited 必须模型自述（None=不可测、()=明确0，两回事），score_citations 住一处，4 结论互斥（fabricated/grounded/依据召回/依据用上率）+ 缺依据三段归因 + 比例只 macro 平均；Context 装配 C-1/C-3/C-4（top_k 是条数不是窗口、retrieved≠available 两集合、取舍按相关性、chars_per_token 全包只认 textutil.CHARS_PER_TOKEN）；Trace 五条纪律（事件闭集/seq 连续/首尾固定/输入同一性含装配参数/键不能缺）；回归（两次都不通过归 unchanged 即 backlog≠回归、题级口径通过=全部采样通过、可比性门一次报全）。
 
-⭐ 复用现状：只真用了 `packages/agent_context/retrieval.py`（C-9/C-10）；
-`budget.py`/`tokens.py`/`items.py` 已接（第六/八轮）。`agent_runtime` 等 5 大包一行没用——
-Asuka 挂在 AgentOS 旁边，不是长在里面（反向也无 `import asuka`）。
+⭐ 复用现状：Asuka 已接 `packages/agent_context/retrieval.py`（C-9/C-10）、`budget.py`/`tokens.py`/`items.py`，并新增 `asuka.agentos_adapter` 读取真实 AgentOS LLM Execution / ContextSnapshot / Trace；生产 Runtime 仍不 import asuka，保持 AgentOS 运行与 Asuka 评测解耦。
 
 ## 真模型基线（2026-09-23，DeepSeek-chat / redis / k10 / 窗口 8192-1024）
 **bm25 s1**（首个基线）：要点召回 0.2361 · pass@1 0.0000 · 依据召回 0.5247 · 依据用上率 0.8772 ·

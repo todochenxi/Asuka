@@ -358,6 +358,9 @@ def build_stack_factory(
     snapshots: Any = None,
     compensations: Any = None,
     cancellations: Any = None,
+    context_snapshots: Any = None,
+    memory: Any = None,
+    budget: Any = None,
     company: str = "",
 ) -> Any:
     """`AGENTOS_STACK_PROVIDER=examples.research_stack:build_stack_factory`。
@@ -385,6 +388,11 @@ def build_stack_factory(
         spawner = InProcessChildRunSpawner(
             factory=make_stack, approvals=approvals, registry=registry
         )
+        assembler = None
+        if context_snapshots is not None:
+            from packages.agent_context.assembler import ContextAssembler
+
+            assembler = ContextAssembler(snapshots=context_snapshots)
         return assemble_runtime_stack(
             agent_id=agent_id,
             interpreter=interpreter,
@@ -396,6 +404,9 @@ def build_stack_factory(
             kernel=kernel,
             clock=clock,
             approval_store=approvals,
+            context_assembler=assembler,
+            memory=memory,
+            budget=budget,
             snapshots=snapshots,
             compensations=compensations,
             cancellations=cancellations,

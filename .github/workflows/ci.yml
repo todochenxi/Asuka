@@ -1,0 +1,104 @@
+# M102 · CI/CD 流水线（M7 Production）。
+#
+# 它补的是什么空洞：`deploy/` 下一整套清单与一个 Dockerfile 都在，
+# 但**没有任何一条流水线真的跑过它们** —— "代码是绿的"与"能上线"
+# 之间隔着的每一步（跑测试、起真库、校验清单、建镜像）都靠人记得做。
+#
+# 四个作业，各自回答一个只有真跑才答得出的问题：
+#
+#   unit         零依赖解释器能不能把单元测试跑绿（PR-15 的承诺）
+#   integration  真 PostgreSQL 上那 209 条集成测试是不是真的在跑
+#   deploy       集群要装的那份声明，过不过得了 M59 的 manifest check
+#   image        那份 Dockerfile 到底建不建得出来
+#
+# ---------------------------------------------------------------------------
+# 为什么集成作业要 grep `skipped=`
+#
+# `tests/integration/_pg.py` 的第一条规则是"没有 PG 就跳过" ——
+# 那是为了不让"没装数据库"变成红灯。代价是：一个连不上库的 CI
+# 会把 209 条集成测试**全部跳过**，然后报绿。绿色是假的，
+# 比红色危险得多。所以这里显式把"有跳过"判成失败。
+# ---------------------------------------------------------------------------
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    name: unit (zero-dependency)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # 刻意**不装任何东西**：PR-15 承诺单元测试在裸解释器上跑得通。
+      # 一旦这条红了，说明有人往 packages/ 或 apps/ 里加了第三方 import。
+      - name: unit tests
+        env:
+          PYTHONPATH: .
+        run: python -m unittest discover -s tests/unit -t .
+
+  integration:
+    name: integration (real postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: install integration deps
+        run: pip install -r requirements-integration.txt
+      - name: integration tests
+        env:
+          PYTHONPATH: .
+          AGENTOS_PG_DSN: postgresql://postgres:postgres@127.0.0.1:5432/agentos_it
+        run: |
+          set -o pipefail
+          python -m unittest discover -s tests/integration -t . 2>&1 | tee integration.log
+          if grep -q "skipped=" integration.log; then
+            echo "::error::integration tests were skipped — the postgres service is not reachable, so this job proved nothing"
+            exit 1
+          fi
+
+  deploy:
+    name: deploy bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: the cluster manifest passes the check
+        env:
+          PYTHONPATH: .
+        run: python -m apps.cli manifest check deploy/config/agentos.toml
+      - name: the deployment bundle is internally consistent
+        env:
+          PYTHONPATH: .
+        run: python -m unittest tests.unit.test_deploy_manifest tests.unit.test_production_manifests
+
+  image:
+    name: image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the runtime image
+        run: docker build -f deploy/Dockerfile -t agentos:ci .

@@ -123,19 +123,60 @@ class TheProcessServesTest(RealHttpCase):
         self.assertEqual(r.json(), {"status": "ok"})
 
     def test_the_console_page_is_served(self) -> None:
-        """`GET /` 返回的是那个页面本身，不是 200 加一句空话。
+        """`GET /console` 是控制台本身，`GET /` 是聊天页（M93）。
 
         目录不存在时 `_mount_console` 是**静默跳过**的（服务可用性不依赖
         演示页面）—— 于是"页面没了"在别处一个红灯都不会有。
         这一条就是那个缺失的红灯。
+
+        ⚠️ 标题**和**控件一起验：只验标题的话，一个写着同名标题的占位页
+        也能混过去 —— 而"页面在、但里面的东西没了"正是没人会报警的那种坏。
         """
-        r = self.client.get("/")
+        console = self.client.get("/console")
+        self.assertEqual(console.status_code, 200, console.text[:200])
+        self.assertIn("text/html", console.headers["content-type"])
+        self.assertIn("<h1>AgentOS 控制台</h1>", console.text)
+        self.assertIn('id="btn-cancel"', console.text)
+
+        chat = self.client.get("/")
+        self.assertEqual(chat.status_code, 200, chat.text[:200])
+        self.assertIn("text/html", chat.headers["content-type"])
+        self.assertIn("<h1>AgentOS 对话</h1>", chat.text)
+        self.assertIn('id="send"', chat.text)
+
+    def test_the_architecture_page_is_served(self) -> None:
+        """`GET /architecture` 是架构与进度页（M100 §03/§04，M101 回写）。
+
+        同 `/console` 那条：页面没了在别处一个红灯都不会有。
+        这里除了标题，还钉住 §03/§04 两个锚点 —— 只验标题的话，
+        一个只有标题的空页也能混过去。
+        """
+        r = self.client.get("/architecture")
         self.assertEqual(r.status_code, 200, r.text[:200])
         self.assertIn("text/html", r.headers["content-type"])
-        # 标题**和**控件一起验：只验标题的话，一个写着同名标题的占位页
-        # 也能混过去 —— 而"页面在、但里面的东西没了"正是没人会报警的那种坏。
-        self.assertIn("<h1>AgentOS 控制台</h1>", r.text)
-        self.assertIn('id="btn-cancel"', r.text)
+        self.assertIn("<h1>AgentOS · 架构与进度</h1>", r.text)
+        self.assertIn("M 层路线图", r.text)
+        self.assertIn("未落地的可做工项", r.text)
+
+    def test_the_chat_endpoint_answers(self) -> None:
+        """`POST /chat` 真的跑完一条 Run，并把模型回答带出来（M93）。
+
+        用的是带审批的演示栈，但 `agent-chat` 被显式排除在闸门之外 ——
+        所以它必须一步答完，而不是挂起等批准。
+        """
+        r = self.client.post(
+            "/chat", json={"agent_id": "agent-chat", "message": "compute 6*7"}
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual(body["status"], "completed")
+        self.assertTrue(body["answer"])
+        self.assertIn("demo-1 received", body["answer"])
+
+        # 回答是只读的派生事实，`GET /runs/{id}/answer` 必须给出同一份。
+        again = self.client.get(f"/runs/{body['run_id']}/answer")
+        self.assertEqual(again.status_code, 200, again.text)
+        self.assertEqual(again.json()["answer"], body["answer"])
 
     def test_the_version_it_serves_is_the_frozen_baseline(self) -> None:
         """对外报的版本号 —— 这次是**服务真的答的**，不是源码里扫到的。
@@ -372,9 +413,13 @@ class TheRealProcessTest(RealPostgresCase):
                 #       `trust_env=False` → [200, 200, 200, 200]。
                 # 打 127.0.0.1 本来就不该过任何代理。
                 with httpx.Client(base_url=base, timeout=10.0, trust_env=False) as client:
-                    console = client.get("/")
+                    console = client.get("/console")
                     self.assertEqual(console.status_code, 200)
                     self.assertIn("AgentOS 控制台", console.text)
+
+                    chat = client.get("/")
+                    self.assertEqual(chat.status_code, 200)
+                    self.assertIn("AgentOS 对话", chat.text)
 
                     started = client.post(
                         "/agents/agent-it/runs",

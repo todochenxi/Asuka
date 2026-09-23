@@ -1454,23 +1454,9 @@ def build_parser() -> Any:
     parser.add_argument(
         "--answerer",
         default="oracle",
-        choices=["oracle", "null", "fabricator", "deepseek"],
-        help="oracle/null/fabricator 是**校准用**假答案器；deepseek 是**真模型**"
-        "（需要 DEEPSEEK_API_KEY，会在报告里标『模型成绩』而非『校准』）",
-    )
-    # 惰性 import：`deepseek.py` 顶部 `from .answers import ...`，在模块层反向引会成环。
-    # 而且可选版本**只有一处定义**（`deepseek.PROMPT_VERSIONS`）——
-    # CLI 里再手写一份 `["v1","v2"]` 就会出现"加了 v3 但 CLI 不认"。
-    from .deepseek import DEFAULT_PROMPT_VERSION, PROMPT_VERSIONS
-
-    parser.add_argument(
-        "--prompt-version",
-        default=DEFAULT_PROMPT_VERSION,
-        choices=sorted(PROMPT_VERSIONS),
-        help="用哪版提示词（只对真模型答案器有意义，校准答案器没有提示词）。"
-        "⚠️ **提示词是被测系统的一部分**：它进报告的 `prompt_id`，并被回归对比当作"
-        "**同一性**校验 —— 换 prompt 的两次运行会被**拒绝**并排，"
-        "而不是静默读成『系统退步/进步』",
+        choices=["oracle", "null", "fabricator"],
+        help="三个都是**校准 / 自检**答案器（判据的上下界 + 编造探测器）。"
+        "真模型作答已移到 AgentOS（Runtime 的 ModelGateway）；Asuka 不再直接调模型",
     )
     parser.add_argument("--retriever", default="bm25", choices=["bm25", "dense"])
     parser.add_argument("--top-k", type=int, default=5)
@@ -1571,22 +1557,11 @@ def _run(args: Any) -> int:
         allow_non_semantic=args.allow_non_semantic,
     )
 
-    answerer: Answerer
-    if args.answerer == "deepseek":
-        # 惰性 import：避免与 `deepseek.py` 的 `from .answers import ...` 形成循环依赖。
-        from .deepseek import DeepSeekAnswerer
-
-        if not os.environ.get("DEEPSEEK_API_KEY"):
-            raise ValueError(
-                "用 deepseek 作答需要 DEEPSEEK_API_KEY 环境变量（真模型必须有 key）"
-            )
-        answerer = DeepSeekAnswerer(prompt_version=args.prompt_version)
-    else:
-        answerer = {
-            "oracle": OracleAnswerer,
-            "null": NullAnswerer,
-            "fabricator": FabricatingAnswerer,
-        }[args.answerer]()
+    answerer: Answerer = {
+        "oracle": OracleAnswerer,
+        "null": NullAnswerer,
+        "fabricator": FabricatingAnswerer,
+    }[args.answerer]()
 
     report = evaluate_answers(
         kb,
