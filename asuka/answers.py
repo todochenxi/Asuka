@@ -809,6 +809,13 @@ class AnswerReport:
     reserved_for_output: int = DEFAULT_RESERVED_FOR_OUTPUT
     #: 每 token 几个字符。**语料的属性**，进报告见 `asuka.context` 的模块 docstring。
     chars_per_token: int = CHARS_PER_TOKEN
+    #: 提示词身份（`版本-内容指纹`）。⚠️ **提示词是被测系统的一部分**：
+    #: 它决定模型会不会自述引用、也决定答案的详略与覆盖面。
+    #: 不记它 ⇒ 换个 prompt 再跑，`regression` 会把"提示词的效果"
+    #: **静默读成"系统退步/进步"**（同 `context_budget` 当初的洞）。
+    #: ⚠️ 无提示词的答案器（oracle/null）是 `""`，而"老报告没记录"也是 `""` ——
+    #: 这两者**区分不开**，所以对比门对"两边不一致"一律拒绝，宁可说"无法确认"。
+    prompt_id: str = ""
 
     @property
     def context_available(self) -> int:
@@ -828,6 +835,7 @@ class AnswerReport:
             "context_budget": self.context_budget,
             "reserved_for_output": self.reserved_for_output,
             "chars_per_token": self.chars_per_token,
+            "prompt_id": self.prompt_id,
             "overall": self.overall.as_dict(),
             "by_difficulty": {k: v.as_dict() for k, v in self.by_difficulty.items()},
             "items": [i.as_dict() for i in self.items],
@@ -862,6 +870,7 @@ class AnswerReport:
             context_budget=int(d.get("context_budget", DEFAULT_CONTEXT_BUDGET)),
             reserved_for_output=int(d.get("reserved_for_output", DEFAULT_RESERVED_FOR_OUTPUT)),
             chars_per_token=int(d.get("chars_per_token", CHARS_PER_TOKEN)),
+            prompt_id=str(d.get("prompt_id", "")),
         )
         if verify:
             obj._verify_aggregates()
@@ -1110,6 +1119,9 @@ def evaluate_answers(
         context_budget=context_budget,
         reserved_for_output=reserved_for_output,
         chars_per_token=chars_per_token,
+        # 提示词身份由答案器**自述**（`getattr` 取，没有就是 `""`）。
+        # 不用 `isinstance` 窄化：协议本来就靠结构满足，写死类型会把第三方答案器挡在外面。
+        prompt_id=str(getattr(answerer, "prompt_id", "") or ""),
     )
 
 
@@ -1446,6 +1458,20 @@ def build_parser() -> Any:
         help="oracle/null/fabricator 是**校准用**假答案器；deepseek 是**真模型**"
         "（需要 DEEPSEEK_API_KEY，会在报告里标『模型成绩』而非『校准』）",
     )
+    # 惰性 import：`deepseek.py` 顶部 `from .answers import ...`，在模块层反向引会成环。
+    # 而且可选版本**只有一处定义**（`deepseek.PROMPT_VERSIONS`）——
+    # CLI 里再手写一份 `["v1","v2"]` 就会出现"加了 v3 但 CLI 不认"。
+    from .deepseek import DEFAULT_PROMPT_VERSION, PROMPT_VERSIONS
+
+    parser.add_argument(
+        "--prompt-version",
+        default=DEFAULT_PROMPT_VERSION,
+        choices=sorted(PROMPT_VERSIONS),
+        help="用哪版提示词（只对真模型答案器有意义，校准答案器没有提示词）。"
+        "⚠️ **提示词是被测系统的一部分**：它进报告的 `prompt_id`，并被回归对比当作"
+        "**同一性**校验 —— 换 prompt 的两次运行会被**拒绝**并排，"
+        "而不是静默读成『系统退步/进步』",
+    )
     parser.add_argument("--retriever", default="bm25", choices=["bm25", "dense"])
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument(
@@ -1554,7 +1580,7 @@ def _run(args: Any) -> int:
             raise ValueError(
                 "用 deepseek 作答需要 DEEPSEEK_API_KEY 环境变量（真模型必须有 key）"
             )
-        answerer = DeepSeekAnswerer()
+        answerer = DeepSeekAnswerer(prompt_version=args.prompt_version)
     else:
         answerer = {
             "oracle": OracleAnswerer,

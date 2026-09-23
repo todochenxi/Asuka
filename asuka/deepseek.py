@@ -57,14 +57,67 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_INPUT_COST_PER_MILLION = 0.27
 DEFAULT_OUTPUT_COST_PER_MILLION = 1.10
 
-# 系统提示词：把"只依据片段 / 同语言 / 必须引 [[key]]"这三件钉死。
-# 它不参与评分，但决定了模型**会不会**自述引用——引用判据的前提是模型肯说。
-_SYSTEM_PROMPT = (
+# ---------------------------------------------------------------- 提示词
+#
+# ⚠️⚠️ **提示词是"被测系统"的一部分，必须进报告的同一性**（与 `context_budget` 同理）。
+# 它不参与评分，但它决定了两件事：模型**会不会**自述引用（引用判据的前提），
+# 以及答案的**详略与覆盖面**（要点召回 / `chars_per_hit_point` 直接受它影响）。
+#
+# 不记录它 ⇒ 换了个 prompt 再跑，`asuka.regression` 会把"提示词的效果"
+# **静默读成"系统退步/进步"**，而报告里没有任何东西提醒你 ——
+# 这正是本项目最忌的"沉默的差读起来像没有差"。
+# ⇒ 所以每个版本都有显式 `PROMPT_VERSION`，并派生 `prompt_id` 进报告与对比门。
+#
+# v1：只钉"依据片段 / 同语言 / 必须引 [[key]]"。
+#     实测（deepseek + bm25 + s3）：要点召回 0.2132、每要点字符 **495.6**（偏啰嗦）。
+_SYSTEM_PROMPT_V1 = (
     "你是一个技术文档助手。**只能**依据用户提供的文档片段回答问题；"
     "片段没有覆盖的内容，明确说『文档未提及』。用与问题相同的语言回答。"
     "你**必须**在回答里引用你实际用到的片段，引用格式是片段里的 `[[key]]` 原文，"
     "不要改写、不要编造。最终严格按 JSON 格式输出。"
 )
+
+# v2：针对 v1 实测出的**两个病根**下药 ——
+#   ① 啰嗦（495 字符/要点）：禁开场白、禁复述问题、禁客套；
+#   ② 要点覆盖不足（召回 0.2132）：要求**逐条覆盖问题问到的具体事实**
+#      （数值 / 返回值 / 边界条件 / 错误码），这正是 `RequiredPoint` 的写法。
+# ⚠️ **绝不把 ground truth 喂进去** —— 那不是"提示词优化"，是泄漏答案键，
+#    分数会变好看而系统一点没变好。下面这些要求是**通用的答题纪律**，与题目无关。
+_SYSTEM_PROMPT_V2 = (
+    "你是一个技术文档助手。**只能**依据用户提供的文档片段回答问题。\n"
+    "要求：\n"
+    "1. 直接回答：不要开场白、不要复述问题、不要客套、不要总结式收尾。\n"
+    "2. 覆盖问题中问到的**每一个具体事实点** —— 数值、返回值、边界条件、"
+    "错误码、前置条件，逐条说清，不要笼统带过。\n"
+    "3. 片段没有覆盖的内容，明确说『文档未提及』；**不要推测、不要凭记忆补充**。\n"
+    "4. 用与问题相同的语言回答。\n"
+    "5. 你**必须**引用你实际用到的片段，引用格式是片段里的 `[[key]]` 原文，"
+    "不要改写、不要编造。\n"
+    "最终严格按 JSON 格式输出。"
+)
+
+PROMPT_VERSIONS: dict[str, str] = {
+    "v1": _SYSTEM_PROMPT_V1,
+    "v2": _SYSTEM_PROMPT_V2,
+}
+DEFAULT_PROMPT_VERSION = "v1"
+
+
+def prompt_id_for(version: str) -> str:
+    """`版本-内容指纹`。
+
+    ⚠️ **必须带内容指纹，不能只写版本号**：版本号是人写的标签，改了提示词却忘了
+    改版本号，两个不同的 prompt 会共用一个 id —— 而对比门看见"相同"就放行，
+    于是又一次静默。指纹由**文本**算出，改一个字就会变。
+    """
+    import hashlib
+
+    text = PROMPT_VERSIONS.get(version)
+    if text is None:
+        raise ValueError(
+            f"unknown prompt version: {version!r} (可选：{sorted(PROMPT_VERSIONS)})"
+        )
+    return f"{version}-{hashlib.sha256(text.encode('utf-8')).hexdigest()[:8]}"
 
 
 def _env_float(name: str, default: float) -> float:
@@ -92,6 +145,8 @@ class DeepSeekAnswerer:
     model: str = "deepseek-chat"
     base_url: str = DEFAULT_BASE_URL
     temperature: float = 0.0
+    #: 用哪版提示词。**它是被测系统的一部分**，见 `PROMPT_VERSIONS`。
+    prompt_version: str = DEFAULT_PROMPT_VERSION
 
     # 单价（USD / 百万 token）。优先读环境变量，其次用上面的默认。
     input_cost_per_million: float = field(
@@ -109,6 +164,23 @@ class DeepSeekAnswerer:
     # 类型写成 `Callable[..., Any]` 是为了不把这个"测试替身"写进对外契约。
     _post_chat: Callable[..., Any] | None = field(default=None, repr=False)
 
+    @property
+    def system_prompt(self) -> str:
+        """这版提示词的**文本**。未知版本直接**拒绝**，不静默回退到 v1 ——
+        回退会让"我选了 v2"变成"其实跑的是 v1"，而分数看起来正常。"""
+        text = PROMPT_VERSIONS.get(self.prompt_version)
+        if text is None:
+            raise ValueError(
+                f"unknown prompt version: {self.prompt_version!r} "
+                f"(可选：{sorted(PROMPT_VERSIONS)})"
+            )
+        return text
+
+    @property
+    def prompt_id(self) -> str:
+        """给报告与对比门用的身份（版本 + 内容指纹）。"""
+        return prompt_id_for(self.prompt_version)
+
     def answer(self, item: Any, contexts: Sequence[ContextItem]) -> Answer:
         """把问题 + 装配后的上下文发给 DeepSeek，解析回答案与自述引用。
 
@@ -120,7 +192,7 @@ class DeepSeekAnswerer:
         user_prompt = build_prompt(item.question, contexts)
 
         messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_prompt},
         ]
 

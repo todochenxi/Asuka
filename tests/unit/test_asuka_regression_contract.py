@@ -516,6 +516,31 @@ class TestComparability(unittest.TestCase):
         self.assertEqual(check_comparable(a, b), [])
         self.assertIn("传反", render_markdown(a, b))
 
+    def test_a_changed_prompt_is_refused(self) -> None:
+        """**提示词是被测系统的一部分**：换了它 ⇒ 变的是系统，不是它退步了。
+
+        它决定模型会不会自述引用、也决定答案的详略与覆盖面 ——
+        不拦住的话，「换 prompt 的效果」会被读成「系统退步/进步」。
+        """
+        a = dataclasses.replace(_run(_all_pass()), prompt_id="v1-aaaaaaaa")
+        b = dataclasses.replace(_run(_all_pass()), prompt_id="v2-bbbbbbbb")
+        self.assertTrue(any("提示词" in p for p in check_comparable(a, b)))
+
+    def test_an_unrecorded_prompt_is_refused_not_assumed_equal(self) -> None:
+        """老报告没记 `prompt_id` ⇒ **无法确认相同**。
+
+        ⚠️ 把空当成「没有差异」放行就是又一次静默。宁可拒绝。
+        """
+        a = dataclasses.replace(_run(_all_pass()), prompt_id="")
+        b = dataclasses.replace(_run(_all_pass()), prompt_id="v2-bbbbbbbb")
+        self.assertTrue(any("提示词" in p for p in check_comparable(a, b)))
+
+    def test_the_same_prompt_is_comparable(self) -> None:
+        """同版本 ⇒ 可比（别把门做成一律拒绝，那样它就没人用了）。"""
+        a = dataclasses.replace(_run(_all_pass()), prompt_id="v2-bbbbbbbb")
+        b = dataclasses.replace(_run(_all_pass()), prompt_id="v2-bbbbbbbb")
+        self.assertEqual(check_comparable(a, b), [])
+
 
 # ---------------------------------------------------------------- 渲染
 

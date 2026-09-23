@@ -27,7 +27,13 @@ from typing import Any
 from unittest import mock
 
 import asuka.deepseek as dsmod
-from asuka.answers import Answer, build_parser, evaluate_answers, main as answers_main
+from asuka.answers import (
+    Answer,
+    NullAnswerer,
+    build_parser,
+    evaluate_answers,
+    main as answers_main,
+)
 from asuka.dataset import Dataset, Evidence, RequiredPoint, TaskItem
 from asuka.kb import BM25Retriever, KnowledgeBase, PublicCorpusFilter
 from asuka.textutil import CHARS_PER_TOKEN
@@ -318,6 +324,91 @@ class TestRealHttpPath(unittest.TestCase):
             ans = a.answer(_item("t-x", points=(), evidence=()), [_Ctx("k", "v")])
         self.assertEqual(ans.text, "")
         self.assertTrue(ans.error.startswith("deepseek: HTTP 401"))
+
+
+class TestPromptIsPartOfTheSystem(unittest.TestCase):
+    """提示词是**被测系统的一部分** ⇒ 必须有身份，且身份必须真的能区分。
+
+    不记它 ⇒ 换个 prompt 再跑，`asuka.regression` 会把「提示词的效果」
+    **静默读成「系统退步/进步」**（同 `context_budget` 当初那个洞）。
+    """
+
+    def test_each_version_has_its_own_id(self) -> None:
+        self.assertNotEqual(dsmod.prompt_id_for("v1"), dsmod.prompt_id_for("v2"))
+
+    def test_the_id_carries_a_content_fingerprint_not_just_a_label(self) -> None:
+        """只写版本号会被「改了文本忘了改号」绕过 ⇒ id 必须含**内容**指纹。
+
+        那样两个不同的 prompt 会共用一个 id，而对比门看见「相同」就放行 —— 又一次静默。
+        """
+        version, _, digest = dsmod.prompt_id_for("v2").partition("-")
+        self.assertEqual(version, "v2")
+        self.assertEqual(len(digest), 8, "指纹太短会撞")
+
+    def test_v2_really_is_different_text(self) -> None:
+        """两版必须是**不同文本** —— 否则 id 不同只是标签不同，系统其实没变。"""
+        self.assertNotEqual(dsmod.PROMPT_VERSIONS["v1"], dsmod.PROMPT_VERSIONS["v2"])
+
+    def test_an_unknown_version_is_refused_not_silently_downgraded(self) -> None:
+        """回退到 v1 会让「我选了 v2」变成「其实跑的是 v1」，而分数看起来正常。"""
+        with self.assertRaises(ValueError):
+            dsmod.prompt_id_for("v3")
+        with self.assertRaises(ValueError):
+            _ = dsmod.DeepSeekAnswerer(prompt_version="v3").system_prompt
+
+    def test_the_answerer_self_reports_its_prompt_id(self) -> None:
+        a = dsmod.DeepSeekAnswerer(prompt_version="v2")
+        self.assertEqual(a.prompt_id, dsmod.prompt_id_for("v2"))
+
+    def test_the_selected_version_is_what_actually_gets_sent(self) -> None:
+        """选了 v2 就必须真发 **v2 的文本**。
+
+        ⚠️ 这条是 A/B 实验的命门：如果 `prompt_id` 报的是 v2、而发出去的还是 v1 文本，
+        整场对照就白跑了 —— 报告里一切正常，只有结论是假的。
+        """
+
+        class _Item:
+            question = "What does EXPIRE do?"
+
+        a = dsmod.DeepSeekAnswerer(prompt_version="v2")
+        seen: list[str] = []
+
+        def _post(_answerer: Any, messages: Any) -> dict[str, Any]:
+            seen.append(messages[0]["content"])
+            return {
+                "choices": [{"message": {"content": '{"answer":"x","citations":[]}'}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            }
+
+        a._post_chat = _post
+        a.answer(_Item(), ())
+        self.assertEqual(seen[0], dsmod.PROMPT_VERSIONS["v2"])
+
+    def test_the_report_carries_the_prompt_id(self) -> None:
+        a = dsmod.DeepSeekAnswerer(prompt_version="v2")
+        a._post_chat = _fake_post('{"answer":"EXPIRE sets a timeout.","citations":[]}')
+        rep = evaluate_answers(_kb(), _dataset(), a, top_k=2, corpus_chunks=len(_CHUNKS))
+        self.assertEqual(rep.prompt_id, dsmod.prompt_id_for("v2"))
+
+    def test_a_calibration_answerer_has_no_prompt(self) -> None:
+        """`oracle` / `null` 没有提示词 ⇒ `""`。
+
+        ⚠️ 它与「老报告没记录」**同形**，所以对比门对两边不一致一律拒绝，
+        而不是把空当成「没有差异」放行。
+        """
+        rep = evaluate_answers(
+            _kb(), _dataset(), NullAnswerer(), top_k=2, corpus_chunks=len(_CHUNKS)
+        )
+        self.assertEqual(rep.prompt_id, "")
+
+    def test_the_prompt_version_is_selectable_on_the_cli(self) -> None:
+        args = build_parser().parse_args(["--prompt-version", "v2"])
+        self.assertEqual(args.prompt_version, "v2")
+
+    def test_the_default_prompt_version_is_declared_not_implicit(self) -> None:
+        """默认值必须是**声明出来**的常量，不是散落在两处的字符串字面量。"""
+        args = build_parser().parse_args([])
+        self.assertEqual(args.prompt_version, dsmod.DEFAULT_PROMPT_VERSION)
 
 
 if __name__ == "__main__":
