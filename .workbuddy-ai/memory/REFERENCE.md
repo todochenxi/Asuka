@@ -184,3 +184,17 @@ python -m apps.eval run ds.json [--out base.json] [--against base.json]
      / `sentencepiece 0.2.2` / `qdrant-client 1.19.1`）
    * ⚠️ **`sentencepiece` 是必装的** —— bge-m3 是 XLM-RoBERTa 系，
      缺了 `transformers` 可能加载不了 tokenizer
+
+5. ⚠️⚠️ **`--embedder local` 不设 `ASUKA_EMBED_MODEL_PATH` ⇒ 静默退化到**损坏的** HF 缓存**
+   （2026-09-23 真踩）。`embedding.py` 里 `model_path or self.model`：环境变量为空 ⇒
+   退化成模型名 `BAAI/bge-m3` ⇒ 走 HF 缓存，而那份
+   `~/.cache/huggingface/hub/models--BAAI--bge-m3/snapshots/<hash>/config.json`
+   正是上面第 1 条那个 **0 字节**文件 ⇒
+   `OSError: config file ... is not a valid JSON file`。
+   ⚠️ **报错里一个字都不提环境变量** —— 看起来像"模型坏了/要重下 2.2GB"，
+   而本地权重 `.asuka-models/bge-m3/` 一直是**完好的**（config.json 687B + 2.2GB bin）。
+   ⇒ 跑 dense 前**必须**显式给：
+   `ASUKA_EMBED_MODEL_PATH='C:/Users/19644/socialbook/agentos/.asuka-models/bge-m3'`
+   （用绝对路径）。判别法：日志出现 `Loading weights: 391/391` 就是走了本地权重；
+   出现 `sending unauthenticated requests to the HF Hub` 就是在走坏缓存。
+   ⇒ **别去删 HF 缓存重下** —— 本地有，设变量即可（省 2.2GB / 1 小时）。

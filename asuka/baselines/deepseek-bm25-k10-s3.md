@@ -1,0 +1,180 @@
+# Asuka 答案级评测 · redis
+
+- answerer：`deepseek`
+- 检索器：`bm25`（top_k=10）
+- 采样：每题 3 次
+- 语料：428 chunks
+- 上下文窗口：8192 tokens（留 1024 给输出 ⇒ 可放 7168） · 每 token 4 字符
+- 生成时间：2026-09-23T13:33:33+0800
+
+## 总体
+
+| 指标 | 值 |
+|---|---|
+| 必答要点召回（mean） | 0.2132 |
+| pass@1（稳定做到） | 0.0278 |
+| pass@3（能做到） | 0.0417 |
+| 检索耗时（mean） | 0.3 ms |
+| 生成耗时（mean） | 2748.7 ms |
+| 合计耗时（mean） | 2749.0 ms |
+| 上下文 token（mean） | 1479.4 |
+| 上下文片数（mean） | 10.0 |
+| 生成 token（mean，prompt+completion） | 2108.8 |
+| 总 token | 151832 |
+| 每答到一个要点的字符数 | 495.6 |
+
+| 总成本 | $0.0524 |
+
+> `pass@k` 的通过定义是**全部要点都答到**（recall = 1.0），不用阈值 —— 阈值是个自由旋钮，会被调到来凑结论。梯度信息由第一行的 `mean_recall` 提供。
+
+> ⚠️ `chars_per_hit_point` 是**已知缺口**的度量：判据是要点召回，所以把整篇文档抄进答案也会得高分。这个数越大越可疑 —— 但它只是**信号**，不是判据（要真判『答得冗不冗』需要裁判模型）。
+
+## 上下文（Context）
+
+- 窗口 8192 tokens，可放 **7168**（留给输出 1024）
+- 实际占用 **1479.4** tokens（均值）· 10.0 片 · 共 106518 tokens
+- 被预算丢掉 **0** 片，涉及 **0** 条样本
+
+> ⚠️ `top_k` 是**条数**，不是窗口占用。检索之后必须有这一步装配：10 片长文档能撑爆 8k 窗口，而失败发生在**模型那一侧**（`CONTEXT_LENGTH_EXCEEDED`），不在评测这一侧 —— 评测跑得好好的，线上全崩。
+
+> ⚠️ 取舍顺序按**相关性**（检索名次写进 `ContextItem.priority`）。不写的话内核的 `allocate` 会退化成按 `chunk_id` **字母序**丢 —— 丢掉第一名、留下最后一名，而且是**静默**的：分数照出，只是低了一点。
+
+## 引用（Citation）
+
+| 指标 | 值 |
+|---|---|
+| 引用有依据率 grounded | 1.0000 |
+| 依据召回（端到端） | 0.5455 |
+| 依据用上率（纯生成侧） | 0.9086 |
+| 编造引用 | 0 条 / 0 题 |
+
+> 三个数**各答一个问题，不能互相替代**：`grounded` = 引的东西**给它了吗**（< 1 就是编造）；`依据召回` = 该引的依据引到没有（⚠️ **同时受检索和生成影响**，单独看会误判）；`依据用上率` = **给了它的**依据它引了几成（纯生成侧，检索漏没漏与它无关 —— 检索没给的**不进这个分母**，否则检索越差它越高，方向就反了）。
+
+> 三个数一律**逐样本求均值**，与检索报告的 `context_recall` 同口径 —— `oracle` 跑出来的 `依据召回` 就等于那份报告的 `context_recall`（它把拿到的依据一条不漏地引了）。**同一个量只有一处定义。**
+
+> 为什么**不**报 `citation_precision`（引的东西里有多少条属于 ground truth）：ground truth 是**最少必要依据**，不是**唯一允许引的依据**。引了别的真实上下文不算错，用 precision 罚它等于**奖励『少引』**。
+
+### 缺的依据归谁
+
+| 归因 | 条数 | 该动什么 |
+|---|---|---|
+| 检索**根本没检到** | 147 | 换检索器 / 扩语料 |
+| 检到了但**装不进预算** | 0 | 加窗口 / 降 top_k |
+| 给了它却**没引** | 16 | 改 prompt / 换模型 |
+
+> ⚠️ 这是**归因**，不是三个待办。`依据召回` 低时先看这三行再下结论 —— 不然『检索没检到』会被读成『模型没用依据』，改错地方。
+> ⚠️ 第二行和第一行**必须分开**：『检到了但装不下』是这套评测里最容易误读的失败 —— 分数低看起来像检索差，实际是**配置**（窗口 / top_k）不合适。
+
+## 分难度
+
+| 难度 | 样本 | recall | pass@1 | pass@k | 平均 token |
+|---|---|---|---|---|---|
+| simple | 24 | 0.4646 | 0.0833 | 0.1250 | 1947.2 |
+| medium | 24 | 0.1667 | 0.0000 | 0.0000 | 2172.5 |
+| hard | 24 | 0.0083 | 0.0000 | 0.0000 | 2206.7 |
+
+## 一个要点都没答到的题（13）
+
+- `r-simple-03` (simple) What does TTL return when the key exists but has no expiration, and wh
+  - 缺：-2 = key 不存在
+  - 缺：-1 = key 在但无过期
+  - 缺：否则返回剩余秒数
+- `r-simple-06` (simple) How do the start and stop indexes of LRANGE behave, including negative
+  - 缺：下标 0 基
+  - 缺：负下标从尾部数，-1 是最后一个
+  - 缺：越界不报错（空 / 截断）
+- `r-medium-05` (medium) When should you use HSET/HGET instead of SET/GET?
+  - 缺：SET/GET 是单个不透明字符串：改一个字段要重写整个值
+  - 缺：HSET/HGET 操作 hash，可按字段读写
+  - 缺：选型：记录 / 多字段 ⇒ hash；单标量 ⇒ string
+- `r-medium-06` (medium) What is the difference between SADD and ZADD?
+  - 缺：SADD ⇒ 无序集合，只有成员关系，无分数
+  - 缺：ZADD ⇒ 有序集合，成员带 score
+  - 缺：按 score 排序，同分按字典序
+  - 缺：返回值语义：新增 / 新增或更新（CH）
+- `r-medium-07` (medium) What is the difference in role between MULTI/EXEC and WATCH?
+  - 缺：MULTI/EXEC ⇒ 执行的原子性（不可打断的一块）
+  - 缺：WATCH ⇒ 乐观并发控制（标记 key）
+  - 缺：被别的客户端改动 ⇒ 事务中止，EXEC 返回 nil
+  - 缺：单靠 MULTI/EXEC 挡不住读改写竞态
+- `r-medium-08` (medium) What is the difference between using PUBLISH/SUBSCRIBE and using a lis
+  - 缺：PUBLISH/SUBSCRIBE = fire-and-forget：只有发布瞬间的订阅者收到
+  - 缺：无持久化，断线就丢
+  - 缺：list 当队列会**存住**消息，直到被消费
+  - 缺：消费者临时下线后仍能拿到
+- `r-hard-01` (hard) Design a fixed-window rate limiter that allows at most N requests per 
+  - 缺：用 INCR 做原子计数 + EXPIRE 设窗口过期
+  - 缺：安全性来自 INCR 的原子性（并发不会同读同判）
+  - 缺：顺序陷阱：EXPIRE 必须与计数一起创建，否则无 TTL 永久堵死
+  - 缺：GET-then-SET 不等价于 INCR（读改写竞态）
+  - 缺：已知弱点：窗口边界可突发到 2N
+- `r-hard-02` (hard) Design a job queue in Redis where a worker crashing mid-job does not l
+  - 缺：生产 LPUSH/RPUSH、消费 BRPOP/BLPOP（阻塞而非轮询）
+  - 缺：朴素做法是 at-most-once：弹出即移除，崩了丢任务
+  - 缺：要 at-least-once 需第二步：移入 in-flight 结构并 ack
+  - 缺：要有 reaper 把超租约的任务放回队列
+  - 缺：失败窗口 = pop 与 ack 之间 ⇒ 消费者必须幂等
+- `r-hard-03` (hard) You need to decrement a stock counter only if it is greater than zero,
+  - 缺：WATCH → GET 读值 → 判断 > 0 → MULTI 里 DECR → EXEC
+  - 缺：失败条件：WATCH 与 EXEC 之间有别的客户端改了 key
+  - 缺：中止时 EXEC 返回 nil，必须重试整个读改写
+  - 缺：不重试 = 静默丢弃请求
+  - 缺：高竞争下可能饿死
+- `r-hard-04` (hard) Design a leaderboard with ZADD and ZRANGE: how do you insert a score, 
+  - 缺：ZADD 插入 / 更新（同一成员再加 = 改分数）
+  - 缺：top 10 = ZRANGE key 0 9（可 REV / WITHSCORES）
+  - 缺：名次用 ZRANK / ZREVRANK（0 基）
+  - 缺：名次与分页不是原子地一起读
+  - 缺：同分按字典序，不是任意顺序
+  - ⚠️ 这题还**声明了语料缺口** —— 有些要点语料里根本没有，低分不该全记在生成头上。
+- `r-hard-06` (hard) Design a cache read path with EXPIRE and GET. Why must the application
+  - 缺：写入带 EX 让条目自己过期；GET 返回 nil 视为 miss 并回源重建
+  - 缺：GET 完全不携带剩余 TTL 信息
+  - 缺：要剩余寿命必须显式 TTL/PTTL，且 -1 与 -2 是两种情形
+  - 缺：缓存雪崩：热点 key 过期时同时 miss，所以过期要加抖动
+- `r-hard-07` (hard) Design a real-time notification fan-out with PUBLISH/SUBSCRIBE. What d
+  - 缺：PUBLISH 发、SUBSCRIBE 收
+  - 缺：保证是 at-most-once（fire-and-forget）
+  - 缺：消息不持久化，断线 / 慢订阅者直接丢
+  - 缺：PUBLISH 的返回值（接收者数）**不是** ack
+  - 缺：要持久化必须并行加一条持久路径（list / stream）
+- `r-hard-08` (hard) You store a user profile as a Redis hash. How do you update a single f
+  - 缺：HSET key field value 只改命名字段，其余不动
+  - 缺：对比 SET 会整体替换值
+  - 缺：HGET key field 读单个字段
+  - 缺：删掉最后一个字段 ⇒ 整个 key 消失（空 hash 不存在）
+  - 缺：因此后续 TTL/EXISTS 会看到 key 不存在
+  - ⚠️ 这题还**声明了语料缺口** —— 有些要点语料里根本没有，低分不该全记在生成头上。
+
+## 逐题明细
+
+| task | 难度 | 通过 / 采样 | recall | 字符 | ctx | token | 检ms | 生ms | 引用 | 依据 | err |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `r-simple-01` | simple | 0/3 | 0.50 | 148 | 993 | 1612 | 0 | 2157 | 1 条 | 3/12 | — |
+| `r-simple-02` | simple | 0/3 | 0.80 | 243 | 1002 | 1661 | 0 | 2279 | 1 条 | 3/3 | — |
+| `r-simple-03` | simple | 0/3 | 0.00 | 118 | 2222 | 2591 | 1 | 2312 | 2 条 | 6/6 | — |
+| `r-simple-04` | simple | 0/3 | 0.50 | 140 | 1092 | 1600 | 0 | 2177 | 1 条 | 3/3 | — |
+| `r-simple-05` | simple | 2/3 | 0.92 | 1296 | 1713 | 2427 | 0 | 5007 | 3 条 | 6/6 | — |
+| `r-simple-06` | simple | 0/3 | 0.00 | 221 | 1391 | 1962 | 0 | 2462 | 3 条 | 3/3 | — |
+| `r-simple-07` | simple | 0/3 | 0.33 | 209 | 1485 | 1979 | 0 | 2090 | 2 条 | 3/3 | — |
+| `r-simple-08` | simple | 0/3 | 0.67 | 113 | 1333 | 1743 | 0 | 2303 | 2 条 | 3/3 | — |
+| `r-medium-01` | medium | 0/3 | 0.50 | 292 | 1457 | 2010 | 0 | 2818 | 1 条 | 3/12 | — |
+| `r-medium-02` | medium | 0/3 | 0.50 | 815 | 1640 | 2229 | 0 | 3101 | 2 条 | 6/6 | — |
+| `r-medium-03` | medium | 0/3 | 0.17 | 460 | 1582 | 2427 | 0 | 2881 | 3 条 | 0/18 | — |
+| `r-medium-04` | medium | 0/3 | 0.17 | 405 | 1601 | 2264 | 0 | 2835 | 1 条 | 5/12 | — |
+| `r-medium-05` | medium | 0/3 | 0.00 | 253 | 1467 | 2279 | 0 | 2511 | 10 条 | 0/12 | — |
+| `r-medium-06` | medium | 0/3 | 0.00 | 128 | 1244 | 1866 | 0 | 2187 | 1 条 | 0/15 | — |
+| `r-medium-07` | medium | 0/3 | 0.00 | 137 | 1549 | 2057 | 0 | 2181 | 2 条 | 6/6 | — |
+| `r-medium-08` | medium | 0/3 | 0.00 | 483 | 1583 | 2247 | 0 | 3092 | 4 条 | 6/12 | — |
+| `r-hard-01` | hard | 0/3 | 0.00 | 1206 | 1589 | 2670 | 0 | 4453 | 8 条 | 21/36 | — |
+| `r-hard-02` | hard | 0/3 | 0.00 | 138 | 2101 | 2594 | 0 | 2136 | 0 条 | 0/15 | — |
+| `r-hard-03` | hard | 0/3 | 0.00 | 541 | 1398 | 2076 | 0 | 2809 | 4 条 | 9/9 | — |
+| `r-hard-04` | hard | 0/3 | 0.00 | 486 | 1718 | 2555 | 0 | 2881 | 4 条 | 3/15 | — |
+| `r-hard-05` | hard | 0/3 | 0.07 | 329 | 1682 | 2272 | 0 | 3810 | 6 条 | 0/12 | — |
+| `r-hard-06` | hard | 0/3 | 0.00 | 568 | 1320 | 2039 | 0 | 3007 | 3 条 | 3/21 | — |
+| `r-hard-07` | hard | 0/3 | 0.00 | 546 | 1166 | 1695 | 0 | 2430 | 4 条 | 6/12 | — |
+| `r-hard-08` | hard | 0/3 | 0.00 | 299 | 1178 | 1751 | 0 | 2048 | 2 条 | 3/12 | — |
+
+> `ctx` = 喂进去的上下文 token（受预算约束）。`检ms` / `生ms` **分开** —— 合成一个数的话，检索器的差距会被生成耗时稀释掉。
+> `引用` / `依据` 两列印 `—` = **这题没自述引用**（不可测），不是『引用了 0 条』。
+

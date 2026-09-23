@@ -1,0 +1,3480 @@
+{
+  "topic": "redis",
+  "answerer": "deepseek",
+  "retriever": "bm25",
+  "top_k": 10,
+  "samples_per_task": 3,
+  "corpus_chunks": 428,
+  "generated_at": "2026-09-23T13:33:33+0800",
+  "calibration": false,
+  "context_budget": 8192,
+  "reserved_for_output": 1024,
+  "chars_per_token": 4,
+  "overall": {
+    "n_samples": 72,
+    "n_tasks": 24,
+    "samples_per_task": 3,
+    "n_scorable": 72,
+    "tasks_unscorable": 0,
+    "mean_recall": 0.21319444444444444,
+    "pass_at_1": 0.027777777777777776,
+    "pass_at_k": 0.041666666666666664,
+    "latency_ms": 2748.6628124994845,
+    "retrieval_ms": 0.33765832874147844,
+    "mean_tokens": 2108.777777777778,
+    "total_tokens": 151832,
+    "total_cost_usd": 0.05237311,
+    "chars_per_hit_point": 495.55172413793105,
+    "errors": 0,
+    "context_tokens": 1479.4166666666667,
+    "total_context_tokens": 106518,
+    "context_size": 10.0,
+    "context_dropped_total": 0,
+    "samples_with_context_drops": 0,
+    "n_with_citations": 72,
+    "n_without_citations": 0,
+    "fabricated_total": 0,
+    "samples_with_fabrication": 0,
+    "grounded_rate": 1.0,
+    "evidence_recall": 0.5455357142857143,
+    "evidence_used_rate": 0.908625730994152
+  },
+  "by_difficulty": {
+    "simple": {
+      "n_samples": 24,
+      "n_tasks": 8,
+      "samples_per_task": 3,
+      "n_scorable": 24,
+      "tasks_unscorable": 0,
+      "mean_recall": 0.46458333333333335,
+      "pass_at_1": 0.08333333333333333,
+      "pass_at_k": 0.125,
+      "latency_ms": 2598.403999999088,
+      "retrieval_ms": 0.37533747672569007,
+      "mean_tokens": 1947.2083333333333,
+      "total_tokens": 46733,
+      "total_cost_usd": 0.014970130000000002,
+      "chars_per_hit_point": 182.0487804878049,
+      "errors": 0,
+      "context_tokens": 1403.875,
+      "total_context_tokens": 33693,
+      "context_size": 10.0,
+      "context_dropped_total": 0,
+      "samples_with_context_drops": 0,
+      "n_with_citations": 24,
+      "n_without_citations": 0,
+      "fabricated_total": 0,
+      "samples_with_fabrication": 0,
+      "grounded_rate": 1.0,
+      "evidence_recall": 0.90625,
+      "evidence_used_rate": 1.0
+    },
+    "medium": {
+      "n_samples": 24,
+      "n_tasks": 8,
+      "samples_per_task": 3,
+      "n_scorable": 24,
+      "tasks_unscorable": 0,
+      "mean_recall": 0.16666666666666666,
+      "pass_at_1": 0.0,
+      "pass_at_k": 0.0,
+      "latency_ms": 2700.751920827315,
+      "retrieval_ms": 0.289937510387972,
+      "mean_tokens": 2172.4583333333335,
+      "total_tokens": 52139,
+      "total_cost_usd": 0.01761499,
+      "chars_per_hit_point": 558.0,
+      "errors": 0,
+      "context_tokens": 1515.375,
+      "total_context_tokens": 36369,
+      "context_size": 10.0,
+      "context_dropped_total": 0,
+      "samples_with_context_drops": 0,
+      "n_with_citations": 24,
+      "n_without_citations": 0,
+      "fabricated_total": 0,
+      "samples_with_fabrication": 0,
+      "grounded_rate": 1.0,
+      "evidence_recall": 0.3958333333333333,
+      "evidence_used_rate": 0.8111111111111111
+    },
+    "hard": {
+      "n_samples": 24,
+      "n_tasks": 8,
+      "samples_per_task": 3,
+      "n_scorable": 24,
+      "tasks_unscorable": 0,
+      "mean_recall": 0.008333333333333333,
+      "pass_at_1": 0.0,
+      "pass_at_k": 0.0,
+      "latency_ms": 2946.832516672051,
+      "retrieval_ms": 0.3476999991107732,
+      "mean_tokens": 2206.6666666666665,
+      "total_tokens": 52960,
+      "total_cost_usd": 0.019787990000000002,
+      "chars_per_hit_point": 12350.0,
+      "errors": 0,
+      "context_tokens": 1519.0,
+      "total_context_tokens": 36456,
+      "context_size": 10.0,
+      "context_dropped_total": 0,
+      "samples_with_context_drops": 0,
+      "n_with_citations": 24,
+      "n_without_citations": 0,
+      "fabricated_total": 0,
+      "samples_with_fabrication": 0,
+      "grounded_rate": 1.0,
+      "evidence_recall": 0.3345238095238095,
+      "evidence_used_rate": 0.8680555555555556
+    }
+  },
+  "items": [
+    {
+      "task_id": "r-simple-01",
+      "difficulty": "simple",
+      "question": "What does the EXPIRE command do, what is its syntax, and what is its time complexity?",
+      "points_total": 4,
+      "hits": [
+        "语法：EXPIRE key seconds",
+        "复杂度 O(1)"
+      ],
+      "missed": [
+        "作用：设超时，到期自动删除",
+        "返回 1 / 0"
+      ],
+      "hit_by": [
+        [
+          "语法：EXPIRE key seconds",
+          "expire key seconds"
+        ],
+        [
+          "复杂度 O(1)",
+          "o(1)"
+        ]
+      ],
+      "answer_chars": 148,
+      "latency_ms": 2383.0866999924183,
+      "retrieval_ms": 0.29719993472099304,
+      "prompt_tokens": 1548,
+      "completion_tokens": 64,
+      "cost_usd": 0.00048836,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:expire:000"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:expire:000"
+        ],
+        "evidence_not_retrieved": [
+          "redis:expire:001",
+          "redis:expire:002",
+          "redis:expire:003"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 993,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-01",
+      "difficulty": "simple",
+      "question": "What does the EXPIRE command do, what is its syntax, and what is its time complexity?",
+      "points_total": 4,
+      "hits": [
+        "语法：EXPIRE key seconds",
+        "复杂度 O(1)"
+      ],
+      "missed": [
+        "作用：设超时，到期自动删除",
+        "返回 1 / 0"
+      ],
+      "hit_by": [
+        [
+          "语法：EXPIRE key seconds",
+          "expire key seconds"
+        ],
+        [
+          "复杂度 O(1)",
+          "o(1)"
+        ]
+      ],
+      "answer_chars": 148,
+      "latency_ms": 2111.9723999872804,
+      "retrieval_ms": 0.29719993472099304,
+      "prompt_tokens": 1548,
+      "completion_tokens": 64,
+      "cost_usd": 0.00048836,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:expire:000"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:expire:000"
+        ],
+        "evidence_not_retrieved": [
+          "redis:expire:001",
+          "redis:expire:002",
+          "redis:expire:003"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 993,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-01",
+      "difficulty": "simple",
+      "question": "What does the EXPIRE command do, what is its syntax, and what is its time complexity?",
+      "points_total": 4,
+      "hits": [
+        "语法：EXPIRE key seconds",
+        "复杂度 O(1)"
+      ],
+      "missed": [
+        "作用：设超时，到期自动删除",
+        "返回 1 / 0"
+      ],
+      "hit_by": [
+        [
+          "语法：EXPIRE key seconds",
+          "expire key seconds"
+        ],
+        [
+          "复杂度 O(1)",
+          "o(1)"
+        ]
+      ],
+      "answer_chars": 148,
+      "latency_ms": 1977.3062999593094,
+      "retrieval_ms": 0.29719993472099304,
+      "prompt_tokens": 1548,
+      "completion_tokens": 64,
+      "cost_usd": 0.00048836,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:expire:000"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:expire:000"
+        ],
+        "evidence_not_retrieved": [
+          "redis:expire:001",
+          "redis:expire:002",
+          "redis:expire:003"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 993,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-02",
+      "difficulty": "simple",
+      "question": "What is the full syntax of the SET command in modern Redis?",
+      "points_total": 5,
+      "hits": [
+        "基本形式 SET key value",
+        "条件写入 NX / XX",
+        "过期选项 EX / PX / EXAT / PXAT",
+        "KEEPTTL 保留现有 TTL"
+      ],
+      "missed": [
+        "GET 返回旧值"
+      ],
+      "hit_by": [
+        [
+          "基本形式 SET key value",
+          "set key value"
+        ],
+        [
+          "条件写入 NX / XX",
+          "nx | xx"
+        ],
+        [
+          "过期选项 EX / PX / EXAT / PXAT",
+          "exat"
+        ],
+        [
+          "KEEPTTL 保留现有 TTL",
+          "keepttl"
+        ]
+      ],
+      "answer_chars": 243,
+      "latency_ms": 2337.3306000139564,
+      "retrieval_ms": 0.3744999412447214,
+      "prompt_tokens": 1559,
+      "completion_tokens": 102,
+      "cost_usd": 0.00053313,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:set:000"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:set:000"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1002,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-02",
+      "difficulty": "simple",
+      "question": "What is the full syntax of the SET command in modern Redis?",
+      "points_total": 5,
+      "hits": [
+        "基本形式 SET key value",
+        "条件写入 NX / XX",
+        "过期选项 EX / PX / EXAT / PXAT",
+        "KEEPTTL 保留现有 TTL"
+      ],
+      "missed": [
+        "GET 返回旧值"
+      ],
+      "hit_by": [
+        [
+          "基本形式 SET key value",
+          "set key value"
+        ],
+        [
+          "条件写入 NX / XX",
+          "nx | xx"
+        ],
+        [
+          "过期选项 EX / PX / EXAT / PXAT",
+          "exat"
+        ],
+        [
+          "KEEPTTL 保留现有 TTL",
+          "keepttl"
+        ]
+      ],
+      "answer_chars": 243,
+      "latency_ms": 2495.629800017923,
+      "retrieval_ms": 0.3744999412447214,
+      "prompt_tokens": 1559,
+      "completion_tokens": 102,
+      "cost_usd": 0.00053313,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:set:000"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:set:000"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1002,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-02",
+      "difficulty": "simple",
+      "question": "What is the full syntax of the SET command in modern Redis?",
+      "points_total": 5,
+      "hits": [
+        "基本形式 SET key value",
+        "条件写入 NX / XX",
+        "过期选项 EX / PX / EXAT / PXAT",
+        "KEEPTTL 保留现有 TTL"
+      ],
+      "missed": [
+        "GET 返回旧值"
+      ],
+      "hit_by": [
+        [
+          "基本形式 SET key value",
+          "set key value"
+        ],
+        [
+          "条件写入 NX / XX",
+          "nx | xx"
+        ],
+        [
+          "过期选项 EX / PX / EXAT / PXAT",
+          "exat"
+        ],
+        [
+          "KEEPTTL 保留现有 TTL",
+          "keepttl"
+        ]
+      ],
+      "answer_chars": 243,
+      "latency_ms": 2004.4842000352219,
+      "retrieval_ms": 0.3744999412447214,
+      "prompt_tokens": 1559,
+      "completion_tokens": 102,
+      "cost_usd": 0.00053313,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:set:000"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:set:000"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1002,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-03",
+      "difficulty": "simple",
+      "question": "What does TTL return when the key exists but has no expiration, and when the key does not exist?",
+      "points_total": 3,
+      "hits": [],
+      "missed": [
+        "-2 = key 不存在",
+        "-1 = key 在但无过期",
+        "否则返回剩余秒数"
+      ],
+      "hit_by": [],
+      "answer_chars": 118,
+      "latency_ms": 2348.686999990605,
+      "retrieval_ms": 0.6280000088736415,
+      "prompt_tokens": 2527,
+      "completion_tokens": 64,
+      "cost_usd": 0.0007526900000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:ttl:018",
+          "redis:ttl:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:ttl:018",
+          "redis:ttl:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 2222,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-03",
+      "difficulty": "simple",
+      "question": "What does TTL return when the key exists but has no expiration, and when the key does not exist?",
+      "points_total": 3,
+      "hits": [],
+      "missed": [
+        "-2 = key 不存在",
+        "-1 = key 在但无过期",
+        "否则返回剩余秒数"
+      ],
+      "hit_by": [],
+      "answer_chars": 118,
+      "latency_ms": 2350.072699948214,
+      "retrieval_ms": 0.6280000088736415,
+      "prompt_tokens": 2527,
+      "completion_tokens": 64,
+      "cost_usd": 0.0007526900000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:ttl:018",
+          "redis:ttl:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:ttl:018",
+          "redis:ttl:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 2222,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-03",
+      "difficulty": "simple",
+      "question": "What does TTL return when the key exists but has no expiration, and when the key does not exist?",
+      "points_total": 3,
+      "hits": [],
+      "missed": [
+        "-2 = key 不存在",
+        "-1 = key 在但无过期",
+        "否则返回剩余秒数"
+      ],
+      "hit_by": [],
+      "answer_chars": 118,
+      "latency_ms": 2237.63950006105,
+      "retrieval_ms": 0.6280000088736415,
+      "prompt_tokens": 2527,
+      "completion_tokens": 64,
+      "cost_usd": 0.0007526900000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:ttl:018",
+          "redis:ttl:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:ttl:018",
+          "redis:ttl:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 2222,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-04",
+      "difficulty": "simple",
+      "question": "What does SADD return?",
+      "points_total": 2,
+      "hits": [
+        "返回**新增**的元素个数（不是集合大小）"
+      ],
+      "missed": [
+        "已存在的成员不计入（贡献 0）"
+      ],
+      "hit_by": [
+        [
+          "返回**新增**的元素个数（不是集合大小）",
+          "number of elements that were added"
+        ]
+      ],
+      "answer_chars": 140,
+      "latency_ms": 2348.968300037086,
+      "retrieval_ms": 0.35280000884085894,
+      "prompt_tokens": 1550,
+      "completion_tokens": 50,
+      "cost_usd": 0.00047350000000000007,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:sadd:018"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:sadd:018"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1092,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-04",
+      "difficulty": "simple",
+      "question": "What does SADD return?",
+      "points_total": 2,
+      "hits": [
+        "返回**新增**的元素个数（不是集合大小）"
+      ],
+      "missed": [
+        "已存在的成员不计入（贡献 0）"
+      ],
+      "hit_by": [
+        [
+          "返回**新增**的元素个数（不是集合大小）",
+          "number of elements that were added"
+        ]
+      ],
+      "answer_chars": 140,
+      "latency_ms": 2091.162499971688,
+      "retrieval_ms": 0.35280000884085894,
+      "prompt_tokens": 1550,
+      "completion_tokens": 50,
+      "cost_usd": 0.00047350000000000007,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:sadd:018"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:sadd:018"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1092,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-04",
+      "difficulty": "simple",
+      "question": "What does SADD return?",
+      "points_total": 2,
+      "hits": [
+        "返回**新增**的元素个数（不是集合大小）"
+      ],
+      "missed": [
+        "已存在的成员不计入（贡献 0）"
+      ],
+      "hit_by": [
+        [
+          "返回**新增**的元素个数（不是集合大小）",
+          "number of elements that were added"
+        ]
+      ],
+      "answer_chars": 140,
+      "latency_ms": 2091.1208000034094,
+      "retrieval_ms": 0.35280000884085894,
+      "prompt_tokens": 1550,
+      "completion_tokens": 50,
+      "cost_usd": 0.00047350000000000007,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:sadd:018"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:sadd:018"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1092,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-05",
+      "difficulty": "simple",
+      "question": "What does ZADD return, and how do the CH and INCR options change the return value?",
+      "points_total": 4,
+      "hits": [
+        "默认返回**新增**成员数",
+        "CH ⇒ 新增或更新",
+        "INCR ⇒ 返回更新后的分数",
+        "冲突中止 ⇒ nil"
+      ],
+      "missed": [],
+      "hit_by": [
+        [
+          "默认返回**新增**成员数",
+          "number of new members"
+        ],
+        [
+          "CH ⇒ 新增或更新",
+          "number of new or updated members"
+        ],
+        [
+          "INCR ⇒ 返回更新后的分数",
+          "updated score of the member"
+        ],
+        [
+          "冲突中止 ⇒ nil",
+          "conflict with xx/nx/lt/gt"
+        ]
+      ],
+      "answer_chars": 1268,
+      "latency_ms": 2914.356100023724,
+      "retrieval_ms": 0.37459994200617075,
+      "prompt_tokens": 2063,
+      "completion_tokens": 362,
+      "cost_usd": 0.0009552100000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:zadd:028",
+          "redis:zadd:029",
+          "redis:zadd:003"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:zadd:028",
+          "redis:zadd:029"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1713,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-05",
+      "difficulty": "simple",
+      "question": "What does ZADD return, and how do the CH and INCR options change the return value?",
+      "points_total": 4,
+      "hits": [
+        "默认返回**新增**成员数",
+        "CH ⇒ 新增或更新",
+        "INCR ⇒ 返回更新后的分数"
+      ],
+      "missed": [
+        "冲突中止 ⇒ nil"
+      ],
+      "hit_by": [
+        [
+          "默认返回**新增**成员数",
+          "number of new members"
+        ],
+        [
+          "CH ⇒ 新增或更新",
+          "number of new or updated members"
+        ],
+        [
+          "INCR ⇒ 返回更新后的分数",
+          "updated score of the member"
+        ]
+      ],
+      "answer_chars": 1352,
+      "latency_ms": 8985.07489997428,
+      "retrieval_ms": 0.37459994200617075,
+      "prompt_tokens": 2063,
+      "completion_tokens": 370,
+      "cost_usd": 0.0009640100000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:zadd:028",
+          "redis:zadd:029",
+          "redis:zadd:003"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:zadd:028",
+          "redis:zadd:029"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1713,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-05",
+      "difficulty": "simple",
+      "question": "What does ZADD return, and how do the CH and INCR options change the return value?",
+      "points_total": 4,
+      "hits": [
+        "默认返回**新增**成员数",
+        "CH ⇒ 新增或更新",
+        "INCR ⇒ 返回更新后的分数",
+        "冲突中止 ⇒ nil"
+      ],
+      "missed": [],
+      "hit_by": [
+        [
+          "默认返回**新增**成员数",
+          "number of new members"
+        ],
+        [
+          "CH ⇒ 新增或更新",
+          "number of new or updated members"
+        ],
+        [
+          "INCR ⇒ 返回更新后的分数",
+          "updated score of the member"
+        ],
+        [
+          "冲突中止 ⇒ nil",
+          "conflict with xx/nx/lt/gt"
+        ]
+      ],
+      "answer_chars": 1268,
+      "latency_ms": 3120.6701000919566,
+      "retrieval_ms": 0.37459994200617075,
+      "prompt_tokens": 2063,
+      "completion_tokens": 362,
+      "cost_usd": 0.0009552100000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:zadd:028",
+          "redis:zadd:029",
+          "redis:zadd:003"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:zadd:028",
+          "redis:zadd:029"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1713,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-06",
+      "difficulty": "simple",
+      "question": "How do the start and stop indexes of LRANGE behave, including negative values?",
+      "points_total": 3,
+      "hits": [],
+      "missed": [
+        "下标 0 基",
+        "负下标从尾部数，-1 是最后一个",
+        "越界不报错（空 / 截断）"
+      ],
+      "hit_by": [],
+      "answer_chars": 224,
+      "latency_ms": 2617.3783999402076,
+      "retrieval_ms": 0.3766999579966068,
+      "prompt_tokens": 1796,
+      "completion_tokens": 166,
+      "cost_usd": 0.0006675200000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:lrange:001",
+          "redis:lrange:002",
+          "redis:lrange:022"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:lrange:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1391,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-06",
+      "difficulty": "simple",
+      "question": "How do the start and stop indexes of LRANGE behave, including negative values?",
+      "points_total": 3,
+      "hits": [],
+      "missed": [
+        "下标 0 基",
+        "负下标从尾部数，-1 是最后一个",
+        "越界不报错（空 / 截断）"
+      ],
+      "hit_by": [],
+      "answer_chars": 219,
+      "latency_ms": 2470.535699976608,
+      "retrieval_ms": 0.3766999579966068,
+      "prompt_tokens": 1796,
+      "completion_tokens": 164,
+      "cost_usd": 0.0006653200000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:lrange:001",
+          "redis:lrange:002",
+          "redis:lrange:022"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:lrange:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1391,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-06",
+      "difficulty": "simple",
+      "question": "How do the start and stop indexes of LRANGE behave, including negative values?",
+      "points_total": 3,
+      "hits": [],
+      "missed": [
+        "下标 0 基",
+        "负下标从尾部数，-1 是最后一个",
+        "越界不报错（空 / 截断）"
+      ],
+      "hit_by": [],
+      "answer_chars": 220,
+      "latency_ms": 2298.95069997292,
+      "retrieval_ms": 0.3766999579966068,
+      "prompt_tokens": 1796,
+      "completion_tokens": 170,
+      "cost_usd": 0.0006719200000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:lrange:001",
+          "redis:lrange:002",
+          "redis:lrange:022"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:lrange:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1391,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-07",
+      "difficulty": "simple",
+      "question": "What is MULTI used for in Redis?",
+      "points_total": 3,
+      "hits": [
+        "MULTI 开启事务：后续命令入队而非立刻执行"
+      ],
+      "missed": [
+        "EXEC 执行全部",
+        "顺序执行且不被打断"
+      ],
+      "hit_by": [
+        [
+          "MULTI 开启事务：后续命令入队而非立刻执行",
+          "marks the start of a transaction"
+        ]
+      ],
+      "answer_chars": 161,
+      "latency_ms": 1951.081300037913,
+      "retrieval_ms": 0.3389000194147229,
+      "prompt_tokens": 1906,
+      "completion_tokens": 63,
+      "cost_usd": 0.00058392,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:multi:001",
+          "redis:multi:000"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:multi:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1485,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-07",
+      "difficulty": "simple",
+      "question": "What is MULTI used for in Redis?",
+      "points_total": 3,
+      "hits": [
+        "MULTI 开启事务：后续命令入队而非立刻执行"
+      ],
+      "missed": [
+        "EXEC 执行全部",
+        "顺序执行且不被打断"
+      ],
+      "hit_by": [
+        [
+          "MULTI 开启事务：后续命令入队而非立刻执行",
+          "marks the start of a transaction"
+        ]
+      ],
+      "answer_chars": 233,
+      "latency_ms": 2080.868399934843,
+      "retrieval_ms": 0.3389000194147229,
+      "prompt_tokens": 1906,
+      "completion_tokens": 79,
+      "cost_usd": 0.00060152,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:multi:001",
+          "redis:incr:020"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:multi:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1485,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-07",
+      "difficulty": "simple",
+      "question": "What is MULTI used for in Redis?",
+      "points_total": 3,
+      "hits": [
+        "MULTI 开启事务：后续命令入队而非立刻执行"
+      ],
+      "missed": [
+        "EXEC 执行全部",
+        "顺序执行且不被打断"
+      ],
+      "hit_by": [
+        [
+          "MULTI 开启事务：后续命令入队而非立刻执行",
+          "marks the start of a transaction"
+        ]
+      ],
+      "answer_chars": 233,
+      "latency_ms": 2236.790499999188,
+      "retrieval_ms": 0.3389000194147229,
+      "prompt_tokens": 1906,
+      "completion_tokens": 79,
+      "cost_usd": 0.00060152,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:multi:001",
+          "redis:incr:020"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:multi:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1485,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-08",
+      "difficulty": "simple",
+      "question": "What is the syntax of SUBSCRIBE and how many channels can it take at once?",
+      "points_total": 3,
+      "hits": [
+        "语法 SUBSCRIBE channel ...",
+        "可一次订阅多个频道"
+      ],
+      "missed": [
+        "进入 subscribe 模式，只能用受限命令集"
+      ],
+      "hit_by": [
+        [
+          "语法 SUBSCRIBE channel ...",
+          "subscribe channel"
+        ],
+        [
+          "可一次订阅多个频道",
+          "one or more channels"
+        ]
+      ],
+      "answer_chars": 99,
+      "latency_ms": 2180.881100008264,
+      "retrieval_ms": 0.26000000070780516,
+      "prompt_tokens": 1684,
+      "completion_tokens": 55,
+      "cost_usd": 0.0005151800000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:subscribe:000",
+          "redis:subscribe:002"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:subscribe:000"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1333,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-08",
+      "difficulty": "simple",
+      "question": "What is the syntax of SUBSCRIBE and how many channels can it take at once?",
+      "points_total": 3,
+      "hits": [
+        "语法 SUBSCRIBE channel ...",
+        "可一次订阅多个频道"
+      ],
+      "missed": [
+        "进入 subscribe 模式，只能用受限命令集"
+      ],
+      "hit_by": [
+        [
+          "语法 SUBSCRIBE channel ...",
+          "subscribe channel"
+        ],
+        [
+          "可一次订阅多个频道",
+          "one or more channels"
+        ]
+      ],
+      "answer_chars": 120,
+      "latency_ms": 2560.006399988197,
+      "retrieval_ms": 0.26000000070780516,
+      "prompt_tokens": 1684,
+      "completion_tokens": 62,
+      "cost_usd": 0.00052288,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:subscribe:000",
+          "redis:subscribe:002"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:subscribe:000"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1333,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-simple-08",
+      "difficulty": "simple",
+      "question": "What is the syntax of SUBSCRIBE and how many channels can it take at once?",
+      "points_total": 3,
+      "hits": [
+        "语法 SUBSCRIBE channel ...",
+        "可一次订阅多个频道"
+      ],
+      "missed": [
+        "进入 subscribe 模式，只能用受限命令集"
+      ],
+      "hit_by": [
+        [
+          "语法 SUBSCRIBE channel ...",
+          "subscribe channel"
+        ],
+        [
+          "可一次订阅多个频道",
+          "one or more channels"
+        ]
+      ],
+      "answer_chars": 120,
+      "latency_ms": 2167.641600011848,
+      "retrieval_ms": 0.26000000070780516,
+      "prompt_tokens": 1684,
+      "completion_tokens": 62,
+      "cost_usd": 0.00052288,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:subscribe:000",
+          "redis:subscribe:002"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:subscribe:000"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1333,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-01",
+      "difficulty": "medium",
+      "question": "What is the difference between BLPOP and BRPOP?",
+      "points_total": 4,
+      "hits": [
+        "BLPOP 从头部（左）",
+        "BRPOP 从尾部（右）"
+      ],
+      "missed": [
+        "都是阻塞弹出（等到有元素或超时）",
+        "其余参数相同"
+      ],
+      "hit_by": [
+        [
+          "BLPOP 从头部（左）",
+          "blpop pops from the head"
+        ],
+        [
+          "BRPOP 从尾部（右）",
+          "from the tail"
+        ]
+      ],
+      "answer_chars": 236,
+      "latency_ms": 3403.8904000772163,
+      "retrieval_ms": 0.22629997693002224,
+      "prompt_tokens": 1919,
+      "completion_tokens": 87,
+      "cost_usd": 0.00061383,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:brpop:001",
+          "redis:blpop:004"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:brpop:001"
+        ],
+        "evidence_not_retrieved": [
+          "redis:blpop:001",
+          "redis:blpop:000"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "redis:brpop:000"
+        ]
+      },
+      "context_tokens": 1457,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-01",
+      "difficulty": "medium",
+      "question": "What is the difference between BLPOP and BRPOP?",
+      "points_total": 4,
+      "hits": [
+        "BLPOP 从头部（左）",
+        "BRPOP 从尾部（右）"
+      ],
+      "missed": [
+        "都是阻塞弹出（等到有元素或超时）",
+        "其余参数相同"
+      ],
+      "hit_by": [
+        [
+          "BLPOP 从头部（左）",
+          "from the head"
+        ],
+        [
+          "BRPOP 从尾部（右）",
+          "from the tail"
+        ]
+      ],
+      "answer_chars": 321,
+      "latency_ms": 3050.52990000695,
+      "retrieval_ms": 0.22629997693002224,
+      "prompt_tokens": 1919,
+      "completion_tokens": 93,
+      "cost_usd": 0.00062043,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:brpop:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:brpop:001"
+        ],
+        "evidence_not_retrieved": [
+          "redis:blpop:001",
+          "redis:blpop:000"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "redis:brpop:000"
+        ]
+      },
+      "context_tokens": 1457,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-01",
+      "difficulty": "medium",
+      "question": "What is the difference between BLPOP and BRPOP?",
+      "points_total": 4,
+      "hits": [
+        "BLPOP 从头部（左）",
+        "BRPOP 从尾部（右）"
+      ],
+      "missed": [
+        "都是阻塞弹出（等到有元素或超时）",
+        "其余参数相同"
+      ],
+      "hit_by": [
+        [
+          "BLPOP 从头部（左）",
+          "from the head"
+        ],
+        [
+          "BRPOP 从尾部（右）",
+          "from the tail"
+        ]
+      ],
+      "answer_chars": 321,
+      "latency_ms": 1998.8310999469832,
+      "retrieval_ms": 0.22629997693002224,
+      "prompt_tokens": 1919,
+      "completion_tokens": 93,
+      "cost_usd": 0.00062043,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:brpop:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:brpop:001"
+        ],
+        "evidence_not_retrieved": [
+          "redis:blpop:001",
+          "redis:blpop:000"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "redis:brpop:000"
+        ]
+      },
+      "context_tokens": 1457,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-02",
+      "difficulty": "medium",
+      "question": "What is the difference between LPUSH and RPUSH, and how does it affect the order elements come out with RPOP?",
+      "points_total": 4,
+      "hits": [
+        "LPUSH 插头部",
+        "RPUSH 插尾部"
+      ],
+      "missed": [
+        "LPUSH a b c ⇒ c b a（后进先出）",
+        "RPUSH + RPOP ⇒ 先进先出（队列）"
+      ],
+      "hit_by": [
+        [
+          "LPUSH 插头部",
+          "at the head"
+        ],
+        [
+          "RPUSH 插尾部",
+          "at the tail"
+        ]
+      ],
+      "answer_chars": 799,
+      "latency_ms": 2792.8174999542534,
+      "retrieval_ms": 0.4868999822065234,
+      "prompt_tokens": 1994,
+      "completion_tokens": 235,
+      "cost_usd": 0.00079688,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:lpush:001",
+          "redis:rpush:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:lpush:001",
+          "redis:rpush:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1640,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-02",
+      "difficulty": "medium",
+      "question": "What is the difference between LPUSH and RPUSH, and how does it affect the order elements come out with RPOP?",
+      "points_total": 4,
+      "hits": [
+        "LPUSH 插头部",
+        "RPUSH 插尾部"
+      ],
+      "missed": [
+        "LPUSH a b c ⇒ c b a（后进先出）",
+        "RPUSH + RPOP ⇒ 先进先出（队列）"
+      ],
+      "hit_by": [
+        [
+          "LPUSH 插头部",
+          "at the head"
+        ],
+        [
+          "RPUSH 插尾部",
+          "at the tail"
+        ]
+      ],
+      "answer_chars": 824,
+      "latency_ms": 3127.647499903105,
+      "retrieval_ms": 0.4868999822065234,
+      "prompt_tokens": 1994,
+      "completion_tokens": 235,
+      "cost_usd": 0.00079688,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:lpush:001",
+          "redis:rpush:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:lpush:001",
+          "redis:rpush:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1640,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-02",
+      "difficulty": "medium",
+      "question": "What is the difference between LPUSH and RPUSH, and how does it affect the order elements come out with RPOP?",
+      "points_total": 4,
+      "hits": [
+        "LPUSH 插头部",
+        "RPUSH 插尾部"
+      ],
+      "missed": [
+        "LPUSH a b c ⇒ c b a（后进先出）",
+        "RPUSH + RPOP ⇒ 先进先出（队列）"
+      ],
+      "hit_by": [
+        [
+          "LPUSH 插头部",
+          "at the head"
+        ],
+        [
+          "RPUSH 插尾部",
+          "at the tail"
+        ]
+      ],
+      "answer_chars": 824,
+      "latency_ms": 3383.268699981272,
+      "retrieval_ms": 0.4868999822065234,
+      "prompt_tokens": 1994,
+      "completion_tokens": 235,
+      "cost_usd": 0.00079688,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:lpush:001",
+          "redis:rpush:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:lpush:001",
+          "redis:rpush:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1640,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-03",
+      "difficulty": "medium",
+      "question": "What is the difference between EXPIRE and TTL?",
+      "points_total": 4,
+      "hits": [
+        "互为反向：EXPIRE 写、TTL 读"
+      ],
+      "missed": [
+        "EXPIRE 返回 1 / 0",
+        "TTL 返回剩余秒数；-1 无过期、-2 key 不存在",
+        "TTL 不是通用的 key 存在性检测"
+      ],
+      "hit_by": [
+        [
+          "互为反向：EXPIRE 写、TTL 读",
+          "expire sets a timeout"
+        ]
+      ],
+      "answer_chars": 534,
+      "latency_ms": 3215.3956999536604,
+      "retrieval_ms": 0.24610001128166914,
+      "prompt_tokens": 2223,
+      "completion_tokens": 205,
+      "cost_usd": 0.0008257100000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:expire:007",
+          "redis:ttl:003",
+          "redis:expire:024"
+        ],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:expire:001",
+          "redis:expire:002",
+          "redis:expire:003",
+          "redis:expire:000",
+          "redis:ttl:001",
+          "redis:ttl:018"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1582,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-03",
+      "difficulty": "medium",
+      "question": "What is the difference between EXPIRE and TTL?",
+      "points_total": 4,
+      "hits": [
+        "互为反向：EXPIRE 写、TTL 读"
+      ],
+      "missed": [
+        "EXPIRE 返回 1 / 0",
+        "TTL 返回剩余秒数；-1 无过期、-2 key 不存在",
+        "TTL 不是通用的 key 存在性检测"
+      ],
+      "hit_by": [
+        [
+          "互为反向：EXPIRE 写、TTL 读",
+          "expire sets a timeout"
+        ]
+      ],
+      "answer_chars": 639,
+      "latency_ms": 3072.2711000125855,
+      "retrieval_ms": 0.24610001128166914,
+      "prompt_tokens": 2223,
+      "completion_tokens": 238,
+      "cost_usd": 0.0008620100000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:expire:007",
+          "redis:ttl:003",
+          "redis:expire:024",
+          "redis:expire:023"
+        ],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:expire:001",
+          "redis:expire:002",
+          "redis:expire:003",
+          "redis:expire:000",
+          "redis:ttl:001",
+          "redis:ttl:018"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1582,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-03",
+      "difficulty": "medium",
+      "question": "What is the difference between EXPIRE and TTL?",
+      "points_total": 4,
+      "hits": [],
+      "missed": [
+        "互为反向：EXPIRE 写、TTL 读",
+        "EXPIRE 返回 1 / 0",
+        "TTL 返回剩余秒数；-1 无过期、-2 key 不存在",
+        "TTL 不是通用的 key 存在性检测"
+      ],
+      "hit_by": [],
+      "answer_chars": 209,
+      "latency_ms": 2354.847999988124,
+      "retrieval_ms": 0.24610001128166914,
+      "prompt_tokens": 2223,
+      "completion_tokens": 169,
+      "cost_usd": 0.0007861100000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:expire:007",
+          "redis:ttl:004",
+          "redis:ttl:003"
+        ],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:expire:001",
+          "redis:expire:002",
+          "redis:expire:003",
+          "redis:expire:000",
+          "redis:ttl:001",
+          "redis:ttl:018"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1582,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-04",
+      "difficulty": "medium",
+      "question": "In SET, what is the difference between the EX, PX, EXAT and PXAT options?",
+      "points_total": 4,
+      "hits": [
+        "KEEPTTL 保留原 TTL"
+      ],
+      "missed": [
+        "四个都设过期，区别在**单位**与**时长 vs 绝对时间**",
+        "EX / PX = 时长（秒 / 毫秒）",
+        "EXAT / PXAT = Unix 时间戳（秒 / 毫秒）"
+      ],
+      "hit_by": [
+        [
+          "KEEPTTL 保留原 TTL",
+          "keepttl"
+        ]
+      ],
+      "answer_chars": 260,
+      "latency_ms": 2560.101500013843,
+      "retrieval_ms": 0.2845000708475709,
+      "prompt_tokens": 2094,
+      "completion_tokens": 162,
+      "cost_usd": 0.00074358,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:set:003",
+          "redis:set:005"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:set:003",
+          "redis:set:005"
+        ],
+        "evidence_not_retrieved": [
+          "redis:set:006"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "redis:set:004"
+        ]
+      },
+      "context_tokens": 1601,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-04",
+      "difficulty": "medium",
+      "question": "In SET, what is the difference between the EX, PX, EXAT and PXAT options?",
+      "points_total": 4,
+      "hits": [],
+      "missed": [
+        "四个都设过期，区别在**单位**与**时长 vs 绝对时间**",
+        "EX / PX = 时长（秒 / 毫秒）",
+        "EXAT / PXAT = Unix 时间戳（秒 / 毫秒）",
+        "KEEPTTL 保留原 TTL"
+      ],
+      "hit_by": [],
+      "answer_chars": 697,
+      "latency_ms": 2398.739799973555,
+      "retrieval_ms": 0.2845000708475709,
+      "prompt_tokens": 2094,
+      "completion_tokens": 187,
+      "cost_usd": 0.0007710799999999999,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:set:005"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:set:005"
+        ],
+        "evidence_not_retrieved": [
+          "redis:set:006"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "redis:set:003",
+          "redis:set:004"
+        ]
+      },
+      "context_tokens": 1601,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-04",
+      "difficulty": "medium",
+      "question": "In SET, what is the difference between the EX, PX, EXAT and PXAT options?",
+      "points_total": 4,
+      "hits": [
+        "KEEPTTL 保留原 TTL"
+      ],
+      "missed": [
+        "四个都设过期，区别在**单位**与**时长 vs 绝对时间**",
+        "EX / PX = 时长（秒 / 毫秒）",
+        "EXAT / PXAT = Unix 时间戳（秒 / 毫秒）"
+      ],
+      "hit_by": [
+        [
+          "KEEPTTL 保留原 TTL",
+          "keepttl"
+        ]
+      ],
+      "answer_chars": 260,
+      "latency_ms": 3545.860799960792,
+      "retrieval_ms": 0.2845000708475709,
+      "prompt_tokens": 2094,
+      "completion_tokens": 162,
+      "cost_usd": 0.00074358,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:set:003",
+          "redis:set:005"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:set:003",
+          "redis:set:005"
+        ],
+        "evidence_not_retrieved": [
+          "redis:set:006"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "redis:set:004"
+        ]
+      },
+      "context_tokens": 1601,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-05",
+      "difficulty": "medium",
+      "question": "When should you use HSET/HGET instead of SET/GET?",
+      "points_total": 3,
+      "hits": [],
+      "missed": [
+        "SET/GET 是单个不透明字符串：改一个字段要重写整个值",
+        "HSET/HGET 操作 hash，可按字段读写",
+        "选型：记录 / 多字段 ⇒ hash；单标量 ⇒ string"
+      ],
+      "hit_by": [],
+      "answer_chars": 176,
+      "latency_ms": 2467.9870000109076,
+      "retrieval_ms": 0.2932000206783414,
+      "prompt_tokens": 2045,
+      "completion_tokens": 203,
+      "cost_usd": 0.00077545,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:hset:003",
+          "redis:hget:014",
+          "redis:hset:004",
+          "redis:get:019",
+          "redis:set:023",
+          "redis:hget:004",
+          "redis:get:015",
+          "redis:hget:008",
+          "redis:get:006",
+          "redis:get:018"
+        ],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:hset:001",
+          "redis:hget:001",
+          "redis:set:001",
+          "redis:get:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1467,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-05",
+      "difficulty": "medium",
+      "question": "When should you use HSET/HGET instead of SET/GET?",
+      "points_total": 3,
+      "hits": [],
+      "missed": [
+        "SET/GET 是单个不透明字符串：改一个字段要重写整个值",
+        "HSET/HGET 操作 hash，可按字段读写",
+        "选型：记录 / 多字段 ⇒ hash；单标量 ⇒ string"
+      ],
+      "hit_by": [],
+      "answer_chars": 292,
+      "latency_ms": 2530.3682000376284,
+      "retrieval_ms": 0.2932000206783414,
+      "prompt_tokens": 2045,
+      "completion_tokens": 250,
+      "cost_usd": 0.00082715,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:hset:003",
+          "redis:hget:014",
+          "redis:hset:004",
+          "redis:hget:004",
+          "redis:hget:008",
+          "redis:get:019",
+          "redis:set:023",
+          "redis:get:015",
+          "redis:get:006",
+          "redis:get:018"
+        ],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:hset:001",
+          "redis:hget:001",
+          "redis:set:001",
+          "redis:get:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1467,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-05",
+      "difficulty": "medium",
+      "question": "When should you use HSET/HGET instead of SET/GET?",
+      "points_total": 3,
+      "hits": [],
+      "missed": [
+        "SET/GET 是单个不透明字符串：改一个字段要重写整个值",
+        "HSET/HGET 操作 hash，可按字段读写",
+        "选型：记录 / 多字段 ⇒ hash；单标量 ⇒ string"
+      ],
+      "hit_by": [],
+      "answer_chars": 292,
+      "latency_ms": 2534.2156999977306,
+      "retrieval_ms": 0.2932000206783414,
+      "prompt_tokens": 2045,
+      "completion_tokens": 250,
+      "cost_usd": 0.00082715,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:hset:003",
+          "redis:hget:014",
+          "redis:hset:004",
+          "redis:hget:004",
+          "redis:hget:008",
+          "redis:get:019",
+          "redis:set:023",
+          "redis:get:015",
+          "redis:get:006",
+          "redis:get:018"
+        ],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:hset:001",
+          "redis:hget:001",
+          "redis:set:001",
+          "redis:get:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1467,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-06",
+      "difficulty": "medium",
+      "question": "What is the difference between SADD and ZADD?",
+      "points_total": 4,
+      "hits": [],
+      "missed": [
+        "SADD ⇒ 无序集合，只有成员关系，无分数",
+        "ZADD ⇒ 有序集合，成员带 score",
+        "按 score 排序，同分按字典序",
+        "返回值语义：新增 / 新增或更新（CH）"
+      ],
+      "hit_by": [],
+      "answer_chars": 128,
+      "latency_ms": 2274.63739993982,
+      "retrieval_ms": 0.24780002422630787,
+      "prompt_tokens": 1777,
+      "completion_tokens": 89,
+      "cost_usd": 0.0005776900000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:sadd:003"
+        ],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:sadd:001",
+          "redis:sadd:018",
+          "redis:zadd:001",
+          "redis:zadd:028",
+          "redis:zadd:029"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1244,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-06",
+      "difficulty": "medium",
+      "question": "What is the difference between SADD and ZADD?",
+      "points_total": 4,
+      "hits": [],
+      "missed": [
+        "SADD ⇒ 无序集合，只有成员关系，无分数",
+        "ZADD ⇒ 有序集合，成员带 score",
+        "按 score 排序，同分按字典序",
+        "返回值语义：新增 / 新增或更新（CH）"
+      ],
+      "hit_by": [],
+      "answer_chars": 128,
+      "latency_ms": 2125.5172999808565,
+      "retrieval_ms": 0.24780002422630787,
+      "prompt_tokens": 1777,
+      "completion_tokens": 89,
+      "cost_usd": 0.0005776900000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:sadd:003"
+        ],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:sadd:001",
+          "redis:sadd:018",
+          "redis:zadd:001",
+          "redis:zadd:028",
+          "redis:zadd:029"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1244,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-06",
+      "difficulty": "medium",
+      "question": "What is the difference between SADD and ZADD?",
+      "points_total": 4,
+      "hits": [],
+      "missed": [
+        "SADD ⇒ 无序集合，只有成员关系，无分数",
+        "ZADD ⇒ 有序集合，成员带 score",
+        "按 score 排序，同分按字典序",
+        "返回值语义：新增 / 新增或更新（CH）"
+      ],
+      "hit_by": [],
+      "answer_chars": 128,
+      "latency_ms": 2161.2014001002535,
+      "retrieval_ms": 0.24780002422630787,
+      "prompt_tokens": 1777,
+      "completion_tokens": 89,
+      "cost_usd": 0.0005776900000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:sadd:003"
+        ],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:sadd:001",
+          "redis:sadd:018",
+          "redis:zadd:001",
+          "redis:zadd:028",
+          "redis:zadd:029"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1244,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-07",
+      "difficulty": "medium",
+      "question": "What is the difference in role between MULTI/EXEC and WATCH?",
+      "points_total": 4,
+      "hits": [],
+      "missed": [
+        "MULTI/EXEC ⇒ 执行的原子性（不可打断的一块）",
+        "WATCH ⇒ 乐观并发控制（标记 key）",
+        "被别的客户端改动 ⇒ 事务中止，EXEC 返回 nil",
+        "单靠 MULTI/EXEC 挡不住读改写竞态"
+      ],
+      "hit_by": [],
+      "answer_chars": 137,
+      "latency_ms": 2157.2253999765962,
+      "retrieval_ms": 0.25210005696862936,
+      "prompt_tokens": 1956,
+      "completion_tokens": 101,
+      "cost_usd": 0.00063922,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:multi:001",
+          "redis:watch:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:multi:001",
+          "redis:watch:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1549,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-07",
+      "difficulty": "medium",
+      "question": "What is the difference in role between MULTI/EXEC and WATCH?",
+      "points_total": 4,
+      "hits": [],
+      "missed": [
+        "MULTI/EXEC ⇒ 执行的原子性（不可打断的一块）",
+        "WATCH ⇒ 乐观并发控制（标记 key）",
+        "被别的客户端改动 ⇒ 事务中止，EXEC 返回 nil",
+        "单靠 MULTI/EXEC 挡不住读改写竞态"
+      ],
+      "hit_by": [],
+      "answer_chars": 137,
+      "latency_ms": 2074.5696999365464,
+      "retrieval_ms": 0.25210005696862936,
+      "prompt_tokens": 1956,
+      "completion_tokens": 101,
+      "cost_usd": 0.00063922,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:multi:001",
+          "redis:watch:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:multi:001",
+          "redis:watch:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1549,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-07",
+      "difficulty": "medium",
+      "question": "What is the difference in role between MULTI/EXEC and WATCH?",
+      "points_total": 4,
+      "hits": [],
+      "missed": [
+        "MULTI/EXEC ⇒ 执行的原子性（不可打断的一块）",
+        "WATCH ⇒ 乐观并发控制（标记 key）",
+        "被别的客户端改动 ⇒ 事务中止，EXEC 返回 nil",
+        "单靠 MULTI/EXEC 挡不住读改写竞态"
+      ],
+      "hit_by": [],
+      "answer_chars": 137,
+      "latency_ms": 2311.029899981804,
+      "retrieval_ms": 0.25210005696862936,
+      "prompt_tokens": 1956,
+      "completion_tokens": 101,
+      "cost_usd": 0.00063922,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:multi:001",
+          "redis:watch:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:multi:001",
+          "redis:watch:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1549,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-08",
+      "difficulty": "medium",
+      "question": "What is the difference between using PUBLISH/SUBSCRIBE and using a list (LPUSH + BRPOP) for messaging?",
+      "points_total": 4,
+      "hits": [],
+      "missed": [
+        "PUBLISH/SUBSCRIBE = fire-and-forget：只有发布瞬间的订阅者收到",
+        "无持久化，断线就丢",
+        "list 当队列会**存住**消息，直到被消费",
+        "消费者临时下线后仍能拿到"
+      ],
+      "hit_by": [],
+      "answer_chars": 469,
+      "latency_ms": 3317.12950009387,
+      "retrieval_ms": 0.28259993996471167,
+      "prompt_tokens": 1951,
+      "completion_tokens": 292,
+      "cost_usd": 0.0008479700000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:publish:001",
+          "redis:brpop:001",
+          "redis:lpush:001",
+          "redis:blpop:015"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:publish:001",
+          "redis:brpop:001"
+        ],
+        "evidence_not_retrieved": [
+          "redis:subscribe:001",
+          "redis:blpop:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1583,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-08",
+      "difficulty": "medium",
+      "question": "What is the difference between using PUBLISH/SUBSCRIBE and using a list (LPUSH + BRPOP) for messaging?",
+      "points_total": 4,
+      "hits": [],
+      "missed": [
+        "PUBLISH/SUBSCRIBE = fire-and-forget：只有发布瞬间的订阅者收到",
+        "无持久化，断线就丢",
+        "list 当队列会**存住**消息，直到被消费",
+        "消费者临时下线后仍能拿到"
+      ],
+      "hit_by": [],
+      "answer_chars": 469,
+      "latency_ms": 2885.0494000362232,
+      "retrieval_ms": 0.28259993996471167,
+      "prompt_tokens": 1951,
+      "completion_tokens": 292,
+      "cost_usd": 0.0008479700000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:publish:001",
+          "redis:brpop:001",
+          "redis:lpush:001",
+          "redis:blpop:015"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:publish:001",
+          "redis:brpop:001"
+        ],
+        "evidence_not_retrieved": [
+          "redis:subscribe:001",
+          "redis:blpop:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1583,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-medium-08",
+      "difficulty": "medium",
+      "question": "What is the difference between using PUBLISH/SUBSCRIBE and using a list (LPUSH + BRPOP) for messaging?",
+      "points_total": 4,
+      "hits": [],
+      "missed": [
+        "PUBLISH/SUBSCRIBE = fire-and-forget：只有发布瞬间的订阅者收到",
+        "无持久化，断线就丢",
+        "list 当队列会**存住**消息，直到被消费",
+        "消费者临时下线后仍能拿到"
+      ],
+      "hit_by": [],
+      "answer_chars": 511,
+      "latency_ms": 3074.913199990988,
+      "retrieval_ms": 0.28259993996471167,
+      "prompt_tokens": 1951,
+      "completion_tokens": 304,
+      "cost_usd": 0.0008611700000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:publish:001",
+          "redis:brpop:001",
+          "redis:lpush:001",
+          "redis:blpop:015"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:publish:001",
+          "redis:brpop:001"
+        ],
+        "evidence_not_retrieved": [
+          "redis:subscribe:001",
+          "redis:blpop:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1583,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-01",
+      "difficulty": "hard",
+      "question": "Design a fixed-window rate limiter that allows at most N requests per key per window, using only Redis commands. Which commands do you use and what makes the counter safe?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "用 INCR 做原子计数 + EXPIRE 设窗口过期",
+        "安全性来自 INCR 的原子性（并发不会同读同判）",
+        "顺序陷阱：EXPIRE 必须与计数一起创建，否则无 TTL 永久堵死",
+        "GET-then-SET 不等价于 INCR（读改写竞态）",
+        "已知弱点：窗口边界可突发到 2N"
+      ],
+      "hit_by": [],
+      "answer_chars": 1279,
+      "latency_ms": 4396.534500061534,
+      "retrieval_ms": 0.41199999395757914,
+      "prompt_tokens": 2002,
+      "completion_tokens": 675,
+      "cost_usd": 0.00128304,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:incr:020",
+          "redis:incr:021",
+          "redis:incr:022",
+          "redis:incr:023",
+          "redis:incr:024",
+          "redis:incr:025",
+          "redis:incr:017",
+          "redis:incr:018"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:incr:021",
+          "redis:incr:022",
+          "redis:incr:023",
+          "redis:incr:024",
+          "redis:incr:025",
+          "redis:incr:017",
+          "redis:incr:018"
+        ],
+        "evidence_not_retrieved": [
+          "redis:expire:001",
+          "redis:expire:002",
+          "redis:expire:003",
+          "redis:incr:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "redis:incr:019"
+        ]
+      },
+      "context_tokens": 1589,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-01",
+      "difficulty": "hard",
+      "question": "Design a fixed-window rate limiter that allows at most N requests per key per window, using only Redis commands. Which commands do you use and what makes the counter safe?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "用 INCR 做原子计数 + EXPIRE 设窗口过期",
+        "安全性来自 INCR 的原子性（并发不会同读同判）",
+        "顺序陷阱：EXPIRE 必须与计数一起创建，否则无 TTL 永久堵死",
+        "GET-then-SET 不等价于 INCR（读改写竞态）",
+        "已知弱点：窗口边界可突发到 2N"
+      ],
+      "hit_by": [],
+      "answer_chars": 1060,
+      "latency_ms": 4339.9932000320405,
+      "retrieval_ms": 0.41199999395757914,
+      "prompt_tokens": 2002,
+      "completion_tokens": 654,
+      "cost_usd": 0.0012599400000000002,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:incr:019",
+          "redis:incr:020",
+          "redis:incr:021",
+          "redis:incr:022",
+          "redis:incr:023",
+          "redis:incr:024",
+          "redis:incr:025",
+          "redis:incr:018"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:incr:019",
+          "redis:incr:021",
+          "redis:incr:022",
+          "redis:incr:023",
+          "redis:incr:024",
+          "redis:incr:025",
+          "redis:incr:018"
+        ],
+        "evidence_not_retrieved": [
+          "redis:expire:001",
+          "redis:expire:002",
+          "redis:expire:003",
+          "redis:incr:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "redis:incr:017"
+        ]
+      },
+      "context_tokens": 1589,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-01",
+      "difficulty": "hard",
+      "question": "Design a fixed-window rate limiter that allows at most N requests per key per window, using only Redis commands. Which commands do you use and what makes the counter safe?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "用 INCR 做原子计数 + EXPIRE 设窗口过期",
+        "安全性来自 INCR 的原子性（并发不会同读同判）",
+        "顺序陷阱：EXPIRE 必须与计数一起创建，否则无 TTL 永久堵死",
+        "GET-then-SET 不等价于 INCR（读改写竞态）",
+        "已知弱点：窗口边界可突发到 2N"
+      ],
+      "hit_by": [],
+      "answer_chars": 1279,
+      "latency_ms": 4623.657900025137,
+      "retrieval_ms": 0.41199999395757914,
+      "prompt_tokens": 2002,
+      "completion_tokens": 675,
+      "cost_usd": 0.00128304,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:incr:020",
+          "redis:incr:021",
+          "redis:incr:022",
+          "redis:incr:023",
+          "redis:incr:024",
+          "redis:incr:025",
+          "redis:incr:017",
+          "redis:incr:018"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:incr:021",
+          "redis:incr:022",
+          "redis:incr:023",
+          "redis:incr:024",
+          "redis:incr:025",
+          "redis:incr:017",
+          "redis:incr:018"
+        ],
+        "evidence_not_retrieved": [
+          "redis:expire:001",
+          "redis:expire:002",
+          "redis:expire:003",
+          "redis:incr:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "redis:incr:019"
+        ]
+      },
+      "context_tokens": 1589,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-02",
+      "difficulty": "hard",
+      "question": "Design a job queue in Redis where a worker crashing mid-job does not lose the job. Which commands, and what is the failure window?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "生产 LPUSH/RPUSH、消费 BRPOP/BLPOP（阻塞而非轮询）",
+        "朴素做法是 at-most-once：弹出即移除，崩了丢任务",
+        "要 at-least-once 需第二步：移入 in-flight 结构并 ack",
+        "要有 reaper 把超租约的任务放回队列",
+        "失败窗口 = pop 与 ack 之间 ⇒ 消费者必须幂等"
+      ],
+      "hit_by": [],
+      "answer_chars": 132,
+      "latency_ms": 1873.0802000500262,
+      "retrieval_ms": 0.3442999441176653,
+      "prompt_tokens": 2508,
+      "completion_tokens": 83,
+      "cost_usd": 0.00076846,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:brpop:001",
+          "redis:brpop:000",
+          "redis:lpush:001",
+          "redis:blpop:005",
+          "redis:blpop:004"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 2101,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-02",
+      "difficulty": "hard",
+      "question": "Design a job queue in Redis where a worker crashing mid-job does not lose the job. Which commands, and what is the failure window?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "生产 LPUSH/RPUSH、消费 BRPOP/BLPOP（阻塞而非轮询）",
+        "朴素做法是 at-most-once：弹出即移除，崩了丢任务",
+        "要 at-least-once 需第二步：移入 in-flight 结构并 ack",
+        "要有 reaper 把超租约的任务放回队列",
+        "失败窗口 = pop 与 ack 之间 ⇒ 消费者必须幂等"
+      ],
+      "hit_by": [],
+      "answer_chars": 148,
+      "latency_ms": 2325.0622000778094,
+      "retrieval_ms": 0.3442999441176653,
+      "prompt_tokens": 2508,
+      "completion_tokens": 90,
+      "cost_usd": 0.00077616,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:brpop:001",
+          "redis:brpop:000",
+          "redis:lpush:001",
+          "redis:blpop:005",
+          "redis:blpop:004"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 2101,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-02",
+      "difficulty": "hard",
+      "question": "Design a job queue in Redis where a worker crashing mid-job does not lose the job. Which commands, and what is the failure window?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "生产 LPUSH/RPUSH、消费 BRPOP/BLPOP（阻塞而非轮询）",
+        "朴素做法是 at-most-once：弹出即移除，崩了丢任务",
+        "要 at-least-once 需第二步：移入 in-flight 结构并 ack",
+        "要有 reaper 把超租约的任务放回队列",
+        "失败窗口 = pop 与 ack 之间 ⇒ 消费者必须幂等"
+      ],
+      "hit_by": [],
+      "answer_chars": 136,
+      "latency_ms": 2211.3548000343144,
+      "retrieval_ms": 0.3442999441176653,
+      "prompt_tokens": 2508,
+      "completion_tokens": 85,
+      "cost_usd": 0.00077066,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:brpop:001",
+          "redis:brpop:000",
+          "redis:lpush:001",
+          "redis:blpop:005",
+          "redis:blpop:004"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 2101,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-03",
+      "difficulty": "hard",
+      "question": "You need to decrement a stock counter only if it is greater than zero, with many concurrent writers. How do you do it with WATCH/MULTI/EXEC, and when does the transaction fail?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "WATCH → GET 读值 → 判断 > 0 → MULTI 里 DECR → EXEC",
+        "失败条件：WATCH 与 EXEC 之间有别的客户端改了 key",
+        "中止时 EXEC 返回 nil，必须重试整个读改写",
+        "不重试 = 静默丢弃请求",
+        "高竞争下可能饿死"
+      ],
+      "hit_by": [],
+      "answer_chars": 597,
+      "latency_ms": 3058.648300007917,
+      "retrieval_ms": 0.3797999816015363,
+      "prompt_tokens": 1830,
+      "completion_tokens": 288,
+      "cost_usd": 0.0008109,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:watch:001",
+          "redis:watch:000",
+          "redis:multi:001",
+          "redis:multi:000",
+          "redis:incr:018"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:watch:001",
+          "redis:watch:000",
+          "redis:multi:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1398,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-03",
+      "difficulty": "hard",
+      "question": "You need to decrement a stock counter only if it is greater than zero, with many concurrent writers. How do you do it with WATCH/MULTI/EXEC, and when does the transaction fail?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "WATCH → GET 读值 → 判断 > 0 → MULTI 里 DECR → EXEC",
+        "失败条件：WATCH 与 EXEC 之间有别的客户端改了 key",
+        "中止时 EXEC 返回 nil，必须重试整个读改写",
+        "不重试 = 静默丢弃请求",
+        "高竞争下可能饿死"
+      ],
+      "hit_by": [],
+      "answer_chars": 514,
+      "latency_ms": 2690.589200006798,
+      "retrieval_ms": 0.3797999816015363,
+      "prompt_tokens": 1830,
+      "completion_tokens": 225,
+      "cost_usd": 0.0007416,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:watch:001",
+          "redis:watch:000",
+          "redis:multi:001",
+          "redis:multi:000"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:watch:001",
+          "redis:watch:000",
+          "redis:multi:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1398,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-03",
+      "difficulty": "hard",
+      "question": "You need to decrement a stock counter only if it is greater than zero, with many concurrent writers. How do you do it with WATCH/MULTI/EXEC, and when does the transaction fail?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "WATCH → GET 读值 → 判断 > 0 → MULTI 里 DECR → EXEC",
+        "失败条件：WATCH 与 EXEC 之间有别的客户端改了 key",
+        "中止时 EXEC 返回 nil，必须重试整个读改写",
+        "不重试 = 静默丢弃请求",
+        "高竞争下可能饿死"
+      ],
+      "hit_by": [],
+      "answer_chars": 514,
+      "latency_ms": 2678.354599978775,
+      "retrieval_ms": 0.3797999816015363,
+      "prompt_tokens": 1830,
+      "completion_tokens": 225,
+      "cost_usd": 0.0007416,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:watch:001",
+          "redis:watch:000",
+          "redis:multi:001",
+          "redis:multi:000"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:watch:001",
+          "redis:watch:000",
+          "redis:multi:001"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1398,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-04",
+      "difficulty": "hard",
+      "question": "Design a leaderboard with ZADD and ZRANGE: how do you insert a score, get the top 10, and get a specific player's rank?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "ZADD 插入 / 更新（同一成员再加 = 改分数）",
+        "top 10 = ZRANGE key 0 9（可 REV / WITHSCORES）",
+        "名次用 ZRANK / ZREVRANK（0 基）",
+        "名次与分页不是原子地一起读",
+        "同分按字典序，不是任意顺序"
+      ],
+      "hit_by": [],
+      "answer_chars": 441,
+      "latency_ms": 2536.6193000227213,
+      "retrieval_ms": 0.31050003599375486,
+      "prompt_tokens": 2261,
+      "completion_tokens": 282,
+      "cost_usd": 0.0009206700000000001,
+      "error": "",
+      "out_of_corpus": [
+        "ZRANK / ZREVRANK 在语料里**完全没有**（语料只有 ZADD / ZRANGE 两个单元）。参考答案要求的『取某个玩家的排名』这一步，检索再完美也拿不到 —— 这不是检索差，是语料没覆盖。"
+      ],
+      "citation": {
+        "cited": [
+          "redis:zadd:004",
+          "redis:zrange:001",
+          "redis:zrange:049",
+          "redis:zrange:050"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:zrange:001"
+        ],
+        "evidence_not_retrieved": [
+          "redis:zadd:001",
+          "redis:zadd:026",
+          "redis:zrange:051",
+          "redis:zrange:052"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1718,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-04",
+      "difficulty": "hard",
+      "question": "Design a leaderboard with ZADD and ZRANGE: how do you insert a score, get the top 10, and get a specific player's rank?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "ZADD 插入 / 更新（同一成员再加 = 改分数）",
+        "top 10 = ZRANGE key 0 9（可 REV / WITHSCORES）",
+        "名次用 ZRANK / ZREVRANK（0 基）",
+        "名次与分页不是原子地一起读",
+        "同分按字典序，不是任意顺序"
+      ],
+      "hit_by": [],
+      "answer_chars": 563,
+      "latency_ms": 3224.0676999790594,
+      "retrieval_ms": 0.31050003599375486,
+      "prompt_tokens": 2261,
+      "completion_tokens": 337,
+      "cost_usd": 0.00098117,
+      "error": "",
+      "out_of_corpus": [
+        "ZRANK / ZREVRANK 在语料里**完全没有**（语料只有 ZADD / ZRANGE 两个单元）。参考答案要求的『取某个玩家的排名』这一步，检索再完美也拿不到 —— 这不是检索差，是语料没覆盖。"
+      ],
+      "citation": {
+        "cited": [
+          "redis:zadd:004",
+          "redis:zrange:001",
+          "redis:zrange:049",
+          "redis:zrange:050"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:zrange:001"
+        ],
+        "evidence_not_retrieved": [
+          "redis:zadd:001",
+          "redis:zadd:026",
+          "redis:zrange:051",
+          "redis:zrange:052"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1718,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-04",
+      "difficulty": "hard",
+      "question": "Design a leaderboard with ZADD and ZRANGE: how do you insert a score, get the top 10, and get a specific player's rank?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "ZADD 插入 / 更新（同一成员再加 = 改分数）",
+        "top 10 = ZRANGE key 0 9（可 REV / WITHSCORES）",
+        "名次用 ZRANK / ZREVRANK（0 基）",
+        "名次与分页不是原子地一起读",
+        "同分按字典序，不是任意顺序"
+      ],
+      "hit_by": [],
+      "answer_chars": 455,
+      "latency_ms": 2883.437899989076,
+      "retrieval_ms": 0.31050003599375486,
+      "prompt_tokens": 2261,
+      "completion_tokens": 265,
+      "cost_usd": 0.00090197,
+      "error": "",
+      "out_of_corpus": [
+        "ZRANK / ZREVRANK 在语料里**完全没有**（语料只有 ZADD / ZRANGE 两个单元）。参考答案要求的『取某个玩家的排名』这一步，检索再完美也拿不到 —— 这不是检索差，是语料没覆盖。"
+      ],
+      "citation": {
+        "cited": [
+          "redis:zadd:004",
+          "redis:zrange:001",
+          "redis:zrange:049",
+          "redis:zrange:050"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:zrange:001"
+        ],
+        "evidence_not_retrieved": [
+          "redis:zadd:001",
+          "redis:zadd:026",
+          "redis:zrange:051",
+          "redis:zrange:052"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1718,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-05",
+      "difficulty": "hard",
+      "question": "You must count distinct visitors per day without storing the full visitor list. Which Redis commands, and what is the accuracy trade-off?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "SADD 到按天的 key，用『实际新增数』作去重信号",
+        "SCARD / SMEMBERS 取总数",
+        "权衡是内存：精确集合随基数无界增长",
+        "极大基数应换概率结构（HyperLogLog）：小而有界的误差换常量内存",
+        "必须点明『精确性 / 内存』这条权衡，而不是说集合能扛住"
+      ],
+      "hit_by": [],
+      "answer_chars": 286,
+      "latency_ms": 2883.0668999580666,
+      "retrieval_ms": 0.3493999829515815,
+      "prompt_tokens": 2018,
+      "completion_tokens": 217,
+      "cost_usd": 0.00078356,
+      "error": "",
+      "out_of_corpus": [
+        "HyperLogLog（PFADD / PFCOUNT）在语料里**完全没有** —— 语料只有 SADD / SMEMBERS 这类精确集合。而题目问的是『不存全量访客列表』，参考答案也要求点名『概率结构换常量内存』这条权衡：这一半在语料里无从获得。⚠️ 本题的检索失败**另有原因**（问句用词『distinct visitors』与 SADD 页面的『members』语义距离远），两件事别混为一谈。"
+      ],
+      "citation": {
+        "cited": [
+          "redis:set:024",
+          "redis:expire:037",
+          "redis:incr:019",
+          "redis:incr:021"
+        ],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:sadd:001",
+          "redis:sadd:018",
+          "redis:smembers:001",
+          "redis:smembers:017"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1682,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-05",
+      "difficulty": "hard",
+      "question": "You must count distinct visitors per day without storing the full visitor list. Which Redis commands, and what is the accuracy trade-off?",
+      "points_total": 5,
+      "hits": [
+        "极大基数应换概率结构（HyperLogLog）：小而有界的误差换常量内存"
+      ],
+      "missed": [
+        "SADD 到按天的 key，用『实际新增数』作去重信号",
+        "SCARD / SMEMBERS 取总数",
+        "权衡是内存：精确集合随基数无界增长",
+        "必须点明『精确性 / 内存』这条权衡，而不是说集合能扛住"
+      ],
+      "hit_by": [
+        [
+          "极大基数应换概率结构（HyperLogLog）：小而有界的误差换常量内存",
+          "hyperloglog"
+        ]
+      ],
+      "answer_chars": 417,
+      "latency_ms": 3614.7253999952227,
+      "retrieval_ms": 0.3493999829515815,
+      "prompt_tokens": 2018,
+      "completion_tokens": 328,
+      "cost_usd": 0.00090566,
+      "error": "",
+      "out_of_corpus": [
+        "HyperLogLog（PFADD / PFCOUNT）在语料里**完全没有** —— 语料只有 SADD / SMEMBERS 这类精确集合。而题目问的是『不存全量访客列表』，参考答案也要求点名『概率结构换常量内存』这条权衡：这一半在语料里无从获得。⚠️ 本题的检索失败**另有原因**（问句用词『distinct visitors』与 SADD 页面的『members』语义距离远），两件事别混为一谈。"
+      ],
+      "citation": {
+        "cited": [
+          "redis:set:024",
+          "redis:expire:037",
+          "redis:expire:040",
+          "redis:expire:001",
+          "redis:incr:021",
+          "redis:incr:019",
+          "redis:lrange:002",
+          "redis:blpop:015",
+          "redis:blpop:009",
+          "redis:brpop:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:sadd:001",
+          "redis:sadd:018",
+          "redis:smembers:001",
+          "redis:smembers:017"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1682,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-05",
+      "difficulty": "hard",
+      "question": "You must count distinct visitors per day without storing the full visitor list. Which Redis commands, and what is the accuracy trade-off?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "SADD 到按天的 key，用『实际新增数』作去重信号",
+        "SCARD / SMEMBERS 取总数",
+        "权衡是内存：精确集合随基数无界增长",
+        "极大基数应换概率结构（HyperLogLog）：小而有界的误差换常量内存",
+        "必须点明『精确性 / 内存』这条权衡，而不是说集合能扛住"
+      ],
+      "hit_by": [],
+      "answer_chars": 286,
+      "latency_ms": 4932.5887999730185,
+      "retrieval_ms": 0.3493999829515815,
+      "prompt_tokens": 2018,
+      "completion_tokens": 217,
+      "cost_usd": 0.00078356,
+      "error": "",
+      "out_of_corpus": [
+        "HyperLogLog（PFADD / PFCOUNT）在语料里**完全没有** —— 语料只有 SADD / SMEMBERS 这类精确集合。而题目问的是『不存全量访客列表』，参考答案也要求点名『概率结构换常量内存』这条权衡：这一半在语料里无从获得。⚠️ 本题的检索失败**另有原因**（问句用词『distinct visitors』与 SADD 页面的『members』语义距离远），两件事别混为一谈。"
+      ],
+      "citation": {
+        "cited": [
+          "redis:set:024",
+          "redis:expire:037",
+          "redis:incr:019",
+          "redis:incr:021"
+        ],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "redis:sadd:001",
+          "redis:sadd:018",
+          "redis:smembers:001",
+          "redis:smembers:017"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1682,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-06",
+      "difficulty": "hard",
+      "question": "Design a cache read path with EXPIRE and GET. Why must the application not rely on 'the key is still there' to mean 'the value is still fresh'?",
+      "points_total": 4,
+      "hits": [],
+      "missed": [
+        "写入带 EX 让条目自己过期；GET 返回 nil 视为 miss 并回源重建",
+        "GET 完全不携带剩余 TTL 信息",
+        "要剩余寿命必须显式 TTL/PTTL，且 -1 与 -2 是两种情形",
+        "缓存雪崩：热点 key 过期时同时 miss，所以过期要加抖动"
+      ],
+      "hit_by": [],
+      "answer_chars": 614,
+      "latency_ms": 3067.497899988666,
+      "retrieval_ms": 0.3212000010535121,
+      "prompt_tokens": 1702,
+      "completion_tokens": 361,
+      "cost_usd": 0.0008566400000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:get:001",
+          "redis:get:000",
+          "redis:expire:040",
+          "redis:incr:017"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:get:001"
+        ],
+        "evidence_not_retrieved": [
+          "redis:expire:001",
+          "redis:expire:002",
+          "redis:expire:003",
+          "redis:expire:000",
+          "redis:ttl:001",
+          "redis:ttl:018"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1320,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-06",
+      "difficulty": "hard",
+      "question": "Design a cache read path with EXPIRE and GET. Why must the application not rely on 'the key is still there' to mean 'the value is still fresh'?",
+      "points_total": 4,
+      "hits": [],
+      "missed": [
+        "写入带 EX 让条目自己过期；GET 返回 nil 视为 miss 并回源重建",
+        "GET 完全不携带剩余 TTL 信息",
+        "要剩余寿命必须显式 TTL/PTTL，且 -1 与 -2 是两种情形",
+        "缓存雪崩：热点 key 过期时同时 miss，所以过期要加抖动"
+      ],
+      "hit_by": [],
+      "answer_chars": 316,
+      "latency_ms": 2695.8762999856845,
+      "retrieval_ms": 0.3212000010535121,
+      "prompt_tokens": 1702,
+      "completion_tokens": 221,
+      "cost_usd": 0.00070264,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:get:001",
+          "redis:ttl:000",
+          "redis:expire:040"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:get:001"
+        ],
+        "evidence_not_retrieved": [
+          "redis:expire:001",
+          "redis:expire:002",
+          "redis:expire:003",
+          "redis:expire:000",
+          "redis:ttl:001",
+          "redis:ttl:018"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1320,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-06",
+      "difficulty": "hard",
+      "question": "Design a cache read path with EXPIRE and GET. Why must the application not rely on 'the key is still there' to mean 'the value is still fresh'?",
+      "points_total": 4,
+      "hits": [],
+      "missed": [
+        "写入带 EX 让条目自己过期；GET 返回 nil 视为 miss 并回源重建",
+        "GET 完全不携带剩余 TTL 信息",
+        "要剩余寿命必须显式 TTL/PTTL，且 -1 与 -2 是两种情形",
+        "缓存雪崩：热点 key 过期时同时 miss，所以过期要加抖动"
+      ],
+      "hit_by": [],
+      "answer_chars": 776,
+      "latency_ms": 3257.39479996264,
+      "retrieval_ms": 0.3212000010535121,
+      "prompt_tokens": 1702,
+      "completion_tokens": 430,
+      "cost_usd": 0.00093254,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:get:001",
+          "redis:get:000",
+          "redis:expire:040",
+          "redis:ttl:000"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:get:001"
+        ],
+        "evidence_not_retrieved": [
+          "redis:expire:001",
+          "redis:expire:002",
+          "redis:expire:003",
+          "redis:expire:000",
+          "redis:ttl:001",
+          "redis:ttl:018"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1320,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-07",
+      "difficulty": "hard",
+      "question": "Design a real-time notification fan-out with PUBLISH/SUBSCRIBE. What delivery guarantee does it provide, and what must you add if you need more?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "PUBLISH 发、SUBSCRIBE 收",
+        "保证是 at-most-once（fire-and-forget）",
+        "消息不持久化，断线 / 慢订阅者直接丢",
+        "PUBLISH 的返回值（接收者数）**不是** ack",
+        "要持久化必须并行加一条持久路径（list / stream）"
+      ],
+      "hit_by": [],
+      "answer_chars": 570,
+      "latency_ms": 2309.493300039321,
+      "retrieval_ms": 0.2660000463947654,
+      "prompt_tokens": 1490,
+      "completion_tokens": 181,
+      "cost_usd": 0.0006014,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:publish:001",
+          "redis:publish:002",
+          "redis:subscribe:000",
+          "redis:subscribe:002"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:publish:001",
+          "redis:subscribe:000"
+        ],
+        "evidence_not_retrieved": [
+          "redis:publish:004",
+          "redis:subscribe:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1166,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-07",
+      "difficulty": "hard",
+      "question": "Design a real-time notification fan-out with PUBLISH/SUBSCRIBE. What delivery guarantee does it provide, and what must you add if you need more?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "PUBLISH 发、SUBSCRIBE 收",
+        "保证是 at-most-once（fire-and-forget）",
+        "消息不持久化，断线 / 慢订阅者直接丢",
+        "PUBLISH 的返回值（接收者数）**不是** ack",
+        "要持久化必须并行加一条持久路径（list / stream）"
+      ],
+      "hit_by": [],
+      "answer_chars": 437,
+      "latency_ms": 2494.2129000555724,
+      "retrieval_ms": 0.2660000463947654,
+      "prompt_tokens": 1490,
+      "completion_tokens": 250,
+      "cost_usd": 0.0006773,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:publish:001",
+          "redis:publish:002",
+          "redis:subscribe:000",
+          "redis:subscribe:002",
+          "redis:subscribe:004"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:publish:001",
+          "redis:subscribe:000"
+        ],
+        "evidence_not_retrieved": [
+          "redis:publish:004",
+          "redis:subscribe:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1166,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-07",
+      "difficulty": "hard",
+      "question": "Design a real-time notification fan-out with PUBLISH/SUBSCRIBE. What delivery guarantee does it provide, and what must you add if you need more?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "PUBLISH 发、SUBSCRIBE 收",
+        "保证是 at-most-once（fire-and-forget）",
+        "消息不持久化，断线 / 慢订阅者直接丢",
+        "PUBLISH 的返回值（接收者数）**不是** ack",
+        "要持久化必须并行加一条持久路径（list / stream）"
+      ],
+      "hit_by": [],
+      "answer_chars": 633,
+      "latency_ms": 2484.8247999325395,
+      "retrieval_ms": 0.2660000463947654,
+      "prompt_tokens": 1490,
+      "completion_tokens": 185,
+      "cost_usd": 0.0006058000000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "redis:publish:001",
+          "redis:publish:002",
+          "redis:subscribe:000",
+          "redis:subscribe:002"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:publish:001",
+          "redis:subscribe:000"
+        ],
+        "evidence_not_retrieved": [
+          "redis:publish:004",
+          "redis:subscribe:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 1166,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-08",
+      "difficulty": "hard",
+      "question": "You store a user profile as a Redis hash. How do you update a single field without clobbering the others, and what happens to the key when the last field is removed?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "HSET key field value 只改命名字段，其余不动",
+        "对比 SET 会整体替换值",
+        "HGET key field 读单个字段",
+        "删掉最后一个字段 ⇒ 整个 key 消失（空 hash 不存在）",
+        "因此后续 TTL/EXISTS 会看到 key 不存在"
+      ],
+      "hit_by": [],
+      "answer_chars": 299,
+      "latency_ms": 1926.7333999741822,
+      "retrieval_ms": 0.39840000681579113,
+      "prompt_tokens": 1638,
+      "completion_tokens": 113,
+      "cost_usd": 0.00056656,
+      "error": "",
+      "out_of_corpus": [
+        "HDEL 在语料里**完全没有**（语料只有 HSET / HGET）。参考答案要求的『删掉最后一个字段后整个 key 消失』这一步没有直接支撑 —— 语料只能间接说明 hash 的存在性，说不出删除语义。"
+      ],
+      "citation": {
+        "cited": [
+          "redis:hset:000",
+          "redis:hset:002"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:hset:000"
+        ],
+        "evidence_not_retrieved": [
+          "redis:hset:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "redis:hget:001",
+          "redis:hget:002"
+        ]
+      },
+      "context_tokens": 1178,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-08",
+      "difficulty": "hard",
+      "question": "You store a user profile as a Redis hash. How do you update a single field without clobbering the others, and what happens to the key when the last field is removed?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "HSET key field value 只改命名字段，其余不动",
+        "对比 SET 会整体替换值",
+        "HGET key field 读单个字段",
+        "删掉最后一个字段 ⇒ 整个 key 消失（空 hash 不存在）",
+        "因此后续 TTL/EXISTS 会看到 key 不存在"
+      ],
+      "hit_by": [],
+      "answer_chars": 299,
+      "latency_ms": 2258.0977000761777,
+      "retrieval_ms": 0.39840000681579113,
+      "prompt_tokens": 1638,
+      "completion_tokens": 113,
+      "cost_usd": 0.00056656,
+      "error": "",
+      "out_of_corpus": [
+        "HDEL 在语料里**完全没有**（语料只有 HSET / HGET）。参考答案要求的『删掉最后一个字段后整个 key 消失』这一步没有直接支撑 —— 语料只能间接说明 hash 的存在性，说不出删除语义。"
+      ],
+      "citation": {
+        "cited": [
+          "redis:hset:000",
+          "redis:hset:002"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:hset:000"
+        ],
+        "evidence_not_retrieved": [
+          "redis:hset:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "redis:hget:001",
+          "redis:hget:002"
+        ]
+      },
+      "context_tokens": 1178,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "r-hard-08",
+      "difficulty": "hard",
+      "question": "You store a user profile as a Redis hash. How do you update a single field without clobbering the others, and what happens to the key when the last field is removed?",
+      "points_total": 5,
+      "hits": [],
+      "missed": [
+        "HSET key field value 只改命名字段，其余不动",
+        "对比 SET 会整体替换值",
+        "HGET key field 读单个字段",
+        "删掉最后一个字段 ⇒ 整个 key 消失（空 hash 不存在）",
+        "因此后续 TTL/EXISTS 会看到 key 不存在"
+      ],
+      "hit_by": [],
+      "answer_chars": 299,
+      "latency_ms": 1958.0683999229223,
+      "retrieval_ms": 0.39840000681579113,
+      "prompt_tokens": 1638,
+      "completion_tokens": 113,
+      "cost_usd": 0.00056656,
+      "error": "",
+      "out_of_corpus": [
+        "HDEL 在语料里**完全没有**（语料只有 HSET / HGET）。参考答案要求的『删掉最后一个字段后整个 key 消失』这一步没有直接支撑 —— 语料只能间接说明 hash 的存在性，说不出删除语义。"
+      ],
+      "citation": {
+        "cited": [
+          "redis:hset:000",
+          "redis:hset:002"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "redis:hset:000"
+        ],
+        "evidence_not_retrieved": [
+          "redis:hset:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "redis:hget:001",
+          "redis:hget:002"
+        ]
+      },
+      "context_tokens": 1178,
+      "context_size": 10,
+      "context_dropped": []
+    }
+  ]
+}
