@@ -47,6 +47,16 @@ from .harness import Harness, HarnessVerdict
 from .policy import PolicyContext, PolicyDecision, PolicyEngine, PolicyRule, Verdict
 from .policy_document import PolicyDocument, PolicyDocumentError
 from .ports import Clock, ManualClock, SystemClock
+from .secrets import (
+    EnvSecretProvider,
+    InMemorySecretProvider,
+    Secret,
+    SecretNotFound,
+    SecretProvider,
+    SecretReference,
+    resolve,
+    resolve_secret,
+)
 
 __all__ = [
     "ApprovalRequest",
@@ -55,6 +65,7 @@ __all__ = [
     "Budget",
     "Clock",
     "CostManager",
+    "EnvSecretProvider",
     "Guardrail",
     "GuardrailEngine",
     "GuardrailFinding",
@@ -65,6 +76,7 @@ __all__ = [
     "HarnessVerdict",
     "HumanLoop",
     "InMemoryApprovalStore",
+    "InMemorySecretProvider",
     "ManualClock",
     "PolicyContext",
     "PolicyDecision",
@@ -72,9 +84,15 @@ __all__ = [
     "PolicyDocumentError",
     "PolicyEngine",
     "PolicyRule",
+    "Secret",
+    "SecretNotFound",
     "SecretPatternGuardrail",
+    "SecretProvider",
+    "SecretReference",
     "SensitiveTopicGuardrail",
     "SystemClock",
     "ToolAllowlistGuardrail",
     "Verdict",
+    "resolve",
+    "resolve_secret",
 ]

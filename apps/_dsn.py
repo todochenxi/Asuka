@@ -35,25 +35,38 @@
 from __future__ import annotations
 
 import os
-from typing import Mapping
+from typing import Any, Mapping
 
 
-def resolve_dsn(explicit: str = "", env: Mapping[str, str] | None = None) -> str:
-    """按上面的优先级给出 DSN。给不出就返回空串，由调用方点名报错。"""
+def resolve_dsn(
+    explicit: str = "",
+    env: Mapping[str, str] | None = None,
+    secrets: Mapping[str, Any] | None = None,
+) -> str:
+    """按上面的优先级给出 DSN。给不出就返回空串，由调用方点名报错。
+
+    M105 / Vault：任一来源都可以是一个**秘密引用**（`secret://env/NAME`）。
+    给了 `secrets`（`scheme → SecretProvider`）就在**边界上**解析成明文 ——
+    于是配置文件/manifest 里放的是引用，明文只活在 provider 背后。
+    """
     if explicit.strip():
-        return explicit.strip()
+        raw = explicit.strip()
+    else:
+        source = env if env is not None else os.environ
+        raw = ""
+        manifest_path = (source.get("AGENTOS_MANIFEST") or "").strip()
+        if manifest_path:
+            from packages.agent_manifest import load
 
-    source = env if env is not None else os.environ
+            raw = str(load(manifest_path).get("storage.pg_dsn") or "")
+        if not raw:
+            raw = (source.get("AGENTOS_PG_DSN") or "").strip()
 
-    manifest_path = (source.get("AGENTOS_MANIFEST") or "").strip()
-    if manifest_path:
-        from packages.agent_manifest import load
+    if raw and secrets:
+        from packages.agent_harness.secrets import resolve
 
-        dsn = load(manifest_path).get("storage.pg_dsn") or ""
-        if dsn:
-            return str(dsn)
-
-    return (source.get("AGENTOS_PG_DSN") or "").strip()
+        return resolve(raw, secrets)
+    return raw
 
 
 def hint() -> str:

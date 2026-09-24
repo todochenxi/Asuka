@@ -38,6 +38,7 @@ from __future__ import annotations
 import importlib
 from typing import Any, Mapping
 
+from packages.agent_api.errors import ApiError
 from packages.agent_api.handlers import (
     cancel_run,
     chat,
@@ -50,6 +51,13 @@ from packages.agent_api.handlers import (
     list_run_executions,
     start_run,
     step_run,
+)
+from packages.agent_api.identity import (
+    SCOPE_APPROVALS_DECIDE,
+    SCOPE_RUNS_WRITE,
+    Identity,
+    authenticate,
+    require_scope,
 )
 from packages.agent_api.ports import ControlPlane
 
@@ -72,6 +80,7 @@ def build_app(
     *,
     uow: Any = None,
     readiness: Any = None,
+    identity_provider: Any = None,
 ) -> Any:
     """把 Control Plane 绑成 FastAPI app。
 
@@ -95,13 +104,28 @@ def build_app(
     if uow is not None:
         _add_transaction_middleware(app, uow)
 
+    # ── IAM（M105）────────────────────────────────────────────
+    # 身份错误 → 401/403，**只在这一处**翻译（B-7）。handler 内部抛的 ApiError
+    # 也一样被这条接住，于是"没带凭据"不会变成一个 500。
+    @app.exception_handler(ApiError)
+    async def _api_error(_request: Any, exc: ApiError) -> Any:
+        return JSONResponse(exc.to_body(), status_code=exc.http_status)
+
+    def _require(authorization: str, scope: str) -> Identity | None:
+        """没配认证器 = 不校验（维持既有行为）；配了就必须过（I-1 / I-2）。"""
+        if identity_provider is None:
+            return None
+        return require_scope(authenticate(identity_provider, authorization), scope)
+
     @app.post("/agents/{agent_id}/runs")
     def _start_run(
         agent_id: str,
         body: Mapping[str, Any],
         idempotency_key: str = fastapi.Header(default="", alias="Idempotency-Key"),
+        authorization: str = fastapi.Header(default="", alias="Authorization"),
     ) -> Any:
         """§44 的第一行。幂等键走 Header，不放 body —— 它是传输语义，不是业务字段。"""
+        _require(authorization, SCOPE_RUNS_WRITE)
         response = start_run(
             control_plane,
             {**dict(body), "agent_id": agent_id},
@@ -119,14 +143,24 @@ def build_app(
     # 缺的是中间那个"推"。于是这个 API 能开出 Run、能查询 Run，
     # 唯独不能让 Run 往前走 —— 而它看起来完全是通的。
     @app.post("/runs/{run_id}/step")
-    def _step_run(run_id: str, body: Mapping[str, Any] | None = None) -> Any:
+    def _step_run(
+        run_id: str,
+        body: Mapping[str, Any] | None = None,
+        authorization: str = fastapi.Header(default="", alias="Authorization"),
+    ) -> Any:
         """走一步。终态 → 409 RUN_TERMINAL（F-2）。"""
+        _require(authorization, SCOPE_RUNS_WRITE)
         response = step_run(control_plane, run_id, dict(body or {}))
         return JSONResponse(dict(response.body), status_code=response.status)
 
     @app.post("/runs/{run_id}/run")
-    def _drive_run(run_id: str, body: Mapping[str, Any] | None = None) -> Any:
+    def _drive_run(
+        run_id: str,
+        body: Mapping[str, Any] | None = None,
+        authorization: str = fastapi.Header(default="", alias="Authorization"),
+    ) -> Any:
         """一路走到停下来（挂起 / 终态 / 到上限）。"""
+        _require(authorization, SCOPE_RUNS_WRITE)
         response = drive_run(control_plane, run_id, dict(body or {}))
         return JSONResponse(dict(response.body), status_code=response.status)
 
@@ -134,12 +168,14 @@ def build_app(
     def _chat(
         body: Mapping[str, Any],
         idempotency_key: str = fastapi.Header(default="", alias="Idempotency-Key"),
+        authorization: str = fastapi.Header(default="", alias="Authorization"),
     ) -> Any:
         """聊天页的单轮问答入口：开一条 Run、推到停下来，带上模型回答。
 
         `Idempotency-Key` 走 Header（与 `POST /runs` 同款）—— 它是**传输语义**：
         聊天页的重发应当拿回同一句回答，而不是多跑一遍、多花一次钱。
         """
+        _require(authorization, SCOPE_RUNS_WRITE)
         response = chat(control_plane, dict(body), idempotency_key=idempotency_key)
         return JSONResponse(dict(response.body), status_code=response.status)
 
@@ -151,12 +187,19 @@ def build_app(
         run_id: str,
         body: Mapping[str, Any],
         idempotency_key: str = fastapi.Header(default="", alias="Idempotency-Key"),
+        authorization: str = fastapi.Header(default="", alias="Authorization"),
     ) -> Any:
         """把一条 Run 叫停。`reason` 与 `by` 都必填（A-8 同款）。
 
         `Idempotency-Key` 走 Header（与 `POST /runs` 同款）：它是**传输语义**，
         不是业务字段 —— 混进 body 里就会被当成"取消的理由"的一部分。
+
+        I-3：配了认证器时，`by` **来自身份**而不是请求体 —— 否则署名可以伪造，
+        而审计要回答的正是"到底是谁叫停的"。
         """
+        identity = _require(authorization, SCOPE_RUNS_WRITE)
+        if identity is not None:
+            body = {**dict(body), "by": identity.subject}
         response = cancel_run(
             control_plane, run_id, dict(body), idempotency_key=idempotency_key
         )
@@ -201,8 +244,19 @@ def build_app(
         return JSONResponse(dict(response.body), status_code=response.status)
 
     @app.post("/runs/{run_id}/approvals/{approval_id}/decision")
-    def _decide(run_id: str, approval_id: str, body: Mapping[str, Any]) -> Any:
-        """HITL 回调。`by` 必填（A-8）—— 匿名审批进不了审计。"""
+    def _decide(
+        run_id: str,
+        approval_id: str,
+        body: Mapping[str, Any],
+        authorization: str = fastapi.Header(default="", alias="Authorization"),
+    ) -> Any:
+        """HITL 回调。`by` 必填（A-8）—— 匿名审批进不了审计。
+
+        I-3：配了认证器时，`by` 来自身份 —— 审批这种"谁批的"尤其不能靠请求体自述。
+        """
+        identity = _require(authorization, SCOPE_APPROVALS_DECIDE)
+        if identity is not None:
+            body = {**dict(body), "by": identity.subject}
         response = decide_approval(control_plane, run_id, approval_id, body)
         return JSONResponse(dict(response.body), status_code=response.status)
 

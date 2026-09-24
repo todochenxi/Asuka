@@ -41,6 +41,7 @@ class FakeApp:
         self.kwargs = kwargs
         self.routes: dict[tuple[str, str], Any] = {}
         self.mounted: dict[str, Any] = {}
+        self.exception_handlers: dict[Any, Any] = {}
 
     def _register(self, method: str, path: str) -> Any:
         def decorate(fn: Any) -> Any:
@@ -57,6 +58,18 @@ class FakeApp:
 
     def middleware(self, kind: str) -> Any:
         def decorate(fn: Any) -> Any:
+            return fn
+
+        return decorate
+
+    def exception_handler(self, exc_class: Any) -> Any:
+        """M105：`build_app` 用它把 `ApiError`（401/403/…）翻成响应。
+
+        替身只需要**记得**注册了谁 —— 真正的翻路由 `call()` 或真实框架做。
+        """
+
+        def decorate(fn: Any) -> Any:
+            self.exception_handlers[exc_class] = fn
             return fn
 
         return decorate

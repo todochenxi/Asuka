@@ -492,5 +492,79 @@ class TheRealProcessTest(RealPostgresCase):
         )
 
 
+class IamAuthTest(RealHttpCase):
+    """M105 / IAM：认证器接上之后，写路由要凭据，actor 来自身份（I-1/I-2/I-3）。"""
+
+    def _provider(self):
+        from packages.agent_api.identity import (
+            SCOPE_RUNS_WRITE,
+            Identity,
+            InMemoryIdentityProvider,
+        )
+
+        return InMemoryIdentityProvider(
+            {
+                "writer": Identity(
+                    subject="alice", tenant_id="acme", scopes=frozenset({SCOPE_RUNS_WRITE})
+                ),
+                "reader": Identity(subject="bob", scopes=frozenset({"runs:read"})),
+            }
+        )
+
+    def _authed_client(self):
+        app = build_api(self.config, conn=self.api_conn, identity_provider=self._provider())
+        return _client(app)
+
+    def test_i1_a_write_without_a_token_is_401(self) -> None:
+        client = self._authed_client()
+        r = client.post("/agents/agent-it/runs", json={"user_request": "x"})
+        self.assertEqual(r.status_code, 401, r.text)
+        self.assertEqual(r.json()["error"]["code"], "UNAUTHENTICATED")
+
+    def test_i1_a_bad_token_is_401(self) -> None:
+        client = self._authed_client()
+        r = client.post(
+            "/agents/agent-it/runs",
+            json={"user_request": "x"},
+            headers={"Authorization": "Bearer nope"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_i2_a_token_without_the_scope_is_403(self) -> None:
+        client = self._authed_client()
+        r = client.post(
+            "/agents/agent-it/runs",
+            json={"user_request": "x"},
+            headers={"Authorization": "Bearer reader"},
+        )
+        self.assertEqual(r.status_code, 403, r.text)
+        self.assertEqual(r.json()["error"]["code"], "FORBIDDEN")
+
+    def test_a_valid_token_creates_a_run(self) -> None:
+        client = self._authed_client()
+        r = client.post(
+            "/agents/agent-it/runs",
+            json={"user_request": "compute 6*7"},
+            headers={"Authorization": "Bearer writer"},
+        )
+        self.assertIn(r.status_code, (200, 201), r.text)
+
+    def test_i3_the_actor_comes_from_the_identity_not_the_body(self) -> None:
+        """body 里**没有** `by` —— 没有 I-3 的话取消会以 400（by is required）失败。"""
+        client = self._authed_client()
+        started = client.post(
+            "/agents/agent-it/runs",
+            json={"user_request": "compute 6*7"},
+            headers={"Authorization": "Bearer writer"},
+        )
+        run_id = started.json()["run_id"]
+        r = client.post(
+            f"/runs/{run_id}/cancel",
+            json={"reason": "stop"},
+            headers={"Authorization": "Bearer writer"},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

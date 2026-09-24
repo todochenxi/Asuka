@@ -112,6 +112,24 @@ class TooManyRequests(ApiError):
         super().__init__(code, 429, message, details=details)
 
 
+class Unauthenticated(ApiError):
+    """401：没带凭据 / 凭据无效。**不许**退化成匿名。"""
+
+    def __init__(self, message: str, *, code: str = "UNAUTHENTICATED", **details: Any) -> None:
+        super().__init__(code, 401, message, details=details)
+
+
+class Forbidden(ApiError):
+    """403：身份有效，但**没有**干这件事的权限。
+
+    与 401 分开（M105）：401 是"我不知道你是谁"，403 是"我知道你是谁，
+    但你不能做这件事"。合并成一个会把"该重登"和"该申请权限"混为一谈。
+    """
+
+    def __init__(self, message: str, *, code: str = "FORBIDDEN", **details: Any) -> None:
+        super().__init__(code, 403, message, details=details)
+
+
 def map_domain_error(err: Exception) -> ApiError:
     """把领域异常翻成 HTTP 语义。未知异常**必须**落到 500 —— 那是 bug，不是翻译失败。"""
     if isinstance(err, ApiError):

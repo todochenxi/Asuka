@@ -285,7 +285,7 @@
       <span><i style="background:var(--ok)"></i> 已实现</span>
       <span><i style="background:var(--warn)"></i> 未实现 / 待定</span>
       <span><i style="background:var(--violet)"></i> 部分 / 有条件</span>
-      <span>数据来源：冻结基线 v2.1.80 + 项目 memory（M91–M104）</span>
+      <span>数据来源：冻结基线 v2.1.80 + 项目 memory（M91–M105）</span>
     </div>
   </section>
 
@@ -310,7 +310,7 @@
           <tr><td class="ev-code">M6</td><td>Model Platform</td><td><span class="badge ok">已落地</span> Gateway / Routing / Fallback / Cost</td></tr>
           <tr><td class="ev-code">M7</td><td>Production</td><td><span class="badge ok">部分·已补</span> K8s 清单 + <b>CI/CD · HPA · 滚动更新/回滚（M102）</b> · 业务指标 HPA 待 metrics adapter</td></tr>
           <tr><td class="ev-code">M8</td><td>Evaluation</td><td><span class="badge part">部分</span> regression 在仓库 · 主体评测平台在 <b>Asuka</b></td></tr>
-          <tr><td class="ev-code">M9</td><td>Enterprise</td><td><span class="badge ok">部分·已补</span> tasks.tenant_id · <b>OPA（策略即数据）/ Sandbox（M101）</b> · IAM / Vault 未落地</td></tr>
+          <tr><td class="ev-code">M9</td><td>Enterprise</td><td><span class="badge ok">已落地</span> tasks.tenant_id · OPA（策略即数据）/ Sandbox（M101）· <b>IAM（身份）/ Vault（密钥引用与脱敏，M105）</b></td></tr>
           <tr><td class="ev-code">M10</td><td>Advanced Execution</td><td><span class="badge ok">已落地</span> Saga / Compensation</td></tr>
           <tr><td class="ev-code">M11</td><td>Developer Platform</td><td><span class="badge ok">已落地</span> SDK / Manifest / Registry / CLI / Console</td></tr>
           <tr><td class="ev-code">M12</td><td>Intelligence</td><td><span class="badge part">进行中</span> PlanNode 分派（五种）+ Plan Validator（M91·M98·M99）· 更多规划期能力待做</td></tr>
@@ -322,6 +322,7 @@
           <tr><td class="ev-code">M102</td><td>M 层落地（生产）</td><td><span class="badge ok">已落地</span> M7 CI/CD（GitHub Actions）· HPA（api/worker）· 滚动更新/金丝雀/回滚</td></tr>
           <tr><td class="ev-code">M103</td><td>M 层落地（连接）</td><td><span class="badge ok">已落地</span> M4 JSON-RPC 2.0 核心 · MCP 客户端/Invoker（stdio + 工具发现登记）</td></tr>
           <tr><td class="ev-code">M104</td><td>M 层落地（连接）</td><td><span class="badge ok">已落地</span> M4 A2A 客户端（AgentCard / message·tasks）+ 远端委派 Spawner</td></tr>
+          <tr><td class="ev-code">M105</td><td>M 层落地（企业治理收尾）</td><td><span class="badge ok">已落地</span> M9 IAM（Identity / scope / 401·403）+ Vault（Secret 脱敏 / SecretProvider / 引用解析）</td></tr>
           <tr><td class="ev-code">—</td><td>Future Extension</td><td><span class="badge part">有意不做</span> SFT/DPO/RL · Tree Search · Actor+Mailbox · Workflow Engine · Marketplace/GitOps · Multi-Tenant 完整隔离</td></tr>
         </tbody>
       </table>
@@ -338,7 +339,6 @@
           <li class="t"><span class="dot"></span><div><b>M5 · Hybrid Search / Rerank</b><span class="badge ok">M100 已落地</span><span class="sub">RRF 融合（HybridRetriever）+ LexicalRerank；Knowledge Versioning 仍未做</span></div></li>
           <li class="t"><span class="dot"></span><div><b>M4 · HTTP / SSE 传输</b><span class="badge ok">MCP / A2A M103·M104 已落地</span><span class="sub">MCP Streamable HTTP 与 A2A 流式（message/stream）——需 HTTP 传输而非 stdio</span></div></li>
           <li class="t"><span class="dot"></span><div><b>M7 · 业务指标 HPA</b><span class="badge ok">CI/CD / HPA / 滚动更新 M102 已落地</span><span class="sub">队列深度 / Run 延迟驱动扩缩容——需集群侧 metrics adapter（Prometheus Adapter / KEDA）</span></div></li>
-          <li class="t"><span class="dot"></span><div><b>M9 · IAM / Vault</b><span class="badge ok">OPA / Sandbox M101 已落地</span><span class="sub">剩 IAM（身份与授权）· Vault（密钥托管）—— 需外部系统输入</span></div></li>
         </ul>
       </div>
       <div class="card todo">

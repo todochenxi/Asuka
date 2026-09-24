@@ -135,6 +135,12 @@ class RuntimeConfig:
     api_port: int = 8000
     model_provider: str = ""
     """"`module:function` → 返回 `ModelGateway`（M23：模型网关的来源）。"""
+    identity_tokens: str = ""
+    """"M105 / IAM：`{token: {subject, tenant_id, scopes}}` 的 JSON（M9）。
+
+    空 = **不认证**（保持既有部署行为）。非空时 `build_api` 建一个静态身份表，
+    写路由开始要求 `Authorization: Bearer`，且 actor 来自身份而非请求体（I-3）。
+    """
     task_types: frozenset[str] = field(default_factory=frozenset)
     """"**期望**本进程能服务的 task_type（PR-21）。
 
@@ -241,6 +247,7 @@ class RuntimeConfig:
             tool_provider=(source.get("AGENTOS_TOOL_PROVIDER") or "").strip(),
             model_provider=(source.get("AGENTOS_MODEL_PROVIDER") or "").strip(),
             stack_provider=(source.get("AGENTOS_STACK_PROVIDER") or "").strip(),
+            identity_tokens=(source.get("AGENTOS_IDENTITY_TOKENS") or "").strip(),
             api_host=(source.get("AGENTOS_API_HOST") or "127.0.0.1").strip(),
             api_port=_int(source, "AGENTOS_API_PORT", 8000),
             task_types=frozenset(_csv(source, "AGENTOS_TASK_TYPES", [])),
@@ -1485,14 +1492,23 @@ def build_api(
     control_plane: Any = None,
     conn: Any = None,
     uow: Any = None,
+    identity_provider: Any = None,
 ) -> Any:
     """FastAPI app。框架绑定在 `apps/api/app.py`（PR-22），这里只负责把它拿来。
 
     PR-31：`uow` 与 `control_plane` 必须指向**同一个连接** ——
     否则"这个请求的写在哪个事务里"就有了两个答案，
     而提交其中一个不会让另一个生效。
+
+    M105 / IAM：没显式注入认证器时，按 `AGENTOS_IDENTITY_TOKENS` 建一个
+    静态表；**没配就是 None**（不认证）—— 保持既有部署行为不变。
     """
     from .api.app import build_app
+
+    if identity_provider is None and config.identity_tokens:
+        from packages.agent_api.identity import InMemoryIdentityProvider
+
+        identity_provider = InMemoryIdentityProvider.from_json(config.identity_tokens)
 
     if control_plane is None:
         if conn is None:
@@ -1512,7 +1528,12 @@ def build_api(
 
         return check_ready(config.pg_dsn)
 
-    return build_app(control_plane, uow=uow, readiness=_readiness)
+    return build_app(
+        control_plane,
+        uow=uow,
+        readiness=_readiness,
+        identity_provider=identity_provider,
+    )
 
 
 def stop_signal() -> StopSignal:
