@@ -13,7 +13,7 @@ API 给的是**业务视角**（这个 Run 怎么样了、有没有在等人）�
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Mapping
 
@@ -157,12 +157,17 @@ class TraceView:
     run_id: str
     entries: tuple[Mapping[str, Any], ...] = ()
     step_count: int = 0
+    #: M109：把同一本账**按层摊开** —— 目标/计划/动作、任务/执行、Harness、
+    #: 观测/状态各一段。账本本身是"只增的一串"，而排障时人问的是
+    #: "这一层发生了什么"；两件事都留着，谁也别替谁。
+    layers: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
             "step_count": self.step_count,
             "entries": [dict(e) for e in self.entries],
+            "layers": dict(self.layers),
         }
 
 

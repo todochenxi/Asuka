@@ -137,6 +137,8 @@ class TheProcessServesTest(RealHttpCase):
         self.assertIn("text/html", console.headers["content-type"])
         self.assertIn("<h1>AgentOS 控制台</h1>", console.text)
         self.assertIn('id="btn-cancel"', console.text)
+        # M109：账本页的分层记录
+        self.assertIn("分层记录", console.text)
 
         chat = self.client.get("/")
         self.assertEqual(chat.status_code, 200, chat.text[:200])
@@ -354,7 +356,14 @@ class ThePageFlowOverHttpTest(RealHttpCase):
 
         trace = self.client.get(f"/runs/{run_id}/trace")
         self.assertEqual(trace.status_code, 200)
-        self.assertGreater(len(trace.json()["entries"]), 0)
+        body = trace.json()
+        self.assertGreater(len(body["entries"]), 0)
+
+        # M109：同一本账也**按层摊开**，页面的"分层记录"读的就是它。
+        layers = body["layers"]
+        self.assertIn("goal", layers)
+        self.assertTrue(layers["actions"], "the layer view must show the Actions")
+        self.assertEqual(layers["state"]["run_status"], "completed")
 
     def test_a_terminal_run_refuses_to_be_cancelled(self) -> None:
         """B-10 在 HTTP 上的样子：409，不是 200 加一句"好吧"。"""

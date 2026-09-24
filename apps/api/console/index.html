@@ -516,6 +516,15 @@ pre.payload{
   *,*::before,*::after{animation-duration:.01ms !important; animation-iteration-count:1 !important;
     transition-duration:.01ms !important}
 }
+
+/* M109 · 分层记录：同一本账按 AgentOS 的层摊开 */
+.lay-sec{margin-bottom:16px}
+.lay-sec:last-child{margin-bottom:0}
+.lay-h{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--fg-subtle);
+  margin:0 0 9px;padding-bottom:6px;border-bottom:1px solid var(--border-soft)}
+.lay-dl{display:grid;grid-template-columns:150px 1fr;gap:4px 14px;margin:0}
+.lay-dl dt{color:var(--fg-subtle);font-size:12px}
+.lay-dl dd{margin:0;color:var(--fg);word-break:break-word;font-size:13px}
 </style>
 </head>
 <body>
@@ -836,6 +845,14 @@ pre.payload{
         <div class="vhead">
           <h2>账本</h2>
           <p>一个 Run 发生过什么。账本<b>只增</b>，不改写 —— 它是审计依据，不是缓存。</p>
+        </div>
+        <div class="card" id="layers-card" hidden>
+          <div class="card-h">
+            <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M4 9h16M4 14h16"/></svg>
+            <h2>分层记录</h2>
+            <span class="hint" id="layers-hint">同一本账，按 AgentOS 的层摊开</span>
+          </div>
+          <div id="layers"></div>
         </div>
         <div class="card">
           <div class="card-h">
@@ -1321,8 +1338,81 @@ function kindMeta(kind) {
   return { c: "mute", g: (k.split(".")[0] || "event") };
 }
 
+/* ---------- M109：分层记录（同一本账，按 AgentOS 的层摊开）---------- */
+function laySec(title, inner) {
+  return '<div class="lay-sec"><div class="lay-h">' + esc(title) + "</div>" + inner + "</div>";
+}
+function layRows(rows) {
+  return '<dl class="lay-dl">' + rows.map(function (r) {
+    const v = (r[1] === undefined || r[1] === null || r[1] === "") ? "—" : r[1];
+    return "<dt>" + esc(r[0]) + "</dt><dd>" + esc(String(v)) + "</dd>";
+  }).join("") + "</dl>";
+}
+function renderLayers(t) {
+  const card = $("layers-card"), el = $("layers");
+  if (!card || !el) return;
+  const L = (t && t.layers) || null;
+  if (!L || !Object.keys(L).length) { card.hidden = true; el.innerHTML = ""; return; }
+  card.hidden = false;
+  const secs = [];
+
+  if (L.goal) secs.push(laySec("Intelligence · 目标", layRows([
+    ["objective", L.goal.objective],
+    ["success_criteria", (L.goal.success_criteria || []).join("  ·  ")],
+    ["max_steps", L.goal.max_steps],
+  ])));
+
+  if (L.plan && (L.plan.nodes || []).length) secs.push(laySec("Intelligence · 计划",
+    '<div class="tl-ids">' + L.plan.nodes.map(function (n) {
+      return '<span class="tag">' + esc(n.node_id) + " " + esc(n.name) +
+        (n.kind ? " (" + esc(n.kind) + ")" : "") + "</span>";
+    }).join("") + "</div>"));
+
+  if (L.actions && L.actions.length) secs.push(laySec("Runtime → Kernel · 动作（Action → Task → Execution）",
+    L.actions.map(function (a) {
+      return '<div class="tl-e"><div class="tl-top"><span class="tl-kind">' + esc(a.action_type || "?") +
+        '</span><span class="tl-seq">#' + esc(a.seq) + "</span></div>" +
+        '<div class="tl-ids">' +
+        '<span class="tag">step ' + esc(a.step_id) + "</span>" +
+        '<span class="tag">task ' + esc(a.task_id) + "</span>" +
+        '<span class="tag">exec ' + esc(a.execution_id) + "</span>" +
+        '<span class="tag">attempt ' + esc(a.attempt_no) + "</span>" +
+        "</div></div>";
+    }).join("")));
+
+  if (L.executions && L.executions.length) secs.push(laySec("Kernel · 执行（Execution）",
+    L.executions.map(function (e) {
+      return '<div class="tl-e"><div class="tl-top"><span class="tl-kind">' + esc(e.status || "?") +
+        '</span><span class="tl-seq">' + esc(e.execution_id) + "</span></div>" +
+        '<div class="tl-ids"><span class="tag">task ' + esc(e.task_id) + "</span></div></div>";
+    }).join("")));
+
+  if (L.harness) {
+    const h = L.harness;
+    const ctx = (h.context || []).length
+      ? (h.context || []).map(function (c) {
+          return '<div class="tl-ids"><span class="tag">#' + esc(c.seq) + "</span>" +
+            '<span class="tag">' + esc(c.total_tokens) + " tokens</span>" +
+            (c.model_id ? '<span class="tag">' + esc(c.model_id) + "</span>" : "") + "</div>";
+        }).join("")
+      : '<div class="hint">没有 context.built</div>';
+    secs.push(laySec("Harness · Context / 审批 / 护栏", ctx +
+      '<div class="hint" style="margin-top:6px">审批请求 ' + (h.approval_seqs || []).length +
+      " · 护栏拒绝 " + (h.guardrail_seqs || []).length + "</div>"));
+  }
+
+  if (L.state) secs.push(laySec("Observation / State · 终态", layRows([
+    ["runtime_status", L.state.runtime_status],
+    ["run_status", L.state.run_status],
+    ["steps", L.state.steps],
+  ])));
+
+  el.innerHTML = secs.join("");
+}
+
 function renderTrace() {
   const t = state.trace;
+  renderLayers(t);
   const el = $("trace");
   const has = t && t.entries && t.entries.length;
   $("trace-empty").hidden = !!has;

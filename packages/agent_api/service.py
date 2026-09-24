@@ -61,6 +61,119 @@ def _outcome_str(outcome: Any) -> str:
     return str(getattr(outcome, "value", outcome))
 
 
+def _status_value(obj: Any) -> str:
+    """枚举取 `.value`，其余取 `str`。避免页面看到 `AgentRunStatus.COMPLETED`。"""
+    if obj is None:
+        return ""
+    return str(getattr(obj, "value", obj))
+
+
+def layers_of(stack: Any, entries: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """M109：把一本次账按 AgentOS 的**层**摊开。
+
+    账本本身是"只增的一串"（`trace.entries`），排障时人问的却是
+    "**这一层**发生了什么"。两件事都留着：串是事实源，分层是视图。
+
+    能摊出什么，取决于那一层往外说了多少：
+
+        goal / plan      Intelligence（`state.goal` / `state.current_plan`）
+        actions          `task.submitted`（ActionType → 交给 Kernel 的那一步）
+        executions        `execution.observed`（Kernel 的执行）
+        harness          `context.built` / `approval.requested` / `guardrail.rejected`
+        state            终态与步数
+
+    ⚠️ 摊不出 Goal / Plan 时**不补一个空壳** —— 缺就是缺（那是"这一层没登记"，
+    不是"这一层是空的"）。
+    """
+    loop = stack.loop
+    state = getattr(loop, "state", None)
+    layers: dict[str, Any] = {}
+
+    goal = getattr(state, "goal", None)
+    if goal is not None:
+        budget = getattr(goal, "budget", None)
+        layers["goal"] = {
+            "objective": str(getattr(goal, "objective", "")),
+            "success_criteria": [str(x) for x in (getattr(goal, "success_criteria", ()) or ())],
+            "max_steps": getattr(budget, "max_steps", None) if budget is not None else None,
+        }
+
+    plan = getattr(state, "current_plan", None)
+    if plan is not None:
+        layers["plan"] = {
+            "nodes": [
+                {
+                    "node_id": str(getattr(node, "node_id", "")),
+                    "name": str(getattr(node, "name", "")),
+                    "kind": _status_value(getattr(node, "kind", None)),
+                }
+                for node in (getattr(plan, "nodes", ()) or ())
+            ]
+        }
+
+    actions: list[dict[str, Any]] = []
+    executions: list[dict[str, Any]] = []
+    context: list[dict[str, Any]] = []
+    approvals: list[int] = []
+    guardrails: list[int] = []
+    seen_exec: set[str] = set()
+    for entry in entries:
+        kind = str(entry.get("kind") or "")
+        payload = dict(entry.get("payload") or {})
+        if kind == "task.submitted":
+            actions.append(
+                {
+                    "seq": entry.get("seq"),
+                    "step_id": entry.get("step_id") or "",
+                    "task_id": entry.get("task_id") or "",
+                    "execution_id": entry.get("execution_id") or "",
+                    "attempt_no": entry.get("attempt_no") or 0,
+                    "action_type": str(payload.get("action_type") or ""),
+                }
+            )
+        elif kind == "execution.observed":
+            execution_id = str(entry.get("execution_id") or "")
+            if execution_id and execution_id not in seen_exec:
+                seen_exec.add(execution_id)
+                executions.append(
+                    {
+                        "execution_id": execution_id,
+                        "task_id": entry.get("task_id") or "",
+                        "attempt_no": entry.get("attempt_no") or 0,
+                        "status": str(payload.get("status") or ""),
+                    }
+                )
+        elif kind == "context.built":
+            context.append(
+                {
+                    "seq": entry.get("seq"),
+                    "total_tokens": payload.get("total_tokens"),
+                    "model_id": payload.get("model_id"),
+                }
+            )
+        elif kind == "approval.requested":
+            approvals.append(entry.get("seq"))
+        elif kind == "guardrail.rejected":
+            guardrails.append(entry.get("seq"))
+
+    layers["actions"] = actions
+    layers["executions"] = executions
+    layers["harness"] = {
+        "context": context,
+        "approval_seqs": approvals,
+        "guardrail_seqs": guardrails,
+    }
+
+    if state is not None:
+        run = getattr(loop, "agent_run", None)
+        layers["state"] = {
+            "runtime_status": _status_value(getattr(state, "runtime_status", "")),
+            "run_status": _status_value(getattr(run, "status", None)),
+            "steps": len(getattr(loop, "steps_of_run", ()) or ()),
+        }
+    return layers
+
+
 def last_llm_answer(state: Any) -> str:
     """这条 Run 最近一次 LLM 执行的输出文本；没有就返回空串。
 
@@ -523,12 +636,17 @@ class InProcessControlPlane:
             )
 
     def get_trace(self, run_id: str) -> TraceView:
-        """F-4：账本。排障与审计的入口，也是页面"看得见流程"的数据源。"""
+        """F-4：账本。排障与审计的入口，也是页面"看得见流"的数据源。
+
+        M109：同一本账**按层再摊一份**（`layers`）—— 串是事实源，分层是视图。
+        """
         stack = self._must_stack(run_id)
+        entries = trace_entries_to_dicts(stack.loop.trace)
         return TraceView(
             run_id=run_id,
-            entries=trace_entries_to_dicts(stack.loop.trace),
+            entries=entries,
             step_count=len(stack.loop.steps_of_run),
+            layers=layers_of(stack, entries),
         )
 
     # ------------------------------------------------------------ 审批
