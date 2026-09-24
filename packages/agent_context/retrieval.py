@@ -29,6 +29,11 @@ from typing import Any, Mapping, Protocol, Sequence
 
 from .items import ContextItem, ContextSource, knowledge_chunk
 
+#: M5：片自述知识版本的字段名。它是 `versions.py` 与本文件之间的**唯一**约定
+#: （B-7：一个事实一处定义）。入库时由文档管线打上，检索时由
+#: `VersionedRetriever` 核对，进 Context 后随 `ContextItem.attributes` 落进快照。
+KNOWLEDGE_VERSION_KEY = "knowledge_version"
+
 
 @dataclass(frozen=True)
 class RetrievalQuery:
@@ -108,6 +113,22 @@ class RetrievalResult:
     denied: tuple[Chunk, ...] = ()
     dropped_no_citation: tuple[Chunk, ...] = ()
 
+    @property
+    def knowledge_versions(self) -> tuple[str, ...]:
+        """这批结果来自哪个（哪些）知识版本 —— 审计要回答"它当时依据的是哪一版"。
+
+        正常情况下只有一个；出现多个说明检索**没有锁版本**（或锁了却没生效），
+        把它如实列出来，比给一个"看起来是一版"的答案诚实。
+        """
+        return tuple(
+            sorted(
+                {
+                    str(c.attributes.get(KNOWLEDGE_VERSION_KEY) or "")
+                    for c in self.kept
+                }
+            )
+        )
+
 
 @dataclass
 class RetrievalPipeline:
@@ -146,10 +167,23 @@ class RetrievalPipeline:
         )
 
     def to_context_items(self, result: RetrievalResult) -> tuple[ContextItem, ...]:
-        """C-1 的落点：Chunk（Knowledge）→ ContextItem（Context）的显式转换。"""
+        """C-1 的落点：Chunk（Knowledge）→ ContextItem（Context）的显式转换。
+
+        M5：片的知识版本**跟着进 Context**（`ContextItem.attributes`），
+        于是它随 `ContextSnapshot` 落库 —— "模型当时看到的是哪一版知识"
+        才有据可查（可复现性）。
+        """
         return tuple(
             knowledge_chunk(
-                c.chunk_id, c.text, citation=c.citation, score=c.score
+                c.chunk_id,
+                c.text,
+                citation=c.citation,
+                score=c.score,
+                attributes=(
+                    {KNOWLEDGE_VERSION_KEY: c.attributes[KNOWLEDGE_VERSION_KEY]}
+                    if KNOWLEDGE_VERSION_KEY in c.attributes
+                    else None
+                ),
             )
             for c in result.kept
         )
@@ -279,6 +313,7 @@ def _coverage(terms: frozenset[str], text: str) -> float:
 
 
 __all__ = [
+    "KNOWLEDGE_VERSION_KEY",
     "AllowAll",
     "Chunk",
     "DenyAll",

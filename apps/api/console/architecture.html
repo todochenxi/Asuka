@@ -285,7 +285,7 @@
       <span><i style="background:var(--ok)"></i> 已实现</span>
       <span><i style="background:var(--warn)"></i> 未实现 / 待定</span>
       <span><i style="background:var(--violet)"></i> 部分 / 有条件</span>
-      <span>数据来源：冻结基线 v2.1.80 + 项目 memory（M91–M105）</span>
+      <span>数据来源：冻结基线 v2.1.80 + 项目 memory（M91–M106）</span>
     </div>
   </section>
 
@@ -306,7 +306,7 @@
           <tr><td class="ev-code">M2</td><td>Harness</td><td><span class="badge ok">已落地</span> Context / Memory / Policy / Guardrail / HITL / Cost（M95·M96）</td></tr>
           <tr><td class="ev-code">M3</td><td>Runtime</td><td><span class="badge ok">已落地</span> Loop / Tool / Scheduler / Worker / <b>Skill Runtime（M100：SkillSpec + 注册表）</b></td></tr>
           <tr><td class="ev-code">M4</td><td>Connectivity</td><td><span class="badge ok">已落地</span> Multi-Agent（子 Run）· <b>MCP（M103）· A2A（远端委派，M104）</b> · HTTP/SSE 流式待做</td></tr>
-          <tr><td class="ev-code">M5</td><td>Knowledge</td><td><span class="badge ok">部分·已补</span> RAG ✅ · <b>Hybrid Search（RRF）/ Rerank（M100）</b> · Knowledge Versioning 未落地</td></tr>
+          <tr><td class="ev-code">M5</td><td>Knowledge</td><td><span class="badge ok">已落地</span> RAG · <b>Hybrid Search（RRF）/ Rerank（M100）· Knowledge Versioning（M106）</b></td></tr>
           <tr><td class="ev-code">M6</td><td>Model Platform</td><td><span class="badge ok">已落地</span> Gateway / Routing / Fallback / Cost</td></tr>
           <tr><td class="ev-code">M7</td><td>Production</td><td><span class="badge ok">部分·已补</span> K8s 清单 + <b>CI/CD · HPA · 滚动更新/回滚（M102）</b> · 业务指标 HPA 待 metrics adapter</td></tr>
           <tr><td class="ev-code">M8</td><td>Evaluation</td><td><span class="badge part">部分</span> regression 在仓库 · 主体评测平台在 <b>Asuka</b></td></tr>
@@ -323,6 +323,7 @@
           <tr><td class="ev-code">M103</td><td>M 层落地（连接）</td><td><span class="badge ok">已落地</span> M4 JSON-RPC 2.0 核心 · MCP 客户端/Invoker（stdio + 工具发现登记）</td></tr>
           <tr><td class="ev-code">M104</td><td>M 层落地（连接）</td><td><span class="badge ok">已落地</span> M4 A2A 客户端（AgentCard / message·tasks）+ 远端委派 Spawner</td></tr>
           <tr><td class="ev-code">M105</td><td>M 层落地（企业治理收尾）</td><td><span class="badge ok">已落地</span> M9 IAM（Identity / scope / 401·403）+ Vault（Secret 脱敏 / SecretProvider / 引用解析）</td></tr>
+          <tr><td class="ev-code">M106</td><td>M 层落地（知识版本）</td><td><span class="badge ok">已落地</span> M5 Knowledge Versioning（KnowledgeVersion / 登记处 / VersionedRetriever，随快照留痕）</td></tr>
           <tr><td class="ev-code">—</td><td>Future Extension</td><td><span class="badge part">有意不做</span> SFT/DPO/RL · Tree Search · Actor+Mailbox · Workflow Engine · Marketplace/GitOps · Multi-Tenant 完整隔离</td></tr>
         </tbody>
       </table>
@@ -336,7 +337,6 @@
         <div class="ch">⏳ 能落地（非 Future Extension）</div>
         <ul class="list">
           <li class="t"><span class="dot"></span><div><b>M3 · Skill Runtime</b><span class="badge ok">M100 已落地</span><span class="sub">SkillSpec（Prompt/Workflow/Agentic）+ SkillRegistry；派生前校验技能存在</span></div></li>
-          <li class="t"><span class="dot"></span><div><b>M5 · Hybrid Search / Rerank</b><span class="badge ok">M100 已落地</span><span class="sub">RRF 融合（HybridRetriever）+ LexicalRerank；Knowledge Versioning 仍未做</span></div></li>
           <li class="t"><span class="dot"></span><div><b>M4 · HTTP / SSE 传输</b><span class="badge ok">MCP / A2A M103·M104 已落地</span><span class="sub">MCP Streamable HTTP 与 A2A 流式（message/stream）——需 HTTP 传输而非 stdio</span></div></li>
           <li class="t"><span class="dot"></span><div><b>M7 · 业务指标 HPA</b><span class="badge ok">CI/CD / HPA / 滚动更新 M102 已落地</span><span class="sub">队列深度 / Run 延迟驱动扩缩容——需集群侧 metrics adapter（Prometheus Adapter / KEDA）</span></div></li>
         </ul>

@@ -108,12 +108,22 @@ def tool_contract(name: str, text: str) -> ContextItem:
     )
 
 
-def knowledge_chunk(chunk_id: str, text: str, *, citation: str, score: float = 0.0) -> ContextItem:
+def knowledge_chunk(
+    chunk_id: str,
+    text: str,
+    *,
+    citation: str,
+    score: float = 0.0,
+    attributes: Mapping[str, Any] | None = None,
+) -> ContextItem:
+    attrs: dict[str, Any] = {"score": score}
+    if attributes:
+        attrs.update(attributes)
     return ContextItem(
         source=ContextSource.KNOWLEDGE,
         key=chunk_id,
         text=text,
         priority=30,
         reference=citation,     # C-10 的落点
-        attributes={"score": score},
+        attributes=attrs,
     )

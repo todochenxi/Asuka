@@ -60,6 +60,7 @@ from .memory import (  # noqa: F401
     MemoryStore,
 )
 from .retrieval import (  # noqa: F401
+    KNOWLEDGE_VERSION_KEY,
     AllowAll,
     Chunk,
     DenyAll,
@@ -77,6 +78,14 @@ from .snapshot import (  # noqa: F401
     build_snapshot,
 )
 from .tokens import HeuristicTokenizer, Tokenizer  # noqa: F401
+from .versions import (  # noqa: F401
+    KnowledgeVersion,
+    KnowledgeVersionRegistry,
+    NoCurrentVersion,
+    UnknownVersion,
+    VersionedRetriever,
+    VersionMismatch,
+)
 
 __all__ = [
     "AllowAll",
@@ -95,10 +104,14 @@ __all__ = [
     "HeuristicTokenizer",
     "InMemoryContextSnapshotStore",
     "InMemoryMemoryStore",
+    "KNOWLEDGE_VERSION_KEY",
+    "KnowledgeVersion",
+    "KnowledgeVersionRegistry",
     "MemoryLayer",
     "MemoryManager",
     "MemoryRecord",
     "MemoryStore",
+    "NoCurrentVersion",
     "PermissionFilter",
     "RetrievalPipeline",
     "RetrievalQuery",
@@ -108,6 +121,9 @@ __all__ = [
     "TenantFilter",
     "TokenBudget",
     "Tokenizer",
+    "UnknownVersion",
+    "VersionMismatch",
+    "VersionedRetriever",
     "allocate",
     "build_snapshot",
     "knowledge_chunk",
