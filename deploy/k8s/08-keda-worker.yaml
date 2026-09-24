@@ -1,0 +1,63 @@
+# M107 · worker 的**业务指标**扩缩容（M7 Production）。
+#
+# 总览 §M7："HPA 不能只看 CPU → 业务指标（Queue Depth / Run Latency）"。
+# worker 的活是"把 PENDING 的 Execution 干完"，所以它该按**队列深度**扩，
+# 而不是按 CPU —— CPU 高可能只是在一台机器正算一件长任务，
+# 队列深度高才是"活干不完，需要更多 worker"。
+#
+# ---------------------------------------------------------------------------
+# ⚠️ 这需要集群侧装 **KEDA**（AgentOS 仓库里没有这个组件）
+#
+# 没装 KEDA 时这份 ScaledObject 不会被任何控制器接管，worker 就停在
+# Deployment 的固定副本数上 —— 这是**看得见的**降级，不是"假装支持了
+# 队列深度扩缩容"。要启用：
+#
+#     helm repo add kedacore https://kedacore.github.io/charts
+#     helm install keda kedacore/keda -n keda --create-namespace
+#     kubectl apply -f deploy/k8s/08-keda-worker.yaml
+#
+# 为什么用 KEDA 而不是 Prometheus Adapter：
+#   KEDA 的 postgres scaler 直接拿一条 SELECT 当指标源，不需要把
+#   AgentOS 的指标先送进 Prometheus 再经 adapter 绕一圈。`/metrics`
+#   （`apps/api`，M107）仍然在，供 Prometheus 抓；两条路不冲突。
+#
+# ⚠️ 一个 Deployment 的 `replicas` 只能有一个主人：启用本文件前，
+# 确认 `07-hpa.yaml` 里**没有** agentos-worker 的 HPA（M107 已移除）。
+# ---------------------------------------------------------------------------
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: agentos-pg-auth
+  namespace: agentos
+spec:
+  secretTargetRef:
+    - parameter: password
+      name: agentos-pg            # 对应 02-secret.yaml
+      key: password
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: agentos-worker
+  namespace: agentos
+spec:
+  scaleTargetRef:
+    name: agentos-worker          # 对应 05-background.yaml 的 Deployment
+  minReplicaCount: 1
+  maxReplicaCount: 8
+  pollingInterval: 15
+  cooldownPeriod: 300
+  triggers:
+    - type: postgresql
+      authenticationRef:
+        name: agentos-pg-auth
+      metadata:
+        host: agentos-postgres
+        port: "5432"
+        userName: agentos
+        dbName: agentos
+        sslmode: disable
+        # 队列深度：还有多少 Runnable（PENDING）的 Execution 在等 worker。
+        query: "SELECT count(*) FROM executions WHERE status = 'PENDING'"
+        # 每个 worker 期望背负的积压量：>5 条就加一个，直到 maxReplicaCount。
+        targetQueryValue: "5"

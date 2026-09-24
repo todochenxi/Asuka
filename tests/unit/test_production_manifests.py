@@ -47,6 +47,15 @@ def _hpa_docs() -> list[str]:
     ]
 
 
+def _keda_docs() -> list[str]:
+    return [
+        doc
+        for path in sorted(K8S.glob("*.yaml"))
+        for doc in _documents(path.read_text(encoding="utf-8"))
+        if "keda.sh" in doc
+    ]
+
+
 def _hpa_targets() -> set[str]:
     return {
         m.group(1)
@@ -68,7 +77,10 @@ class TestTheScannersReallyFindThings(unittest.TestCase):
         self.assertGreaterEqual(len(_deployment_names()), 6)
 
     def test_hpas_are_found(self) -> None:
-        self.assertGreaterEqual(len(_hpa_docs()), 2)
+        self.assertGreaterEqual(len(_hpa_docs()), 1)
+
+    def test_keda_objects_are_found(self) -> None:
+        self.assertGreaterEqual(len(_keda_docs()), 2)
 
 
 class TestThePipelineRunsTheRealCommands(unittest.TestCase):
@@ -107,8 +119,9 @@ class TestThePipelineRunsTheRealCommands(unittest.TestCase):
 
 
 class TestTheHpaScalesRealDeployments(unittest.TestCase):
-    def test_it_scales_the_api_and_the_worker(self) -> None:
-        self.assertEqual(_hpa_targets(), {"agentos-api", "agentos-worker"})
+    def test_the_cpu_hpa_scales_only_the_api(self) -> None:
+        """worker 的 `replicas` 归 KEDA（M107）—— 两个 autoscaler 同时写会打架。"""
+        self.assertEqual(_hpa_targets(), {"agentos-api"})
 
     def test_every_target_is_a_deployment_that_exists(self) -> None:
         """HPA 指向一个不存在的 Deployment，只会安静地不工作。"""
@@ -154,6 +167,55 @@ class TestTheHpaIsNotMistakenForAWorkload(unittest.TestCase):
         for doc in _hpa_docs():
             self.assertNotIn("apps.", doc)
             self.assertNotRegex(doc, r"^\s*replicas:\s*\d+", re.M)
+
+
+class TestTheWorkerScalesOnQueueDepth(unittest.TestCase):
+    """M107：worker 按**队列深度**扩缩容（KEDA），而不是按 CPU。"""
+
+    def _scaled(self) -> str:
+        docs = [
+            d
+            for d in _keda_docs()
+            if re.search(r"^kind:\s*ScaledObject\s*$", d, re.M)
+        ]
+        self.assertEqual(len(docs), 1, "there must be exactly one worker ScaledObject")
+        return docs[0]
+
+    def test_it_targets_a_deployment_that_exists(self) -> None:
+        match = re.search(r"scaleTargetRef:\s*\n\s*name:\s*(\S+)", self._scaled())
+        assert match is not None
+        self.assertEqual(match.group(1), "agentos-worker")
+        self.assertIn(match.group(1), _deployment_names())
+
+    def test_it_scales_on_pending_executions(self) -> None:
+        doc = self._scaled()
+        self.assertIn("type: postgresql", doc)
+        self.assertIn("PENDING", doc, "the trigger must read queue depth, not CPU")
+        self.assertIn("targetQueryValue", doc)
+
+    def test_it_is_honest_that_keda_is_required(self) -> None:
+        text = (K8S / "08-keda-worker.yaml").read_text(encoding="utf-8")
+        self.assertIn("KEDA", text, "the manifest must say it needs KEDA installed")
+
+    def test_a_trigger_authentication_exists_for_the_db_password(self) -> None:
+        auths = [d for d in _keda_docs() if re.search(r"^kind:\s*TriggerAuthentication\s*$", d, re.M)]
+        self.assertEqual(len(auths), 1)
+        self.assertIn("secretTargetRef", auths[0])
+
+    def test_the_worker_has_exactly_one_autoscaler(self) -> None:
+        """一个 Deployment 的 `replicas` 只能有一个主人：HPA **或** KEDA。
+
+        两个 autoscaler 同时写 `replicas` 会互相打架 —— 副本数来回摆，
+        而且两边都认为自己是对的。所以 worker 必须**只**在 KEDA 这边。
+        """
+        self.assertNotIn("agentos-worker", _hpa_targets())
+        keda_targets = {
+            m.group(1)
+            for doc in _keda_docs()
+            if re.search(r"^kind:\s*ScaledObject\s*$", doc, re.M)
+            for m in re.finditer(r"scaleTargetRef:\s*\n\s*name:\s*(\S+)", doc)
+        }
+        self.assertEqual(keda_targets, {"agentos-worker"})
 
 
 if __name__ == "__main__":

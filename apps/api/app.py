@@ -59,6 +59,7 @@ from packages.agent_api.identity import (
     authenticate,
     require_scope,
 )
+from packages.agent_api.metrics import render_prometheus
 from packages.agent_api.ports import ControlPlane
 
 
@@ -81,6 +82,7 @@ def build_app(
     uow: Any = None,
     readiness: Any = None,
     identity_provider: Any = None,
+    metrics: Any = None,
 ) -> Any:
     """把 Control Plane 绑成 FastAPI app。
 
@@ -97,7 +99,7 @@ def build_app(
     一个看起来像配置错、实际是这里越权去找的答案。
     """
     fastapi = _fastapi()
-    from fastapi.responses import JSONResponse
+    from fastapi.responses import JSONResponse, PlainTextResponse
 
     app = fastapi.FastAPI(title="AgentOS Control Plane", version="2.1.80")
 
@@ -283,6 +285,20 @@ def build_app(
             {"status": "ok" if result.ok else "unavailable", "detail": result.detail},
             status_code=200 if result.ok else 503,
         )
+
+    @app.get("/metrics")
+    def _metrics() -> Any:
+        """业务指标（Prometheus 文本）。M7：让 HPA 有**队列深度**可读。
+
+        没配取数器时 503 而不是空 200 —— 一个空的 200 会让采集端以为
+        "这些指标就是 0"，而扩缩容据此做一个错误的决定（同 `/readyz` 的判据）。
+        """
+        if metrics is None:
+            return JSONResponse(
+                {"status": "unavailable", "detail": "no metrics provider configured"},
+                status_code=503,
+            )
+        return PlainTextResponse(render_prometheus(metrics()))
 
     _mount_console(app, fastapi)
 

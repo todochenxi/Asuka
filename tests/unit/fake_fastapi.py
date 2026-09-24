@@ -24,6 +24,15 @@ class JSONResponse:
         self.status_code = status_code
 
 
+class PlainTextResponse:
+    """M7：`GET /metrics` 用它返回 Prometheus 文本。"""
+
+    def __init__(self, content: str = "", status_code: int = 200) -> None:
+        self.body = content
+        self.text = content
+        self.status_code = status_code
+
+
 class FileResponse:
     def __init__(self, path: str, **kwargs: Any) -> None:
         self.path = path
@@ -93,6 +102,7 @@ def install() -> None:
 
     responses = types.ModuleType("fastapi.responses")
     responses.JSONResponse = JSONResponse  # type: ignore[attr-defined]
+    responses.PlainTextResponse = PlainTextResponse  # type: ignore[attr-defined]
     responses.FileResponse = FileResponse  # type: ignore[attr-defined]
 
     staticfiles = types.ModuleType("fastapi.staticfiles")

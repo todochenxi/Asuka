@@ -1493,6 +1493,7 @@ def build_api(
     conn: Any = None,
     uow: Any = None,
     identity_provider: Any = None,
+    metrics: Any = None,
 ) -> Any:
     """FastAPI app。框架绑定在 `apps/api/app.py`（PR-22），这里只负责把它拿来。
 
@@ -1528,12 +1529,48 @@ def build_api(
 
         return check_ready(config.pg_dsn)
 
+    # M7：业务指标取数器。路由层不认识 SQL（A-1），所以取数在组合根。
+    if metrics is None and conn is not None:
+        metrics = _pg_business_metrics(conn)
+
     return build_app(
         control_plane,
         uow=uow,
         readiness=_readiness,
         identity_provider=identity_provider,
+        metrics=metrics,
     )
+
+
+def _pg_business_metrics(conn: Any) -> Any:
+    """返回一个 `() -> Sequence[Metric]` —— 从库里读业务计数。
+
+    队列深度 = `executions` 里 PENDING 的条数。它是 KEDA 扩 worker 的那个数：
+    CPU 高可能只是在一件长任务上，队列深度高才是"活干不完"。
+    """
+    from packages.agent_api.metrics import business_metrics
+
+    def _read() -> Any:
+        counts = {"PENDING": 0, "RUNNING": 0, "SUSPENDED": 0}
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, count(*) AS n FROM executions GROUP BY status"
+            )
+            for row in cur.fetchall():
+                if row["status"] in counts:
+                    counts[row["status"]] = int(row["n"])
+            cur.execute(
+                "SELECT count(*) AS n FROM approvals WHERE status = 'pending'"
+            )
+            pending_approvals = int(cur.fetchone()["n"])
+        return business_metrics(
+            pending_executions=counts["PENDING"],
+            running_executions=counts["RUNNING"],
+            suspended_executions=counts["SUSPENDED"],
+            pending_approvals=pending_approvals,
+        )
+
+    return _read
 
 
 def stop_signal() -> StopSignal:

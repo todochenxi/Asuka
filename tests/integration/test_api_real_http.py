@@ -158,6 +158,14 @@ class TheProcessServesTest(RealHttpCase):
         self.assertIn("M 层路线图", r.text)
         self.assertIn("未落地的可做工项", r.text)
 
+    def test_the_metrics_endpoint_reports_queue_depth(self) -> None:
+        """M107：`GET /metrics` 吐出 Prometheus 文本，含队列深度（KEDA 要读它）。"""
+        r = self.client.get("/metrics")
+        self.assertEqual(r.status_code, 200, r.text[:200])
+        self.assertIn("text/plain", r.headers["content-type"])
+        self.assertIn("agentos_pending_executions", r.text)
+        self.assertIn("# TYPE agentos_pending_executions gauge", r.text)
+
     def test_the_chat_endpoint_answers(self) -> None:
         """`POST /chat` 真的跑完一条 Run，并把模型回答带出来（M93）。
 
