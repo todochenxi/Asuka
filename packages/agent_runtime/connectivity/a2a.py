@@ -44,6 +44,7 @@ from ..delegation import (
     ChildRunUnavailable,
 )
 from .jsonrpc import JsonRpcClient
+from .transport import HttpTransport
 
 #: Agent Card 的相对路径（A2A 约定）。
 AGENT_CARD_PATH = "/.well-known/agent-card.json"
@@ -185,6 +186,22 @@ class A2AClient:
     rpc: JsonRpcClient
     base_url: str = ""
     card_transport: AgentCardTransport | None = None
+
+    @classmethod
+    def from_http(
+        cls,
+        url: str,
+        *,
+        base_url: str = "",
+        headers: Mapping[str, str] | None = None,
+        timeout: float = 30.0,
+    ) -> "A2AClient":
+        """用 HTTP JSON-RPC 连一个远端 Agent（M108）。"""
+        return cls(
+            rpc=JsonRpcClient(HttpTransport(url, headers=headers or {}, timeout=timeout)),
+            base_url=base_url,
+            card_transport=HttpCardTransport(timeout=timeout) if base_url else None,
+        )
 
     def fetch_agent_card(self) -> AgentCard:
         if self.card_transport is None or not self.base_url:

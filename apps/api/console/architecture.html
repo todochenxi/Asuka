@@ -285,14 +285,14 @@
       <span><i style="background:var(--ok)"></i> 已实现</span>
       <span><i style="background:var(--warn)"></i> 未实现 / 待定</span>
       <span><i style="background:var(--violet)"></i> 部分 / 有条件</span>
-      <span>数据来源：冻结基线 v2.1.80 + 项目 memory（M91–M107）</span>
+      <span>数据来源：冻结基线 v2.1.80 + 项目 memory（M91–M108）</span>
     </div>
   </section>
 
   <section>
     <h3 class="sec"><span class="num">03</span> M 层路线图（§42 M0–M15 + 实现里程碑）</h3>
     <p style="color:var(--fg-mute);max-width:80ch;margin:0 0 12px">
-      内核线（M21–M92「闭合空洞」）基本收敛；未落地的集中在<b>平台 / 企业 / 知识增强</b>三块。
+      内核线（M21–M92「闭合空洞」）与 M3–M11 的平台层（知识 / 技能 / 连接 / 生产 / 企业）均已收口；<b>仅剩 M13 认知运行时为有意不做的 Future Extension</b>。
       <span class="badge ok">已落地</span> / <span class="badge part">部分</span> /
       <span class="badge no">未落地</span> / <span class="badge part">Future Ext（有意不做）</span>
     </p>
@@ -305,7 +305,7 @@
           <tr><td class="ev-code">M1.5</td><td>Minimal Reliability</td><td><span class="badge ok">已落地</span> Outbox / Retry / 幂等（并入 Kernel）</td></tr>
           <tr><td class="ev-code">M2</td><td>Harness</td><td><span class="badge ok">已落地</span> Context / Memory / Policy / Guardrail / HITL / Cost（M95·M96）</td></tr>
           <tr><td class="ev-code">M3</td><td>Runtime</td><td><span class="badge ok">已落地</span> Loop / Tool / Scheduler / Worker / <b>Skill Runtime（M100：SkillSpec + 注册表）</b></td></tr>
-          <tr><td class="ev-code">M4</td><td>Connectivity</td><td><span class="badge ok">已落地</span> Multi-Agent（子 Run）· <b>MCP（M103）· A2A（远端委派，M104）</b> · HTTP/SSE 流式待做</td></tr>
+          <tr><td class="ev-code">M4</td><td>Connectivity</td><td><span class="badge ok">已落地</span> Multi-Agent（子 Run）· <b>MCP（M103）· A2A（M104）· HTTP/SSE 传输（M108）</b></td></tr>
           <tr><td class="ev-code">M5</td><td>Knowledge</td><td><span class="badge ok">已落地</span> RAG · <b>Hybrid Search（RRF）/ Rerank（M100）· Knowledge Versioning（M106）</b></td></tr>
           <tr><td class="ev-code">M6</td><td>Model Platform</td><td><span class="badge ok">已落地</span> Gateway / Routing / Fallback / Cost</td></tr>
           <tr><td class="ev-code">M7</td><td>Production</td><td><span class="badge ok">已落地</span> K8s 清单 · CI/CD · HPA · 滚动更新/回滚（M102）· <b>业务指标 HPA：队列深度（KEDA）/ metrics（M107）</b></td></tr>
@@ -325,6 +325,7 @@
           <tr><td class="ev-code">M105</td><td>M 层落地（企业治理收尾）</td><td><span class="badge ok">已落地</span> M9 IAM（Identity / scope / 401·403）+ Vault（Secret 脱敏 / SecretProvider / 引用解析）</td></tr>
           <tr><td class="ev-code">M106</td><td>M 层落地（知识版本）</td><td><span class="badge ok">已落地</span> M5 Knowledge Versioning（KnowledgeVersion / 登记处 / VersionedRetriever，随快照留痕）</td></tr>
           <tr><td class="ev-code">M107</td><td>M 层落地（业务指标 HPA）</td><td><span class="badge ok">已落地</span> M7 `GET /metrics`（Prometheus 文本）+ KEDA 按队列深度扩 worker</td></tr>
+          <tr><td class="ev-code">M108</td><td>M 层落地（连接 / HTTP）</td><td><span class="badge ok">已落地</span> M4 `HttpTransport`（JSON-RPC over HTTP POST + SSE）+ MCP/A2A `from_http`</td></tr>
           <tr><td class="ev-code">—</td><td>Future Extension</td><td><span class="badge part">有意不做</span> SFT/DPO/RL · Tree Search · Actor+Mailbox · Workflow Engine · Marketplace/GitOps · Multi-Tenant 完整隔离</td></tr>
         </tbody>
       </table>
@@ -335,10 +336,9 @@
     <h3 class="sec"><span class="num">04</span> 未落地的可做工项</h3>
     <div class="cols">
       <div class="card todo">
-        <div class="ch">⏳ 能落地（非 Future Extension）</div>
+        <div class="ch">✅ 能落地（非 Future Extension）—— 已全部收口</div>
         <ul class="list">
-          <li class="t"><span class="dot"></span><div><b>M3 · Skill Runtime</b><span class="badge ok">M100 已落地</span><span class="sub">SkillSpec（Prompt/Workflow/Agentic）+ SkillRegistry；派生前校验技能存在</span></div></li>
-          <li class="t"><span class="dot"></span><div><b>M4 · HTTP / SSE 传输</b><span class="badge ok">MCP / A2A M103·M104 已落地</span><span class="sub">MCP Streamable HTTP 与 A2A 流式（message/stream）——需 HTTP 传输而非 stdio</span></div></li>
+          <li class="t"><span class="dot"></span><div><b>M3 / M4 / M5 / M7 / M9 全部落地</b><span class="sub">Skill Runtime（M100）· Hybrid/Rerank（M100）· Knowledge Versioning（M106）· MCP/A2A/HTTP（M103·M104·M108）· CI-CD/HPA（M102·M107）· OPA/Sandbox/IAM/Vault（M101·M105）</span></div></li>
         </ul>
       </div>
       <div class="card todo">

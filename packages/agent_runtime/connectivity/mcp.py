@@ -40,7 +40,7 @@ from ..tool_runtime import (
     ToolSpec,
 )
 from .jsonrpc import JsonRpcClient, JsonRpcError
-from .transport import StdioTransport
+from .transport import HttpTransport, StdioTransport
 
 #: MCP 协议版本（协商用）。服务端可以回一个它支持的版本。
 MCP_PROTOCOL_VERSION = "2025-06-18"
@@ -84,6 +84,18 @@ class McpClient:
     ) -> "McpClient":
         """用 stdio 传输起一个 MCP 服务端（MCP 最常见的形态）。"""
         return cls(JsonRpcClient(StdioTransport(argv)), **kwargs)
+
+    @classmethod
+    def from_http(
+        cls,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        timeout: float = 30.0,
+        **kwargs: Any,
+    ) -> "McpClient":
+        """用 Streamable HTTP 连一个 MCP 服务端（M108）。"""
+        return cls(JsonRpcClient(HttpTransport(url, headers=headers or {}, timeout=timeout)), **kwargs)
 
     # ------------------------------------------------------------ 会话
     def initialize(self) -> Mapping[str, Any]:

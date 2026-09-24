@@ -42,7 +42,12 @@ from .mcp import (
     McpTool,
     register_mcp_tools,
 )
-from .transport import InMemoryTransport, StdioTransport, TransportError
+from .transport import (
+    HttpTransport,
+    InMemoryTransport,
+    StdioTransport,
+    TransportError,
+)
 
 __all__ = [
     "AGENT_CARD_PATH",
@@ -55,6 +60,7 @@ __all__ = [
     "AgentCard",
     "AgentCardTransport",
     "HttpCardTransport",
+    "HttpTransport",
     "InMemoryCardTransport",
     "InMemoryTransport",
     "JsonRpcClient",

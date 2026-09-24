@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
@@ -170,4 +172,127 @@ class StdioTransport:
         self.close()
 
 
-__all__ = ["InMemoryTransport", "StdioTransport", "TransportError"]
+# ---------------------------------------------------------------------------
+# HTTP 传输：MCP Streamable HTTP / A2A 的 HTTP 形态（M108）
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class HttpTransport:
+    """JSON-RPC over HTTP POST（MCP Streamable HTTP / A2A 的 HTTP 形态）。
+
+    一个 POST，两形态：
+
+        `application/json`    单条 JSON-RPC 响应（A2A 的全部 / MCP 的非流式）
+        `text/event-stream`   SSE 流，逐条 `data:` 都是 JSON-RPC 消息 ——
+                              读到 `id` 与请求相等的第一条就返回
+
+    `headers` 用来带 `Authorization: Bearer ...`（M105 的凭据）等。
+    零第三方：用 stdlib `urllib`。
+    """
+
+    url: str
+    headers: Mapping[str, str] = field(default_factory=dict)
+    timeout: float = 30.0
+
+    def _open(self, payload: Mapping[str, Any]) -> Any:
+        body = json.dumps(payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            # Streamable HTTP 要求客户端声明两种都接受。
+            "Accept": "application/json, text/event-stream",
+            **{str(k): str(v) for k, v in self.headers.items()},
+        }
+        request = urllib.request.Request(
+            self.url, data=body, headers=headers, method="POST"
+        )
+        try:
+            return urllib.request.urlopen(request, timeout=self.timeout)  # noqa: S310
+        except urllib.error.HTTPError as err:
+            # 有些服务端把 JSON-RPC error 放在 4xx body 里 —— 那就还当一次
+            # JSON-RPC 响应交上去（由 `JsonRpcClient` 拆），否则才是链路错误。
+            try:
+                raw = err.read().decode("utf-8", errors="replace")
+            finally:
+                err.close()
+            parsed = _maybe_json(raw)
+            if isinstance(parsed, Mapping) and "jsonrpc" in parsed:
+                return _FetchedResponse(parsed)
+            raise TransportError(
+                f"HTTP {err.code} from {self.url}: {raw[:200]!r}"
+            ) from err
+        except urllib.error.URLError as err:
+            raise TransportError(f"cannot reach {self.url}: {err.reason}") from err
+
+    def request(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        response = self._open(payload)
+        if isinstance(response, _FetchedResponse):
+            return response.payload
+        with response:
+            content_type = response.headers.get_content_type()
+            if content_type == "text/event-stream":
+                return self._read_sse(response, expected_id=payload.get("id"))
+            raw = response.read().decode("utf-8", errors="replace")
+        parsed = _maybe_json(raw)
+        if not isinstance(parsed, Mapping):
+            raise TransportError(f"peer wrote a non-JSON HTTP body: {raw[:200]!r}")
+        return parsed
+
+    def send(self, payload: Mapping[str, Any]) -> None:
+        """通知：POST 出去，不等响应体（Streamable HTTP 回 202）。"""
+        response = self._open(payload)
+        if isinstance(response, _FetchedResponse):
+            return
+        with response:
+            response.read()
+
+    @staticmethod
+    def _read_sse(response: Any, *, expected_id: Any) -> Mapping[str, Any]:
+        """从 SSE 流里读到 `id` 匹配的那条 JSON-RPC 消息。"""
+        data_lines: list[str] = []
+        for raw in response:
+            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            if line == "":
+                parsed = _maybe_json("\n".join(data_lines))
+                data_lines = []
+                if isinstance(parsed, Mapping) and parsed.get("id") == expected_id:
+                    return parsed
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+            # `event:` / `id:` / `retry:` / 注释行忽略
+        # 走到流尾还没匹配：把最后一段也试一次
+        parsed = _maybe_json("\n".join(data_lines))
+        if isinstance(parsed, Mapping) and parsed.get("id") == expected_id:
+            return parsed
+        raise TransportError(
+            f"the SSE stream ended without a response for id {expected_id!r}"
+        )
+
+    def close(self) -> None:  # pragma: no cover - 无长连接要关
+        pass
+
+
+@dataclass
+class _FetchedResponse:
+    """HTTP 错误里掏出来的 JSON-RPC 响应 —— 直接当响应返回。"""
+
+    payload: Mapping[str, Any]
+
+
+def _maybe_json(text: str) -> Any:
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+__all__ = [
+    "HttpTransport",
+    "InMemoryTransport",
+    "StdioTransport",
+    "TransportError",
+]
