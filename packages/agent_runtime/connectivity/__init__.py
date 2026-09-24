@@ -5,16 +5,28 @@ JSON-RPC 2.0（jsonrpc.py）          一次 RPC 的请求/响应/错误，与�
         │
         ├── Transport（transport.py）   stdio（MCP）/ 内存（测试）/ [HTTP：待办]
         │
-        └── MCP（mcp.py）               工具连接：initialize / tools/list / tools/call
+        ├── MCP（mcp.py）               工具连接：initialize / tools/list / tools/call
+        │
+        └── A2A（a2a.py）               远端 Agent 委派：AgentCard / message/send / tasks/*
 ```
 
 **边界**：本包不 import `execution_kernel`，也不 import `agent_harness`。
-它只认识 ToolRuntime 的 Invoker 协议（`ToolInvoker`）—— 于是"工具来自
-一个远端 MCP 服务端"对 Kernel 与 Harness 完全透明（T-6：Runtime 不关心协议）。
-
-M4 的另一半 —— **A2A**（远端 Agent 委派）—— 复用同一层 JSON-RPC，
-但它要处理 Agent Card / 任务生命周期 / 异步结果回传，是单独一轮的事。
+它只认识 ToolRuntime 的 Invoker 协议（`ToolInvoker`）与委派的
+`ChildRunSpawner` 协议 —— 于是"工具来自一个远端 MCP 服务端"
+与"子任务交给一个远端 Agent"对 Kernel 与 Harness 完全透明。
 """
+from .a2a import (
+    AGENT_CARD_PATH,
+    TERMINAL_A2A_STATES,
+    A2AClient,
+    A2AChildRunSpawner,
+    A2ATaskState,
+    AgentCard,
+    AgentCardTransport,
+    HttpCardTransport,
+    InMemoryCardTransport,
+    parse_state,
+)
 from .jsonrpc import (
     JSONRPC_VERSION,
     JsonRpcClient,
@@ -33,18 +45,28 @@ from .mcp import (
 from .transport import InMemoryTransport, StdioTransport, TransportError
 
 __all__ = [
+    "AGENT_CARD_PATH",
     "JSONRPC_VERSION",
+    "MCP_PROTOCOL_VERSION",
+    "TERMINAL_A2A_STATES",
+    "A2AClient",
+    "A2AChildRunSpawner",
+    "A2ATaskState",
+    "AgentCard",
+    "AgentCardTransport",
+    "HttpCardTransport",
+    "InMemoryCardTransport",
     "InMemoryTransport",
     "JsonRpcClient",
     "JsonRpcError",
     "JsonRpcProtocolError",
     "JsonRpcRequest",
-    "MCP_PROTOCOL_VERSION",
     "McpClient",
     "McpInvoker",
     "McpTool",
     "StdioTransport",
     "Transport",
     "TransportError",
+    "parse_state",
     "register_mcp_tools",
 ]
