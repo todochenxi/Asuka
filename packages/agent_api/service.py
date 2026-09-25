@@ -171,6 +171,22 @@ def layers_of(stack: Any, entries: Sequence[Mapping[str, Any]]) -> Mapping[str, 
             "run_status": _status_value(getattr(run, "status", None)),
             "steps": len(getattr(loop, "steps_of_run", ()) or ()),
         }
+        # M113：Observation 层 —— "Agent 感知到了什么、据此把 State 推到了哪"。
+        # 内容**只留摘要字段**，不把整个 `content` 塞进响应（它可能很大，
+        # 而账本端点不是数据导出通道）。
+        observations: list[dict[str, Any]] = []
+        for obs in getattr(state, "observations", ()) or ():
+            content = obs.content if isinstance(getattr(obs, "content", None), Mapping) else {}
+            observations.append(
+                {
+                    "kind": str(getattr(obs, "kind", "")),
+                    "source": _status_value(getattr(obs, "source", None)),
+                    "summary": str(getattr(obs, "summary", "")),
+                    "execution_id": getattr(obs, "execution_id", None),
+                    "content_keys": sorted(str(k) for k in content),
+                }
+            )
+        layers["observations"] = observations
     return layers
 
 

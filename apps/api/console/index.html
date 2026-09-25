@@ -1469,7 +1469,18 @@ function renderLayers(t) {
       " · 护栏拒绝 " + (h.guardrail_seqs || []).length + "</div>"));
   }
 
-  if (L.state) secs.push(laySec("Observation / State · 终态", layRows([
+  if (L.observations && L.observations.length) secs.push(laySec(
+    "Observation · Agent 感知到的（→ State）",
+    L.observations.map(function (o) {
+      return '<div class="tl-e"><div class="tl-top"><span class="tl-kind">' + esc(o.kind || "?") +
+        '</span><span class="tag">' + esc(o.source || "") + "</span></div>" +
+        (o.summary ? '<div class="tl-sum">' + esc(o.summary) + "</div>" : "") +
+        ((o.content_keys || []).length ? '<div class="tl-ids"><span class="tag">content: ' +
+          esc((o.content_keys || []).join(", ")) + "</span></div>" : "") +
+        "</div>";
+    }).join("")));
+
+  if (L.state) secs.push(laySec("State · 终态", layRows([
     ["runtime_status", L.state.runtime_status],
     ["run_status", L.state.run_status],
     ["steps", L.state.steps],

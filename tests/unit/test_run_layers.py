@@ -45,6 +45,15 @@ class RunLayersTest(unittest.TestCase):
         self.assertTrue(layers["executions"], "at least one Execution must be visible")
         self.assertEqual(layers["state"]["run_status"], "completed")
 
+    def test_the_observation_layer_lists_seen_facts(self) -> None:
+        """M113：Observation 层回答"Agent 感知到了什么"（只留摘要，不塞 content）。"""
+        layers = self._finished_trace().to_dict()["layers"]
+        obs = layers["observations"]
+        self.assertTrue(obs, "at least one Observation must be visible")
+        kinds = [o["kind"] for o in obs]
+        self.assertIn("execution_result", kinds)
+        self.assertIn("content_keys", obs[0])
+
     def test_the_harness_layer_lists_context_builds(self) -> None:
         layers = self._finished_trace().to_dict()["layers"]
         # LLM 那一步之前会 context.built
