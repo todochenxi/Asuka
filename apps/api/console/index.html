@@ -617,6 +617,16 @@ pre.payload{
 
         <div id="ov-alert"></div>
 
+        <!-- M111：业务指标（来自 GET /metrics）。不配取数器时后端 503，这里整块隐藏 -->
+        <div class="card" id="metrics-card" hidden style="margin-bottom:16px">
+          <div class="card-h">
+            <svg viewBox="0 0 24 24"><path d="M4 19V5M4 19h16"/><path d="m7 15 3-4 3 2 5-7"/></svg>
+            <h2>运行指标</h2>
+            <span class="hint" id="metrics-hint">来自 GET /metrics（Prometheus）</span>
+          </div>
+          <div class="grid g4" id="metrics-grid"></div>
+        </div>
+
         <div class="grid g-2-1">
           <div class="card">
             <div class="card-h">
@@ -1058,6 +1068,7 @@ const state = {
   agents: [],
   history: [],
   serverRuns: [],
+  metrics: null,
   version: "",
   health: null,
   answer: "",
@@ -1182,6 +1193,44 @@ function renderHealth() {
   $("st-health-s").textContent = ok ? "控制面在应答" : "探测失败";
   $("st-ver").textContent = state.version || "—";
   $("ver").textContent = state.version || "—";
+}
+
+/* ---------- M111：运行指标（解析 Prometheus 文本）---------- */
+function parseProm(text) {
+  const out = {};
+  String(text || "").split("\n").forEach(function (line) {
+    if (!line || line[0] === "#") return;
+    const parts = line.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      const n = parseFloat(parts[1]);
+      if (!isNaN(n)) out[parts[0]] = n;
+    }
+  });
+  return out;
+}
+async function fetchMetrics() {
+  try {
+    const res = await fetch("/metrics");
+    state.metrics = res.ok ? parseProm(await res.text()) : null;
+  } catch (e) { state.metrics = null; }
+}
+function renderMetrics() {
+  const card = $("metrics-card"), grid = $("metrics-grid");
+  if (!card || !grid) return;
+  const m = state.metrics;
+  if (!m || !Object.keys(m).length) { card.hidden = true; return; }
+  card.hidden = false;
+  const tiles = [
+    ["agentos_pending_executions", "队列深度", "Runnable，等 worker", "warn"],
+    ["agentos_running_executions", "执行中", "正在跑", "brand"],
+    ["agentos_suspended_executions", "挂起", "等审批 / 子 Run", "violet"],
+    ["agentos_pending_approvals", "待审批", "有人在等签字", "warn"],
+  ];
+  grid.innerHTML = tiles.map(function (t) {
+    const v = (m[t[0]] === undefined) ? "—" : m[t[0]];
+    return '<div class="stat ' + esc(t[3]) + '"><div class="k">' + esc(t[1]) + "</div>" +
+      '<div class="v">' + esc(v) + '</div><div class="s">' + esc(t[2]) + "</div></div>";
+  }).join("");
 }
 
 function renderRunList() {
@@ -1684,6 +1733,7 @@ async function startEvalLive() {
    拉取
    ============================================================ */
 async function refreshAll() {
+  await fetchMetrics();
   const results = await Promise.all([
     api("GET", "/health"),
     api("GET", "/openapi.json"),
@@ -1700,6 +1750,7 @@ async function refreshAll() {
   /* M110：本进程装载过的 Run（聊天的 Run 也在这） */
   state.serverRuns = (rs.ok && rs.data && rs.data.items) ? rs.data.items : [];
   renderHealth();
+  renderMetrics();
   renderAgents();
   renderApprovals();
   renderRunList();

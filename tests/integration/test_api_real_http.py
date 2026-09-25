@@ -139,6 +139,8 @@ class TheProcessServesTest(RealHttpCase):
         self.assertIn('id="btn-cancel"', console.text)
         # M109：账本页的分层记录
         self.assertIn("分层记录", console.text)
+        # M111：概览的运行指标
+        self.assertIn("运行指标", console.text)
 
         chat = self.client.get("/")
         self.assertEqual(chat.status_code, 200, chat.text[:200])
