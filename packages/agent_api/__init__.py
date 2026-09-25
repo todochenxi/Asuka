@@ -78,6 +78,7 @@ from .handlers import (  # noqa: F401
     get_run,
     list_approvals,
     list_run_executions,
+    list_runs,
     start_run,
 )
 from .ports import ControlPlane, require  # noqa: F401
@@ -118,6 +119,7 @@ __all__ = [
     "get_run",
     "list_approvals",
     "list_run_executions",
+    "list_runs",
     "map_domain_error",
     "render_prometheus",
     "require",

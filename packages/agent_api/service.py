@@ -334,6 +334,30 @@ class InProcessControlPlane:
                 return view
         return self._view(stack)
 
+    def list_runs(self) -> Sequence[RunView]:
+        """M110：本进程装载过的 Run —— 聊天的 Run 也在（同一个 CP 经手过）。
+
+        为什么需要一个端点：`/console` 的"追踪的 Run"是**浏览器本地**的
+        localStorage 列表（只记从控制台发起的），而 `/` 聊天页把会话存另一个 key。
+        于是"在聊天页问过一句"在控制台里**一个入口都没有** —— 数据在后台，
+        只是没人列得出来。
+
+        ⚠️ 它**不是**"全部 Run"：内存里的 `self.runs` 是这一进程见过的那些，
+        进程重启后为空（除非被重新装载）。真正的全局清单要一个能"列出全部"的
+        持久源（`run_snapshots` 目前只有 `latest` / `list_for`），所以这里
+        如实叫"本进程的 Run"，不假装是全量。
+        """
+        out: list[RunView] = []
+        for run_id in sorted(self.runs):
+            stack = self.runs.get(run_id)
+            if stack is None:
+                continue
+            try:
+                out.append(self._view(stack))
+            except Exception:  # noqa: BLE001 - 一条坏了不该拖垮整张表
+                continue
+        return out
+
     def _terminal_view(self, run_id: str) -> RunView | None:
         """从快照读出一条**终态** Run 的样子（M74）。
 

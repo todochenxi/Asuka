@@ -49,6 +49,7 @@ from packages.agent_api.handlers import (
     get_trace,
     list_approvals,
     list_run_executions,
+    list_runs,
     start_run,
     step_run,
 )
@@ -133,6 +134,12 @@ def build_app(
             {**dict(body), "agent_id": agent_id},
             idempotency_key=idempotency_key,
         )
+        return JSONResponse(dict(response.body), status_code=response.status)
+
+    @app.get("/runs")
+    def _list_runs() -> Any:
+        """M110：本进程装载过的 Run（控制台据此列出聊天页开的 Run）。"""
+        response = list_runs(control_plane)
         return JSONResponse(dict(response.body), status_code=response.status)
 
     @app.get("/runs/{run_id}")

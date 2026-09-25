@@ -160,6 +160,19 @@ class TheProcessServesTest(RealHttpCase):
         self.assertIn("M 层路线图", r.text)
         self.assertIn("未落地的可做工项", r.text)
 
+    def test_a_chat_run_is_listed_by_get_runs(self) -> None:
+        """M110：聊天页开的 Run 必须能**被列出来** —— 否则它在控制台没有入口。"""
+        chat = self.client.post(
+            "/chat", json={"agent_id": "agent-chat", "message": "compute 6*7"}
+        )
+        self.assertEqual(chat.status_code, 200, chat.text)
+        run_id = chat.json()["run_id"]
+
+        runs = self.client.get("/runs")
+        self.assertEqual(runs.status_code, 200, runs.text)
+        ids = [r["run_id"] for r in runs.json()["items"]]
+        self.assertIn(run_id, ids, "the chat run must appear in GET /runs")
+
     def test_the_metrics_endpoint_reports_queue_depth(self) -> None:
         """M107：`GET /metrics` 吐出 Prometheus 文本，含队列深度（KEDA 要读它）。"""
         r = self.client.get("/metrics")

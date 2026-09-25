@@ -1057,6 +1057,7 @@ const state = {
   approvals: [],
   agents: [],
   history: [],
+  serverRuns: [],
   version: "",
   health: null,
   answer: "",
@@ -1184,25 +1185,35 @@ function renderHealth() {
 }
 
 function renderRunList() {
+  const hist = state.history || [];
+  const seen = {};
+  hist.forEach(function (h) { seen[h.run_id] = true; });
+  /* M110：后端列出的 Run（聊天页开的也在这）—— 只补本地没记到的那些 */
+  const extra = (state.serverRuns || []).filter(function (v) { return !seen[v.run_id]; });
+  const items = hist.map(function (h) { return { run_id: h.run_id, sub: h.request, server: false }; })
+    .concat(extra.map(function (v) {
+      return { run_id: v.run_id, sub: (v.agent_id || "") + " · " + (v.status || ""), server: true };
+    }));
   ["run-list", "ov-runs"].forEach(function (id) {
     const el = $(id);
     if (!el) return;
-    if (!state.history.length) {
-      el.innerHTML = '<div class="empty" style="padding:18px">本次会话还没有发起过 Run</div>';
+    if (!items.length) {
+      el.innerHTML = '<div class="empty" style="padding:18px">还没有 Run</div>';
       return;
     }
-    el.innerHTML = state.history.map(function (h) {
+    el.innerHTML = items.map(function (h) {
       return '<button class="run-i ' + (h.run_id === state.runId ? "on" : "") +
         '" data-run="' + esc(h.run_id) + '">' +
-        '<span class="nm">' + esc(h.run_id) + "</span>" +
-        (h.request ? '<span class="rq">' + esc(h.request) + "</span>" : "") +
+        '<span class="nm">' + esc(h.run_id) +
+          (h.server ? ' <span class="tag">后端</span>' : "") + "</span>" +
+        (h.sub ? '<span class="rq">' + esc(h.sub) + "</span>" : "") +
         "</button>";
     }).join("");
   });
-  $("cnt-runs").textContent = state.history.length;
-  $("st-runs").textContent = state.history.length;
+  $("cnt-runs").textContent = items.length;
+  $("st-runs").textContent = items.length;
   const hint = $("runs-hint");
-  if (hint) hint.textContent = state.history.length + " 条 · 会话内追踪";
+  if (hint) hint.textContent = hist.length + " 条会话 + " + extra.length + " 条后端";
 }
 
 function fmtTime(iso) {
@@ -1678,13 +1689,16 @@ async function refreshAll() {
     api("GET", "/openapi.json"),
     api("GET", "/agents"),
     api("GET", "/approvals"),
+    api("GET", "/runs"),
   ]);
-  const h = results[0], oa = results[1], ag = results[2], ap = results[3];
+  const h = results[0], oa = results[1], ag = results[2], ap = results[3], rs = results[4];
   state.health = h.ok ? h.data : null;
   if (oa.ok && oa.data && oa.data.info) state.version = oa.data.info.version || "";
   if (oa.ok && oa.data) renderApi(oa.data);
   state.agents = (ag.ok && ag.data && ag.data.items) ? ag.data.items : [];
   state.approvals = (ap.ok && ap.data && ap.data.items) ? ap.data.items : [];
+  /* M110：本进程装载过的 Run（聊天的 Run 也在这） */
+  state.serverRuns = (rs.ok && rs.data && rs.data.items) ? rs.data.items : [];
   renderHealth();
   renderAgents();
   renderApprovals();

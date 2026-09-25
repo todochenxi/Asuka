@@ -81,6 +81,16 @@ def get_run(cp: ControlPlane, run_id: str) -> ApiResponse:
 
 
 @guard
+def list_runs(cp: ControlPlane) -> ApiResponse:
+    """`GET /runs` —— **本进程装载过的** Run（M110）。
+
+    查询语义：空集不是错误（同 `list_approvals`）。聊天页开的 Run 与
+    控制台开的 Run 都会出现在这里 —— 它们经的是同一个 Control Plane。
+    """
+    return _ok({"items": [r.to_dict() for r in cp.list_runs()]})
+
+
+@guard
 def step_run(cp: ControlPlane, run_id: str, body: Mapping[str, Any]) -> ApiResponse:
     """`POST /runs/{run_id}/step` —— 走一步（F-1）。
 

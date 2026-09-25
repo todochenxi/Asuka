@@ -285,7 +285,7 @@
       <span><i style="background:var(--ok)"></i> 已实现</span>
       <span><i style="background:var(--warn)"></i> 未实现 / 待定</span>
       <span><i style="background:var(--violet)"></i> 部分 / 有条件</span>
-      <span>数据来源：冻结基线 v2.1.80 + 项目 memory（M91–M109）</span>
+      <span>数据来源：冻结基线 v2.1.80 + 项目 memory（M91–M110）</span>
     </div>
   </section>
 
@@ -327,6 +327,7 @@
           <tr><td class="ev-code">M107</td><td>M 层落地（业务指标 HPA）</td><td><span class="badge ok">已落地</span> M7 `GET /metrics`（Prometheus 文本）+ KEDA 按队列深度扩 worker</td></tr>
           <tr><td class="ev-code">M108</td><td>M 层落地（连接 / HTTP）</td><td><span class="badge ok">已落地</span> M4 `HttpTransport`（JSON-RPC over HTTP POST + SSE）+ MCP/A2A `from_http`</td></tr>
           <tr><td class="ev-code">M109</td><td>控制台（分层记录）</td><td><span class="badge ok">已落地</span> 账本按层摊开（`TraceView.layers`）+ 控制台「分层记录」卡片（目标/计划 · 动作 → Task → Execution · Harness · 终态）</td></tr>
+          <tr><td class="ev-code">M110</td><td>控制台（Run 清单）</td><td><span class="badge ok">已落地</span> `GET /runs`（本进程装载过的 Run）+ 控制台列出后端 Run（聊天页开的也在这，标「后端」）</td></tr>
           <tr><td class="ev-code">—</td><td>Future Extension</td><td><span class="badge part">有意不做</span> SFT/DPO/RL · Tree Search · Actor+Mailbox · Workflow Engine · Marketplace/GitOps · Multi-Tenant 完整隔离</td></tr>
         </tbody>
       </table>
