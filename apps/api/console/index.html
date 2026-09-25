@@ -881,6 +881,14 @@ pre.payload{
             </button>
             <button class="btn btn-sm btn-ghost" id="btn-trace-use">用当前选中的 Run</button>
           </div>
+          <!-- M112：账本太长时先过滤 / 按 Step 分组 -->
+          <div class="row" style="margin-bottom:14px;gap:10px;align-items:center">
+            <input type="text" id="trace-filter" class="mono" style="flex:1"
+                   placeholder="按 kind 过滤（如 execution / task / context / child_run）">
+            <label class="hint" style="display:flex;align-items:center;gap:6px;white-space:nowrap;cursor:pointer">
+              <input type="checkbox" id="trace-group"> 按 Step 分组
+            </label>
+          </div>
           <div id="trace-empty" class="empty">
             <svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>
             <div class="t">账本还是空的</div>
@@ -1470,40 +1478,65 @@ function renderLayers(t) {
   el.innerHTML = secs.join("");
 }
 
+function traceEntryHtml(e, i) {
+  const km = kindMeta(e.kind);
+  const ids = [];
+  if (e.step_id)      ids.push("step " + e.step_id);
+  if (e.task_id)      ids.push("task " + e.task_id);
+  if (e.execution_id) ids.push("exec " + e.execution_id);
+  if (e.attempt_no)   ids.push("attempt " + e.attempt_no);
+  const p = e.payload;
+  const payload = (p && Object.keys(p).length)
+    ? '<pre class="payload">' + esc(JSON.stringify(p, null, 2)) + "</pre>" : "";
+  const sv = (e.served && Object.keys(e.served).length)
+    ? '<pre class="payload">' + esc(JSON.stringify(e.served, null, 2)) + "</pre>" : "";
+  return '<div class="tl-e k-' + km.c + '" style="animation-delay:' +
+      Math.min(i * 22, 300) + 'ms">' +
+    '<div class="tl-top">' +
+      '<span class="tl-kind">' + esc(e.kind || "?") + "</span>" +
+      '<span class="tag">' + esc(km.g) + "</span>" +
+      '<span class="tl-seq">#' + esc(e.seq) + " · " + esc(fmtTime(e.at)) + "</span>" +
+    "</div>" +
+    (e.summary ? '<div class="tl-sum">' + esc(e.summary) + "</div>" : "") +
+    (ids.length ? '<div class="tl-ids">' +
+      ids.map(function (x) { return '<span class="tag">' + esc(x) + "</span>"; }).join("") + "</div>" : "") +
+    payload + sv +
+  "</div>";
+}
+
 function renderTrace() {
   const t = state.trace;
   renderLayers(t);
   const el = $("trace");
-  const has = t && t.entries && t.entries.length;
-  $("trace-empty").hidden = !!has;
-  const hint = $("trace-hint");
-  if (hint) hint.textContent = has ? (t.entries.length + " 条 · step " + t.step_count) : "";
-  if (!has) { el.innerHTML = ""; return; }
+  const all = (t && t.entries) ? t.entries : [];
+  $("trace-empty").hidden = !!all.length;
+  if (!all.length) { el.innerHTML = ""; if ($("trace-hint")) $("trace-hint").textContent = ""; return; }
 
-  el.innerHTML = t.entries.map(function (e, i) {
-    const km = kindMeta(e.kind);
-    const ids = [];
-    if (e.step_id)      ids.push("step " + e.step_id);
-    if (e.task_id)      ids.push("task " + e.task_id);
-    if (e.execution_id) ids.push("exec " + e.execution_id);
-    if (e.attempt_no)   ids.push("attempt " + e.attempt_no);
-    const p = e.payload;
-    const payload = (p && Object.keys(p).length)
-      ? '<pre class="payload">' + esc(JSON.stringify(p, null, 2)) + "</pre>" : "";
-    const sv = (e.served && Object.keys(e.served).length)
-      ? '<pre class="payload">' + esc(JSON.stringify(e.served, null, 2)) + "</pre>" : "";
-    return '<div class="tl-e k-' + km.c + '" style="animation-delay:' +
-        Math.min(i * 22, 300) + 'ms">' +
-      '<div class="tl-top">' +
-        '<span class="tl-kind">' + esc(e.kind || "?") + "</span>" +
-        '<span class="tag">' + esc(km.g) + "</span>" +
-        '<span class="tl-seq">#' + esc(e.seq) + " · " + esc(fmtTime(e.at)) + "</span>" +
-      "</div>" +
-      (e.summary ? '<div class="tl-sum">' + esc(e.summary) + "</div>" : "") +
-      (ids.length ? '<div class="tl-ids">' +
-        ids.map(function (x) { return '<span class="tag">' + esc(x) + "</span>"; }).join("") + "</div>" : "") +
-      payload + sv +
-    "</div>";
+  const filterEl = $("trace-filter");
+  const f = filterEl ? filterEl.value.trim().toLowerCase() : "";
+  const entries = f
+    ? all.filter(function (e) { return String(e.kind || "").toLowerCase().indexOf(f) >= 0; })
+    : all;
+
+  const hint = $("trace-hint");
+  if (hint) hint.textContent = entries.length + " / " + all.length + " 条 · step " + t.step_count +
+    (f ? " · 过滤「" + f + "」" : "");
+
+  if (!($("trace-group") && $("trace-group").checked)) {
+    el.innerHTML = entries.map(traceEntryHtml).join("");
+    renderHarness();
+    return;
+  }
+  /* M112：按 Step 分组 —— "走一步 = 一组记录" */
+  const order = [], buckets = {};
+  entries.forEach(function (e) {
+    const key = e.step_id || "(无 step)";
+    if (!buckets[key]) { buckets[key] = []; order.push(key); }
+    buckets[key].push(e);
+  });
+  el.innerHTML = order.map(function (key) {
+    return '<div class="lay-sec"><div class="lay-h">step ' + esc(key) + " · " +
+      buckets[key].length + " 条</div>" + buckets[key].map(traceEntryHtml).join("") + "</div>";
   }).join("");
   renderHarness();
 }
@@ -2028,6 +2061,8 @@ $("btn-trace-use").addEventListener("click", function () {
   $("trace-rid").value = state.runId;
   loadTrace(state.runId);
 });
+$("trace-filter").addEventListener("input", renderTrace);
+$("trace-group").addEventListener("change", renderTrace);
 
 $("btn-eval-ask").addEventListener("click", startEvalLive);
 $("btn-eval-stop").addEventListener("click", function () {

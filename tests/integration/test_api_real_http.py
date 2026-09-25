@@ -141,6 +141,9 @@ class TheProcessServesTest(RealHttpCase):
         self.assertIn("分层记录", console.text)
         # M111：概览的运行指标
         self.assertIn("运行指标", console.text)
+        # M112：账本过滤 / 按 Step 分组
+        self.assertIn('id="trace-filter"', console.text)
+        self.assertIn("按 Step 分组", console.text)
 
         chat = self.client.get("/")
         self.assertEqual(chat.status_code, 200, chat.text[:200])
