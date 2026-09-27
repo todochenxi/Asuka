@@ -21,6 +21,7 @@ __all__ = [
     "Evidence",
     "RequiredPoint",
     "TaskItem",
+    "build_python",
     "build_redis",
     "coverage_lines",
     "main",
@@ -37,7 +38,13 @@ def build_redis() -> Dataset:
     return build()
 
 
-_BUILDERS = {"redis": build_redis}
+def build_python() -> Dataset:
+    from .python import build  # noqa: PLC0415
+
+    return build()
+
+
+_BUILDERS = {"redis": build_redis, "python": build_python}
 
 
 def coverage_lines(ds: Dataset) -> list[str]:

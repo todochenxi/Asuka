@@ -1,0 +1,33 @@
+{
+  "topic": "python",
+  "display_name": "Python",
+  "vendor": "Python Software Foundation",
+  "license_note": "Python 官方文档（PSF License），仅用于评测语料。源取自 cpython 仓库的 Doc/library/*.rst。",
+  "markdown_url_template": "https://raw.githubusercontent.com/python/cpython/main/Doc/library/{unit}.rst",
+  "page_url_template": "https://docs.python.org/3/library/{unit}.html",
+  "headers": "deep",
+  "headers_note": "RST 源经 asuka.rst 转成 Markdown 后，模块页的层级是 h1(模块标题)/h2(节)/h3(小节)，偶尔有 h4。用 deep(=h1..h5) 让切分器看得见全部层级；spec 会把 h4 之后的切在同一片里。",
+  "normalization_note": "源是 .rst（不是 Markdown）。转换只做三件事并有账：节标题→#、``literal``→`literal`、.. code-block::→围栏。其余（note/表格/交叉引用）原样保留，见 asuka/rst.py。",
+  "units": [
+    {"unit_id": "asyncio-task", "title": "asyncio: Coroutines and Tasks", "group": "concurrency", "description": "asyncio 的协程与任务：create_task / gather / wait / timeout / TaskGroup 等。"},
+    {"unit_id": "asyncio-sync", "title": "asyncio: Synchronization Primitives", "group": "concurrency", "description": "asyncio 的同步原语：Lock / Event / Condition / Semaphore / Queue。"},
+    {"unit_id": "concurrent.futures", "title": "concurrent.futures", "group": "concurrency", "description": "线程/进程池与 Future：ThreadPoolExecutor / ProcessPoolExecutor / submit / map。"},
+    {"unit_id": "dataclasses", "title": "dataclasses", "group": "data types", "description": "数据类：@dataclass / field / default_factory / frozen / order / asdict 等。"},
+    {"unit_id": "typing", "title": "typing", "group": "data types", "description": "类型标注：Optional / Union / Protocol / Generic / TypedDict / TypeVar 等。"},
+    {"unit_id": "collections", "title": "collections", "group": "data types", "description": "容器数据类型：namedtuple / deque / Counter / defaultdict / OrderedDict。"},
+    {"unit_id": "contextlib", "title": "contextlib", "group": "language services", "description": "上下文管理器工具：contextmanager / closing / suppress / ExitStack / asynccontextmanager。"},
+    {"unit_id": "functools", "title": "functools", "group": "functional programming", "description": "高阶函数工具：partial / lru_cache / cache / wraps / reduce / singledispatch。"},
+    {"unit_id": "itertools", "title": "itertools", "group": "functional programming", "description": "迭代器构造：chain / groupby / islice / product / count / tee / combinations。"},
+    {"unit_id": "json", "title": "json", "group": "data persistence", "description": "JSON 编解码：dumps / loads / dump / load / JSONEncoder / object_hook。"},
+    {"unit_id": "logging", "title": "logging", "group": "language services", "description": "日志：Logger / Handler / Formatter / basicConfig / getLogger / 级别与传播。"},
+    {"unit_id": "pathlib", "title": "pathlib", "group": "filesystem", "description": "面向对象路径：Path / open / read_text / glob / rglob / parents / with_suffix。"},
+    {"unit_id": "os", "title": "os", "group": "operating system", "description": "操作系统接口：environ / path / getcwd / listdir / makedirs / fork / getpid 等。"},
+    {"unit_id": "re", "title": "re", "group": "text processing", "description": "正则：compile / search / match / findall / sub / split / 分组与命名组。"},
+    {"unit_id": "random", "title": "random", "group": "numeric", "description": "伪随机数：random / randint / choice / shuffle / sample / seed / Random。"},
+    {"unit_id": "socket", "title": "socket", "group": "networking", "description": "底层网络：socket / AF_INET / SOCK_STREAM / bind / listen / accept / connect。"},
+    {"unit_id": "sqlite3", "title": "sqlite3", "group": "data persistence", "description": "SQLite：connect / cursor / execute / executemany / row_factory / 事务。"},
+    {"unit_id": "subprocess", "title": "subprocess", "group": "process management", "description": "子进程：run / Popen / check_output / PIPE / timeout / returncode。"},
+    {"unit_id": "unittest", "title": "unittest", "group": "development tools", "description": "单元测试框架：TestCase / assertEqual / setUp / subTest / mock / skip。"},
+    {"unit_id": "datetime", "title": "datetime", "group": "data types", "description": "日期与时间：datetime / date / time / timedelta / timezone / strftime / strptime。"}
+  ]
+}

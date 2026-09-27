@@ -1,0 +1,33 @@
+{
+  "topic": "python",
+  "display_name": "Python",
+  "vendor": "Python Software Foundation",
+  "license_note": "Python 官方文档（PSF License），仅用于评测语料。源取自 cpython 仓库的 Doc/library/*.rst。",
+  "source_format": "rst",
+  "generated_at": "2026-09-27T13:01:44+00:00",
+  "params": {
+    "backend": "stdlib",
+    "headers": "deep",
+    "chunk_size": 1000,
+    "chunk_overlap": 150,
+    "length_unit": "characters",
+    "min_chars": 40
+  },
+  "summary": {
+    "topic": "python",
+    "backend": "stdlib",
+    "units_total": 20,
+    "units_ok": 20,
+    "units_failed": 0,
+    "chunks": 704,
+    "docs": 20,
+    "conversion": {
+      "sections": 310,
+      "inline_literals": 1506,
+      "code_blocks": 13,
+      "directives_kept": 1367,
+      "max_depth": 6
+    }
+  },
+  "chunks_file": "chunks.jsonl"
+}

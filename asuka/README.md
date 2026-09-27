@@ -31,7 +31,8 @@ AgentOS 接入边界：AgentOS 负责生产运行、Kernel、Context 和原始�
 
 | 已完成 | 未做 |
 |---|---|
-| 语料 / 任务集 / 检索评测 / 对照 | 其余 5 类文档 |
+| 语料 / 任务集 / 检索评测 / 对照 | 其余几类文档 |
+| **两类语料**：Redis（命令）+ **Python 标准库**（20 模块，RST 源） | |
 | 答案级判据（规则式 + `pass@k`）+ 上下界校准 | |
 | Citation：自述引用 + 编造探测 + 归因拆分 | |
 | **Context 装配**（C-1/C-3/C-4）：`top_k` 之后再过一道 token 预算 | |
@@ -828,7 +829,16 @@ PYTHONPATH=. "$PY_UNIT" -m unittest tests.unit.test_asuka_agentos_eval
 ```
 
 用 `unittest`（不是 pytest）。**核心层零第三方依赖**，所以单测跑在零依赖的解释器上。
-上面这些锁的是实证过的缺陷，不是推演出来的担心。当前 **1807 条全绿**。
+上面这些锁的是实证过的缺陷，不是推演出来的担心。当前全绿（Asuka 相关 + 全仓）。
+
+第二类语料（Python 标准库）的摄取命令：
+```bash
+# 源是 cpython 的 Doc/library/*.rst，经 asuka.rst 转成 Markdown 再走同一套切分
+"$PY_HEAVY" -m asuka.corpus_rst python            # 抓取 + 转换 + 切分 → corpus/python/chunks.jsonl
+"$PY_HEAVY" -m asuka.corpus_rst python --offline  # 用缓存 .rst 重跑（可复现）
+"$PY_HEAVY" -m asuka.datasets python              # 校验 + 落盘任务集
+"$PY_HEAVY" -m asuka.evaluate python --retriever bm25 --top-k 10
+```
 
 新增判据一律做**变红验证**（把代码改坏，确认测试真的会红）——
 没红过的测试不算测试。骨架在 `redkit.py`（锚点唯一性断言、残留防护、信号处理）：
