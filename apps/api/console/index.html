@@ -1298,17 +1298,20 @@ function renderRunList() {
   hist.forEach(function (h) { seen[h.run_id] = true; });
   /* M110：后端列出的 Run（聊天页开的也在这）—— 只补本地没记到的那些 */
   const extra = (state.serverRuns || []).filter(function (v) { return !seen[v.run_id]; });
-  /* M116：后端说某条**点不开**（loadable=false）时标出来并禁点 ——
-     中过招：一条上一进程留下的陈旧 Run id，点了就是 404。 */
-  const dead = {};
-  (state.serverRuns || []).forEach(function (v) {
-    if (v.loadable === false) dead[v.run_id] = true;
-  });
+  /* M117：后端清单里的每一条都**点得开看账本**（"快照"来源的也能看历史账本），
+     但只有 memory 来源的能推进。本地 localStorage 里、后端已不存在的才禁点。 */
+  const known = {};
+  (state.serverRuns || []).forEach(function (v) { known[v.run_id] = v; });
   const items = hist.map(function (h) {
-    return { run_id: h.run_id, sub: h.request, server: false, dead: !!dead[h.run_id] };
+    const srv = known[h.run_id];
+    return {
+      run_id: h.run_id, sub: h.request, server: !!srv,
+      from_snapshot: !!(srv && srv.source === "snapshots"),
+      dead: !srv,                      // 后端不认识它 → 多半是上一进程的残留
+    };
   }).concat(extra.map(function (v) {
     return { run_id: v.run_id, sub: (v.agent_id || "") + " · " + (v.status || ""),
-             server: true, dead: v.loadable === false };
+             server: true, from_snapshot: v.source === "snapshots", dead: false };
   }));
   ["run-list", "ov-runs"].forEach(function (id) {
     const el = $(id);
@@ -1323,10 +1326,12 @@ function renderRunList() {
           '<span class="nm">' + esc(h.run_id) + ' <span class="tag">不可用</span></span>' +
           '<span class="rq">已不在后端 — 换这条进程的 Run</span></button>';
       }
+      const mark = h.from_snapshot
+        ? ' <span class="tag">快照</span>'   // 装载不回来，但账本读得到
+        : (h.server ? ' <span class="tag">后端</span>' : "");
       return '<button class="run-i ' + (h.run_id === state.runId ? "on" : "") +
         '" data-run="' + esc(h.run_id) + '">' +
-        '<span class="nm">' + esc(h.run_id) +
-          (h.server ? ' <span class="tag">后端</span>' : "") + "</span>" +
+        '<span class="nm">' + esc(h.run_id) + mark + "</span>" +
         (h.sub ? '<span class="rq">' + esc(h.sub) + "</span>" : "") +
         "</button>";
     }).join("");
@@ -1633,8 +1638,9 @@ function renderTrace() {
     : all;
 
   const hint = $("trace-hint");
+  const origin = (t.source === "snapshot") ? " · 历史快照" : "";
   if (hint) hint.textContent = entries.length + " / " + all.length + " 条 · step " + t.step_count +
-    (f ? " · 过滤「" + f + "」" : "");
+    origin + (f ? " · 过滤「" + f + "」" : "");
 
   if (!($("trace-group") && $("trace-group").checked)) {
     el.innerHTML = entries.map(traceEntryHtml).join("");
@@ -1961,6 +1967,10 @@ async function loadTrace(run_id) {
   if (!r.ok) { toast("er", "账本拉取失败", esc(errMsg(r))); return; }
   state.trace = r.data;
   renderTrace();
+  if (r.data && r.data.source === "snapshot") {
+    /* M118：这是**历史快照**里的账本，不是活账本 —— 照实说，不假装 */
+    toast("info", "历史快照", "这条 Run 不在本进程；账本来自持久快照，推不动它");
+  }
 }
 
 /* ============================================================

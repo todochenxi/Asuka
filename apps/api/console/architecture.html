@@ -285,7 +285,7 @@
       <span><i style="background:var(--ok)"></i> 已实现</span>
       <span><i style="background:var(--warn)"></i> 未实现 / 待定</span>
       <span><i style="background:var(--violet)"></i> 部分 / 有条件</span>
-      <span>数据来源：冻结基线 v2.1.80 + 项目 memory（M91–M116）</span>
+      <span>数据来源：冻结基线 v2.1.80 + 项目 memory（M91–M118）</span>
     </div>
   </section>
 
@@ -334,6 +334,8 @@
           <tr><td class="ev-code">M114</td><td>控制台（取消归因）</td><td><span class="badge ok">已落地</span> 账本页「Execution · 取消归因」卡片 + `/executions` 的 `source`（无查询器时不谎报空）</td></tr>
           <tr><td class="ev-code">M115</td><td>控制台（连接）</td><td><span class="badge ok">已落地</span> 概览「连接 · 工具」卡片 + `GET /tools`（本进程工具表：native / mcp / sandbox / …）</td></tr>
           <tr><td class="ev-code">M116</td><td>控制台（陈旧 Run）</td><td><span class="badge ok">已落地</span> `RunView.loadable`：列出来的 Run 必须点得开；陈旧 id 画成「不可用」禁点（修"点了 404"）</td></tr>
+          <tr><td class="ev-code">M117</td><td>可审计（跨重启清单）</td><td><span class="badge ok">已落地</span> `RunSnapshotStore.list_runs`（PG `DISTINCT ON`）+ `GET /runs` 合并持久清单（`source=snapshots`）</td></tr>
+          <tr><td class="ev-code">M118</td><td>可审计（跨重启账本）</td><td><span class="badge ok">已落地</span> `GET trace` 回退到快照账本（`source=snapshot`）+ `layers` 从账本重建</td></tr>
           <tr><td class="ev-code">—</td><td>Future Extension</td><td><span class="badge part">有意不做</span> SFT/DPO/RL · Tree Search · Actor+Mailbox · Workflow Engine · Marketplace/GitOps · Multi-Tenant 完整隔离</td></tr>
         </tbody>
       </table>

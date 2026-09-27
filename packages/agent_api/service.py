@@ -190,6 +190,62 @@ def layers_of(stack: Any, entries: Sequence[Mapping[str, Any]]) -> Mapping[str, 
     return layers
 
 
+def _layers_from_trace(
+    entries: Sequence[Mapping[str, Any]], *, status: str = ""
+) -> Mapping[str, Any]:
+    """M118：只有账本（没有活 stack）时能摊出的层。
+
+    从 `task.submitted` / `execution.observed` / `context.built` 能推的照推；
+    Goal / Plan 推不出来（它们不在账本里）—— **就不放那个键**，
+    不补一个"看起来有、其实空"的壳（同 `layers_of` 的判据）。
+    """
+    actions: list[dict[str, Any]] = []
+    executions: list[dict[str, Any]] = []
+    context: list[dict[str, Any]] = []
+    seen_exec: set[str] = set()
+    for entry in entries:
+        kind = str(entry.get("kind") or "")
+        payload = dict(entry.get("payload") or {})
+        if kind == "task.submitted":
+            actions.append(
+                {
+                    "seq": entry.get("seq"),
+                    "step_id": entry.get("step_id") or "",
+                    "task_id": entry.get("task_id") or "",
+                    "execution_id": entry.get("execution_id") or "",
+                    "attempt_no": entry.get("attempt_no") or 0,
+                    "action_type": str(payload.get("action_type") or ""),
+                }
+            )
+        elif kind == "execution.observed":
+            execution_id = str(entry.get("execution_id") or "")
+            if execution_id and execution_id not in seen_exec:
+                seen_exec.add(execution_id)
+                executions.append(
+                    {
+                        "execution_id": execution_id,
+                        "task_id": entry.get("task_id") or "",
+                        "attempt_no": entry.get("attempt_no") or 0,
+                        "status": str(payload.get("status") or ""),
+                    }
+                )
+        elif kind == "context.built":
+            context.append(
+                {
+                    "seq": entry.get("seq"),
+                    "total_tokens": payload.get("total_tokens"),
+                    "model_id": payload.get("model_id"),
+                }
+            )
+    return {
+        "actions": actions,
+        "executions": executions,
+        "harness": {"context": context, "approval_seqs": [], "guardrail_seqs": []},
+        "state": {"run_status": status, "runtime_status": "", "steps": len(actions)},
+        "rebuilt_from": "snapshot",
+    }
+
+
 def last_llm_answer(state: Any) -> str:
     """这条 Run 最近一次 LLM 执行的输出文本；没有就返回空串。
 
@@ -363,7 +419,11 @@ class InProcessControlPlane:
         持久源（`run_snapshots` 目前只有 `latest` / `list_for`），所以这里
         如实叫"本进程的 Run"，不假装是全量。
         """
+        from dataclasses import replace as _replace
+
         out: list[RunView] = []
+        seen: set[str] = set()
+        # 1) 进程里装载过的（点得开、能推进）
         for run_id in sorted(self.runs):
             stack = self.runs.get(run_id)
             if stack is None:
@@ -375,10 +435,28 @@ class InProcessControlPlane:
             # 列出来的每一条都必须**点得开**：拿不到就标 loadable=False，
             # 页面据此把它画成不可点。否则点一条列出来的 Run 会 404 ——
             # 一个"列表里有、点了就没有"的入口比不显示它更糟（PR-19）。
-            from dataclasses import replace as _replace
-
             loadable = self.get_run(view.run_id) is not None
-            out.append(_replace(view, loadable=loadable))
+            out.append(_replace(view, loadable=loadable, source="memory"))
+            seen.add(run_id)
+        # 2) M117：持久源里**存在过**的 Run（进程重启后也在）。
+        #    它们装载不回来（R-3：终态不可恢复），所以标 loadable=False ——
+        #    但**列得出**，且账本读得到（M118）。
+        if self.snapshots is not None:
+            for summary in self.snapshots.list_runs():
+                if summary.run_id in seen:
+                    continue
+                out.append(
+                    RunView(
+                        run_id=summary.run_id,
+                        agent_id=summary.agent_id,
+                        status=summary.status,
+                        step_count=summary.step_count,
+                        # 装载不回来 ≠ 读不到：它点得开（看账本），只是推不动。
+                        loadable=False,
+                        source="snapshots",
+                    )
+                )
+                seen.add(summary.run_id)
         return out
 
     def _terminal_view(self, run_id: str) -> RunView | None:
@@ -687,13 +765,30 @@ class InProcessControlPlane:
 
         M109：同一本账**按层再摊一份**（`layers`）—— 串是事实源，分层是视图。
         """
-        stack = self._must_stack(run_id)
+        # M118：进程里没有这条 Run（多半已重启）→ 回退到**持久快照里的账本**。
+        # 这不是"活账本"，是**历史账本**；R-4 的 RECOVERED 续航只在恢复路径上成立，
+        # 所以响应带 `source="snapshot"`，页面照实标。
+        stack = self.runs.get(run_id)
+        if stack is None:
+            snapshot = self.snapshots.latest(run_id) if self.snapshots is not None else None
+            if snapshot is None:
+                raise NotFound(f"no run {run_id!r} in this process or in snapshots",
+                               code="RUN_NOT_FOUND", run_id=run_id)
+            entries = tuple(dict(e) for e in snapshot.trace)
+            return TraceView(
+                run_id=run_id,
+                entries=entries,
+                step_count=snapshot.step_count,
+                layers=_layers_from_trace(entries, status=snapshot.status),
+                source="snapshot",
+            )
         entries = trace_entries_to_dicts(stack.loop.trace)
         return TraceView(
             run_id=run_id,
             entries=entries,
             step_count=len(stack.loop.steps_of_run),
             layers=layers_of(stack, entries),
+            source="memory",
         )
 
     # ------------------------------------------------------------ 审批

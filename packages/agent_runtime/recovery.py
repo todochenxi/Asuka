@@ -46,9 +46,26 @@ __all__ = [
     "InMemoryRunSnapshotStore",
     "RunRecovery",
     "RunSnapshotStore",
+    "RunSummary",
     "trace_entries_to_dicts",
     "trace_entry_from_dict",
 ]
+
+
+@dataclass(frozen=True)
+class RunSummary:
+    """M117：一条 Run 的**存在性**（不是它的全部状态）。
+
+    "有哪些 Run 存在过"是查得到的（`run_snapshots` 里有），
+    但在 M117 之前**没有出口** —— 于是进程重启之后，控制台的清单空了，
+    旧 Run 一个都列不出来（不是它们没了，是没人列）。
+    """
+
+    run_id: str
+    agent_id: str = ""
+    status: str = ""
+    step_count: int = 0
+    created_at: datetime | None = None
 
 
 class RunSnapshotStore(Protocol):
@@ -63,6 +80,13 @@ class RunSnapshotStore(Protocol):
     def latest(self, run_id: str) -> RunSnapshot | None: ...
 
     def list_for(self, run_id: str) -> Sequence[RunSnapshot]: ...
+
+    def list_runs(self, limit: int = 100) -> Sequence[RunSummary]:
+        """M117：列出**存在过的** Run（每个 run_id 只留最新一条）。
+
+        默认实现给内存版；PG 版用 `DISTINCT ON (run_id)` 覆盖。
+        """
+        ...
 
 
 @dataclass
@@ -82,6 +106,29 @@ class InMemoryRunSnapshotStore:
 
     def list_for(self, run_id: str) -> list[RunSnapshot]:
         return [s for s in self._items if s.run_id == run_id]
+
+    def list_runs(self, limit: int = 100) -> list[RunSummary]:
+        """每个 run_id 只留最新一条（按 created_at，同 PG 版的 `DISTINCT ON`）。"""
+        newest: dict[str, RunSnapshot] = {}
+        for snap in self._items:
+            cur = newest.get(snap.run_id)
+            if cur is None or snap.created_at >= cur.created_at:
+                newest[snap.run_id] = snap
+        ordered = sorted(
+            newest.values(),
+            key=lambda s: (s.created_at, s.snapshot_id),
+            reverse=True,
+        )
+        return [
+            RunSummary(
+                run_id=s.run_id,
+                agent_id=s.agent_id,
+                status=s.status,
+                step_count=s.step_count,
+                created_at=s.created_at,
+            )
+            for s in ordered[:limit]
+        ]
 
 
 # ---------------------------------------------------------------- Trace

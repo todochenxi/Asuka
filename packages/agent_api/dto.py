@@ -96,6 +96,9 @@ class RunView:
     #: M116：这条 Run **点得开吗**（只在 `GET /runs` 里被设为 False——
     #: 一条列出来却加载不了的 Run，让它被画成不可点，而不是点了才 404）。
     loadable: bool = True
+    #: M117：这条 Run 的清单**从哪来** —— `memory`（进程里装载过）/
+    #: `snapshots`（持久源里存在过，装载不回来但读得到）。
+    source: str = "memory"
     attributes: Mapping[str, Any] = None      # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -118,6 +121,7 @@ class RunView:
             "waiting_for": self.waiting_for,
             "cancel_requested": self.cancel_requested,
             "loadable": self.loadable,
+            "source": self.source,
         }
 
     @classmethod
@@ -146,6 +150,7 @@ class RunView:
             waiting_for=payload.get("waiting_for"),
             cancel_requested=bool(payload.get("cancel_requested", False)),
             loadable=bool(payload.get("loadable", True)),
+            source=str(payload.get("source") or "memory"),
         )
 
 
@@ -166,6 +171,9 @@ class TraceView:
     #: 观测/状态各一段。账本本身是"只增的一串"，而排障时人问的是
     #: "这一层发生了什么"；两件事都留着，谁也别替谁。
     layers: Mapping[str, Any] = field(default_factory=dict)
+    #: M118：这本账从哪来 —— `memory`（活账本）/ `snapshot`（历史快照）。
+    #: 后者**不**带 R-4 的 RECOVERED 续航，页面照实标，不假装是活账本。
+    source: str = "memory"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -173,6 +181,7 @@ class TraceView:
             "step_count": self.step_count,
             "entries": [dict(e) for e in self.entries],
             "layers": dict(self.layers),
+            "source": self.source,
         }
 
 

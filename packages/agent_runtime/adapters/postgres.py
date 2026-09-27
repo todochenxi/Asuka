@@ -53,6 +53,7 @@ from ..delegation import (
     _resolve_ceiling,
     freeze_wait_deadline,
 )
+from ..recovery import RunSummary
 
 # 009：R-6 —— 挂起可能是"在等子 Run"，不只是"在等人"
 SELECT_SNAPSHOT = """
@@ -252,6 +253,36 @@ class PostgresRunSnapshotStore:
             (run_id,),
         )
         return [_row_to_snapshot(r) for r in cur.fetchall()]
+
+    def list_runs(self, limit: int = 100) -> Sequence[RunSummary]:
+        """M117：`run_id → 最新一条快照`（`DISTINCT ON`）。
+
+        走的是 `idx_run_snapshots_latest (run_id, created_at DESC)` —— 004 建它
+        是为了"按 run 取最新一条"，这里只是把同一份索引**正式用于列出**。
+        所以**不加新迁移**：一个事实一处定义，已经有的索引不重造。
+        """
+        cur = self.conn.cursor()
+        cur.execute(
+            """
+            SELECT DISTINCT ON (run_id)
+                   run_id, agent_id, status, step_count, created_at
+              FROM run_snapshots
+             ORDER BY run_id, created_at DESC, snapshot_id DESC
+            """,
+        )
+        rows = cur.fetchall()
+        summaries = [
+            RunSummary(
+                run_id=str(r["run_id"]),
+                agent_id=str(r["agent_id"] or ""),
+                status=str(r["status"] or ""),
+                step_count=int(r["step_count"] or 0),
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
+        summaries.sort(key=lambda s: (s.created_at, s.run_id), reverse=True)
+        return summaries[:limit]
 
 
 # ================================================================ 补偿账本（M10）
