@@ -380,12 +380,16 @@ def run_evaluation(
     reserved_for_output: int = DEFAULT_RESERVED_FOR_OUTPUT,
     chars_per_token: int = CHARS_PER_TOKEN,
     limit: int = 0,
+    #: 每题采样几条 Run（M120）。`1` = 现状；`3` = s3（`pass@3` 与运行间噪声量级）。
+    #: ⚠️ 采样数是**被测量的一部分**：vequip 不同采样数的两次跑**不可比**
+    #: （同 `compare.py` 拒绝跨配置比较）—— 采样数进 Trace 身份，改它会拒绝并排。
+    samples_per_task: int = 1,
     gateway: Any = None,
     store: Any = None,
     embedder: Any = None,
     allow_non_semantic: bool = False,
 ) -> Any:
-    """跑完整份数据集（一题一条 Run），返回 `AgentOSEvaluation`。"""
+    """跑完整份数据集（一题 N 条 Run），返回 `AgentOSEvaluation`。"""
     from packages.agent_harness.approval import InMemoryApprovalStore
 
     from .corpus import read_chunks
@@ -417,18 +421,25 @@ def run_evaluation(
     approvals = InMemoryApprovalStore()
     items: Sequence[Any] = dataset.items[:limit] if limit else dataset.items
 
+    if samples_per_task < 1:
+        raise ValueError("samples_per_task must be >= 1")
+
     samples = []
     for task in items:
-        stack = factory(EVAL_AGENT_ID, approvals)
-        stack.start(task.question)
-        stack.run()
-        samples.append(_extract_sample(stack, task, top_k=top_k))
+        # M120：同一道题跑 N 次（每次一条独立 Run）。采样是**被测系统的一部分**，
+        # 不是"多跑几遍让它稳"—— `temperature=0` 下 DeepSeek 仍非确定，正是要量它。
+        for _ in range(samples_per_task):
+            stack = factory(EVAL_AGENT_ID, approvals)
+            stack.start(task.question)
+            stack.run()
+            samples.append(_extract_sample(stack, task, top_k=top_k))
 
     return evaluate_samples(
         tuple(samples),
         dataset,
         retriever=f"agentos-{retriever}",
         top_k=top_k,
+        samples_per_task=samples_per_task,
         corpus_chunks=len(chunks),
         context_budget=context_budget,
         reserved_for_output=reserved_for_output,
@@ -450,6 +461,12 @@ def build_parser() -> Any:
     parser.add_argument("--reserved-for-output", type=int, default=DEFAULT_RESERVED_FOR_OUTPUT)
     parser.add_argument("--chars-per-token", type=int, default=CHARS_PER_TOKEN)
     parser.add_argument("--limit", type=int, default=0, help="只跑前 N 题（调试用；0 = 全部）")
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=1,
+        help="每题采样几条 Run（1=现状；3=s3，出 pass@3 与运行间噪声量级）",
+    )
     parser.add_argument("--embedder", default="auto", choices=["auto", "api", "local", "hashing"])
     parser.add_argument("--model-path", default="")
     parser.add_argument("--allow-non-semantic", action="store_true")
@@ -498,11 +515,12 @@ def _run(args: Any) -> int:
         top_k=args.top_k,
         context_budget=args.context_budget,
         reserved_for_output=args.reserved_for_output,
-        chars_per_token=args.chars_per_token,
-        limit=args.limit,
-        store=store,
-        embedder=embedder,
-        allow_non_semantic=args.allow_non_semantic,
+    chars_per_token=args.chars_per_token,
+    limit=args.limit,
+    samples_per_task=args.samples,
+    store=store,
+    embedder=embedder,
+    allow_non_semantic=args.allow_non_semantic,
     )
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
