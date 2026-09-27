@@ -1,0 +1,62 @@
+{
+  "baseline": "base",
+  "noise": 0.033,
+  "arms": [
+    {
+      "label": "base",
+      "retriever": "agentos-bm25",
+      "top_k": 10,
+      "prompt_id": "",
+      "samples_per_task": 3
+    },
+    {
+      "label": "k20",
+      "retriever": "agentos-bm25",
+      "top_k": 20,
+      "prompt_id": "",
+      "samples_per_task": 3
+    }
+  ],
+  "verdicts": [
+    {
+      "metric": "mean_recall",
+      "arm": "k20",
+      "baseline": 0.5370370370370371,
+      "value": 0.4876543209876543,
+      "delta": -0.04938271604938277,
+      "conclusion": "worse"
+    },
+    {
+      "metric": "pass_at_1",
+      "arm": "k20",
+      "baseline": 0.4444444444444444,
+      "value": 0.4074074074074074,
+      "delta": -0.037037037037037035,
+      "conclusion": "worse"
+    },
+    {
+      "metric": "pass_at_k",
+      "arm": "k20",
+      "baseline": 0.5555555555555556,
+      "value": 0.4444444444444444,
+      "delta": -0.11111111111111116,
+      "conclusion": "worse"
+    },
+    {
+      "metric": "evidence_recall",
+      "arm": "k20",
+      "baseline": 0.3844797178130512,
+      "value": 0.3835978835978836,
+      "delta": -0.0008818342151675762,
+      "conclusion": "indistinguishable"
+    },
+    {
+      "metric": "evidence_used_rate",
+      "arm": "k20",
+      "baseline": 0.6069444444444444,
+      "value": 0.5416666666666666,
+      "delta": -0.06527777777777777,
+      "conclusion": "worse"
+    }
+  ]
+}
