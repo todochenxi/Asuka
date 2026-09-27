@@ -369,9 +369,16 @@ class InProcessControlPlane:
             if stack is None:
                 continue
             try:
-                out.append(self._view(stack))
+                view = self._view(stack)
             except Exception:  # noqa: BLE001 - 一条坏了不该拖垮整张表
                 continue
+            # 列出来的每一条都必须**点得开**：拿不到就标 loadable=False，
+            # 页面据此把它画成不可点。否则点一条列出来的 Run 会 404 ——
+            # 一个"列表里有、点了就没有"的入口比不显示它更糟（PR-19）。
+            from dataclasses import replace as _replace
+
+            loadable = self.get_run(view.run_id) is not None
+            out.append(_replace(view, loadable=loadable))
         return out
 
     def _terminal_view(self, run_id: str) -> RunView | None:

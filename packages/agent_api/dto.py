@@ -93,6 +93,9 @@ class RunView:
     #: 要么报 404 RUN_NOT_FOUND（它明明活着，只是不在这一进程）。
     #: 两个都是 PR-19 那类错 —— 说的和发生的不是同一件事。
     cancel_requested: bool = False
+    #: M116：这条 Run **点得开吗**（只在 `GET /runs` 里被设为 False——
+    #: 一条列出来却加载不了的 Run，让它被画成不可点，而不是点了才 404）。
+    loadable: bool = True
     attributes: Mapping[str, Any] = None      # type: ignore[assignment]
 
     def __post_init__(self) -> None:
@@ -114,6 +117,7 @@ class RunView:
             "last_outcome": self.last_outcome,
             "waiting_for": self.waiting_for,
             "cancel_requested": self.cancel_requested,
+            "loadable": self.loadable,
         }
 
     @classmethod
@@ -141,6 +145,7 @@ class RunView:
             last_outcome=str(payload.get("last_outcome") or ""),
             waiting_for=payload.get("waiting_for"),
             cancel_requested=bool(payload.get("cancel_requested", False)),
+            loadable=bool(payload.get("loadable", True)),
         )
 
 

@@ -193,8 +193,12 @@ class TheProcessServesTest(RealHttpCase):
 
         runs = self.client.get("/runs")
         self.assertEqual(runs.status_code, 200, runs.text)
-        ids = [r["run_id"] for r in runs.json()["items"]]
+        items = runs.json()["items"]
+        ids = [r["run_id"] for r in items]
         self.assertIn(run_id, ids, "the chat run must appear in GET /runs")
+        # M116：列出来的必须点得开
+        listed = next(r for r in items if r["run_id"] == run_id)
+        self.assertIs(listed["loadable"], True)
 
     def test_the_metrics_endpoint_reports_queue_depth(self) -> None:
         """M107：`GET /metrics` 吐出 Prometheus 文本，含队列深度（KEDA 要读它）。"""

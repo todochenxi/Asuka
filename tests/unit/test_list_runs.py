@@ -48,6 +48,15 @@ class ListRunsTest(unittest.TestCase):
         self.assertEqual(len(resp.body["items"]), 1)
         self.assertIn("run_id", resp.body["items"][0])
 
+    def test_a_listed_run_is_loadable(self) -> None:
+        """M116：列出来的每一条都必须**点得开** —— 否则点它是 404。"""
+        cp = self._cp()
+        view = cp.start_run(
+            StartRunRequest(agent_id="agent-api", user_request="compute 6*7")
+        )
+        self.assertIs(cp.list_runs()[0].loadable, True)
+        self.assertIsNotNone(cp.get_run(view.run_id))
+
 
 if __name__ == "__main__":
     unittest.main()

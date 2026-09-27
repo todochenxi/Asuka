@@ -1298,10 +1298,18 @@ function renderRunList() {
   hist.forEach(function (h) { seen[h.run_id] = true; });
   /* M110：后端列出的 Run（聊天页开的也在这）—— 只补本地没记到的那些 */
   const extra = (state.serverRuns || []).filter(function (v) { return !seen[v.run_id]; });
-  const items = hist.map(function (h) { return { run_id: h.run_id, sub: h.request, server: false }; })
-    .concat(extra.map(function (v) {
-      return { run_id: v.run_id, sub: (v.agent_id || "") + " · " + (v.status || ""), server: true };
-    }));
+  /* M116：后端说某条**点不开**（loadable=false）时标出来并禁点 ——
+     中过招：一条上一进程留下的陈旧 Run id，点了就是 404。 */
+  const dead = {};
+  (state.serverRuns || []).forEach(function (v) {
+    if (v.loadable === false) dead[v.run_id] = true;
+  });
+  const items = hist.map(function (h) {
+    return { run_id: h.run_id, sub: h.request, server: false, dead: !!dead[h.run_id] };
+  }).concat(extra.map(function (v) {
+    return { run_id: v.run_id, sub: (v.agent_id || "") + " · " + (v.status || ""),
+             server: true, dead: v.loadable === false };
+  }));
   ["run-list", "ov-runs"].forEach(function (id) {
     const el = $(id);
     if (!el) return;
@@ -1310,6 +1318,11 @@ function renderRunList() {
       return;
     }
     el.innerHTML = items.map(function (h) {
+      if (h.dead) {
+        return '<button class="run-i" disabled title="这条 Run 已不在后端（多半来自上次进程）">' +
+          '<span class="nm">' + esc(h.run_id) + ' <span class="tag">不可用</span></span>' +
+          '<span class="rq">已不在后端 — 换这条进程的 Run</span></button>';
+      }
       return '<button class="run-i ' + (h.run_id === state.runId ? "on" : "") +
         '" data-run="' + esc(h.run_id) + '">' +
         '<span class="nm">' + esc(h.run_id) +
