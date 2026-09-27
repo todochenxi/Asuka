@@ -838,7 +838,21 @@ PYTHONPATH=. "$PY_UNIT" -m unittest tests.unit.test_asuka_agentos_eval
 "$PY_HEAVY" -m asuka.corpus_rst python --offline  # 用缓存 .rst 重跑（可复现）
 "$PY_HEAVY" -m asuka.datasets python              # 校验 + 落盘任务集
 "$PY_HEAVY" -m asuka.evaluate python --retriever bm25 --top-k 10
+
+# 真模型（AgentOS 执行模型调用，需要 DEEPSEEK_API_KEY）
+"$PY_HEAVY" -m asuka.agentos_eval python --retriever bm25 --top-k 10
 ```
+
+**两类语料的真模型基线**（`baselines/deepseek-bm25-k10-*.{json,md}`，同一配置：
+
+| 语料 | 样本 | 要点召回 | pass@1 | 依据召回 | 依据用上率 | grounded | 耗时/题 |
+|---|---|---|---|---|---|---|---|
+| redis | 24 | 0.2312 | 0.0417 | 0.5282 | 0.8772 | 1.00 | 2176 ms |
+| python | 9 | 0.4259 | 0.2222 | 0.4392 | 0.7042 | 1.00 | 2069 ms |
+
+> python 的要点召回/pass@1 更高，但**两者题集不同**（24 vs 9 题、语言与文档风格不同），
+> 这个表是"**判据在第二类语料上也测得出来**"的证据，**不是**"python 比 redis 好"的排名 ——
+> 跨题集比成绩同 `compare.py` 拒绝跨配置比较是同一条判据。）
 
 新增判据一律做**变红验证**（把代码改坏，确认测试真的会红）——
 没红过的测试不算测试。骨架在 `redkit.py`（锚点唯一性断言、残留防护、信号处理）：

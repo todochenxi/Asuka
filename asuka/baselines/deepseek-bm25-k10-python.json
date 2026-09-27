@@ -1,0 +1,554 @@
+{
+  "topic": "python",
+  "answerer": "agentos",
+  "retriever": "agentos-bm25",
+  "top_k": 10,
+  "samples_per_task": 1,
+  "corpus_chunks": 704,
+  "generated_at": "2026-09-27T21:15:24+0800",
+  "calibration": false,
+  "context_budget": 8192,
+  "reserved_for_output": 1024,
+  "chars_per_token": 4,
+  "prompt_id": "",
+  "overall": {
+    "n_samples": 9,
+    "n_tasks": 9,
+    "samples_per_task": 1,
+    "n_scorable": 9,
+    "tasks_unscorable": 0,
+    "mean_recall": 0.42592592592592593,
+    "pass_at_1": 0.2222222222222222,
+    "pass_at_k": 0.2222222222222222,
+    "latency_ms": 2069.3333333333335,
+    "retrieval_ms": 0.5560444486844871,
+    "mean_tokens": 2700.6666666666665,
+    "total_tokens": 24306,
+    "total_cost_usd": 0.007599290000000001,
+    "chars_per_hit_point": 327.5,
+    "errors": 0,
+    "context_tokens": 2254.1111111111113,
+    "total_context_tokens": 20287,
+    "context_size": 10.0,
+    "context_dropped_total": 0,
+    "samples_with_context_drops": 0,
+    "n_with_citations": 9,
+    "n_without_citations": 0,
+    "fabricated_total": 0,
+    "samples_with_fabrication": 0,
+    "grounded_rate": 1.0,
+    "evidence_recall": 0.43915343915343913,
+    "evidence_used_rate": 0.7041666666666666
+  },
+  "by_difficulty": {
+    "simple": {
+      "n_samples": 3,
+      "n_tasks": 3,
+      "samples_per_task": 1,
+      "n_scorable": 3,
+      "tasks_unscorable": 0,
+      "mean_recall": 0.8333333333333334,
+      "pass_at_1": 0.6666666666666666,
+      "pass_at_k": 0.6666666666666666,
+      "latency_ms": 2261.3333333333335,
+      "retrieval_ms": 0.567599975814422,
+      "mean_tokens": 2647.3333333333335,
+      "total_tokens": 7942,
+      "total_cost_usd": 0.00255602,
+      "chars_per_hit_point": 218.6,
+      "errors": 0,
+      "context_tokens": 2145.0,
+      "total_context_tokens": 6435,
+      "context_size": 10.0,
+      "context_dropped_total": 0,
+      "samples_with_context_drops": 0,
+      "n_with_citations": 3,
+      "n_without_citations": 0,
+      "fabricated_total": 0,
+      "samples_with_fabrication": 0,
+      "grounded_rate": 1.0,
+      "evidence_recall": 0.27777777777777773,
+      "evidence_used_rate": 0.6
+    },
+    "medium": {
+      "n_samples": 3,
+      "n_tasks": 3,
+      "samples_per_task": 1,
+      "n_scorable": 3,
+      "tasks_unscorable": 0,
+      "mean_recall": 0.16666666666666666,
+      "pass_at_1": 0.0,
+      "pass_at_k": 0.0,
+      "latency_ms": 1774.6666666666667,
+      "retrieval_ms": 0.5358333777015408,
+      "mean_tokens": 2564.3333333333335,
+      "total_tokens": 7693,
+      "total_cost_usd": 0.0022937400000000003,
+      "chars_per_hit_point": 328.0,
+      "errors": 0,
+      "context_tokens": 2076.6666666666665,
+      "total_context_tokens": 6230,
+      "context_size": 10.0,
+      "context_dropped_total": 0,
+      "samples_with_context_drops": 0,
+      "n_with_citations": 3,
+      "n_without_citations": 0,
+      "fabricated_total": 0,
+      "samples_with_fabrication": 0,
+      "grounded_rate": 1.0,
+      "evidence_recall": 0.7222222222222222,
+      "evidence_used_rate": 0.7555555555555555
+    },
+    "hard": {
+      "n_samples": 3,
+      "n_tasks": 3,
+      "samples_per_task": 1,
+      "n_scorable": 3,
+      "tasks_unscorable": 0,
+      "mean_recall": 0.27777777777777773,
+      "pass_at_1": 0.0,
+      "pass_at_k": 0.0,
+      "latency_ms": 2172.0,
+      "retrieval_ms": 0.5646999925374985,
+      "mean_tokens": 2890.3333333333335,
+      "total_tokens": 8671,
+      "total_cost_usd": 0.00274953,
+      "chars_per_hit_point": 599.5,
+      "errors": 0,
+      "context_tokens": 2540.6666666666665,
+      "total_context_tokens": 7622,
+      "context_size": 10.0,
+      "context_dropped_total": 0,
+      "samples_with_context_drops": 0,
+      "n_with_citations": 3,
+      "n_without_citations": 0,
+      "fabricated_total": 0,
+      "samples_with_fabrication": 0,
+      "grounded_rate": 1.0,
+      "evidence_recall": 0.31746031746031744,
+      "evidence_used_rate": 0.7222222222222222
+    }
+  },
+  "items": [
+    {
+      "task_id": "p-simple-01",
+      "difficulty": "simple",
+      "question": "What does `dataclasses.dataclass` do, and what does the `frozen` option change?",
+      "points_total": 2,
+      "hits": [
+        "作用：为类生成 __init__/__repr__ 等方法",
+        "frozen=True 使实例不可变"
+      ],
+      "missed": [],
+      "hit_by": [
+        [
+          "作用：为类生成 __init__/__repr__ 等方法",
+          "adds generated special methods"
+        ],
+        [
+          "frozen=True 使实例不可变",
+          "frozen"
+        ]
+      ],
+      "answer_chars": 527,
+      "latency_ms": 2238.0,
+      "retrieval_ms": 0.6209999555721879,
+      "prompt_tokens": 2467,
+      "completion_tokens": 163,
+      "cost_usd": 0.0008453900000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "python:dataclasses:000",
+          "python:dataclasses:008"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "python:dataclasses:000",
+          "python:dataclasses:008"
+        ],
+        "evidence_not_retrieved": [
+          "python:dataclasses:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 2035,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "p-simple-02",
+      "difficulty": "simple",
+      "question": "What does `json.dumps` return, and how do you make its output deterministic?",
+      "points_total": 2,
+      "hits": [
+        "返回字符串（不是写文件）",
+        "sort_keys=True 保证确定顺序"
+      ],
+      "missed": [],
+      "hit_by": [
+        [
+          "返回字符串（不是写文件）",
+          "returns a json"
+        ],
+        [
+          "sort_keys=True 保证确定顺序",
+          "sort_keys"
+        ]
+      ],
+      "answer_chars": 364,
+      "latency_ms": 1944.0,
+      "retrieval_ms": 0.5430999444797635,
+      "prompt_tokens": 2505,
+      "completion_tokens": 165,
+      "cost_usd": 0.0008578500000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "python:json:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "python:json:001"
+        ],
+        "evidence_not_retrieved": [
+          "python:json:000"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "python:json:005",
+          "python:json:002",
+          "python:json:003",
+          "python:json:004"
+        ]
+      },
+      "context_tokens": 1982,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "p-simple-03",
+      "difficulty": "simple",
+      "question": "What does a `with` statement do, and what two methods does the context manager protocol require?",
+      "points_total": 2,
+      "hits": [
+        "进入调用 __enter__"
+      ],
+      "missed": [
+        "退出（含异常）调用 __exit__"
+      ],
+      "hit_by": [
+        [
+          "进入调用 __enter__",
+          "__enter__"
+        ]
+      ],
+      "answer_chars": 202,
+      "latency_ms": 2602.0,
+      "retrieval_ms": 0.5387000273913145,
+      "prompt_tokens": 2474,
+      "completion_tokens": 168,
+      "cost_usd": 0.00085278,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "python:contextlib:003",
+          "python:contextlib:004",
+          "python:contextlib:014",
+          "python:sqlite3:053",
+          "python:contextlib:009"
+        ],
+        "fabricated": [],
+        "evidence_cited": [],
+        "evidence_not_retrieved": [
+          "python:contextlib:000",
+          "python:contextlib:001"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 2418,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "p-medium-01",
+      "difficulty": "medium",
+      "question": "When should you use a mutable default value for a dataclass field instead of a plain default?",
+      "points_total": 2,
+      "hits": [],
+      "missed": [
+        "可变默认会被拒绝 / 共享",
+        "用 default_factory 生成新对象"
+      ],
+      "hit_by": [],
+      "answer_chars": 95,
+      "latency_ms": 1705.0,
+      "retrieval_ms": 0.5769000854343176,
+      "prompt_tokens": 2618,
+      "completion_tokens": 78,
+      "cost_usd": 0.0007926600000000002,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "python:dataclasses:014",
+          "python:dataclasses:013"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "python:dataclasses:014",
+          "python:dataclasses:013"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "python:dataclasses:012"
+        ]
+      },
+      "context_tokens": 2174,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "p-medium-02",
+      "difficulty": "medium",
+      "question": "What is the difference between `json.dump` and `json.dumps`, and between `json.load` and `json.loads`?",
+      "points_total": 2,
+      "hits": [
+        "s = string"
+      ],
+      "missed": [
+        "无 s = 文件对象"
+      ],
+      "hit_by": [
+        [
+          "s = string",
+          "dumps"
+        ]
+      ],
+      "answer_chars": 115,
+      "latency_ms": 1751.0,
+      "retrieval_ms": 0.5012999754399061,
+      "prompt_tokens": 2527,
+      "completion_tokens": 95,
+      "cost_usd": 0.0007867900000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "python:json:005",
+          "python:json:002",
+          "python:json:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "python:json:005",
+          "python:json:002",
+          "python:json:001"
+        ],
+        "evidence_not_retrieved": [
+          "python:json:000"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "python:json:003",
+          "python:json:004"
+        ]
+      },
+      "context_tokens": 1985,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "p-medium-03",
+      "difficulty": "medium",
+      "question": "When would you use `functools.lru_cache`, and what does it assume about the decorated function?",
+      "points_total": 2,
+      "hits": [],
+      "missed": [
+        "缓存结果（记忆化）",
+        "要求参数可哈希"
+      ],
+      "hit_by": [],
+      "answer_chars": 118,
+      "latency_ms": 1868.0,
+      "retrieval_ms": 0.5293000722303987,
+      "prompt_tokens": 2287,
+      "completion_tokens": 88,
+      "cost_usd": 0.00071429,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "python:functools:000",
+          "python:collections:027"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "python:functools:000"
+        ],
+        "evidence_not_retrieved": [],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 2071,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "p-hard-01",
+      "difficulty": "hard",
+      "question": "Design a helper that turns a generator-based resource setup into a context manager, and explain how errors during teardown are handled.",
+      "points_total": 3,
+      "hits": [
+        "用 @contextmanager 包生成器"
+      ],
+      "missed": [
+        "yield 之前是 setup、之后是 teardown",
+        "异常会被抛回 yield 处"
+      ],
+      "hit_by": [
+        [
+          "用 @contextmanager 包生成器",
+          "contextmanager"
+        ]
+      ],
+      "answer_chars": 216,
+      "latency_ms": 1664.0,
+      "retrieval_ms": 0.5345999961718917,
+      "prompt_tokens": 2580,
+      "completion_tokens": 126,
+      "cost_usd": 0.0008352,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "python:contextlib:012",
+          "python:contextlib:004"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "python:contextlib:012"
+        ],
+        "evidence_not_retrieved": [
+          "python:contextlib:001",
+          "python:contextlib:011",
+          "python:contextlib:013",
+          "python:contextlib:015",
+          "python:contextlib:016"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "python:contextlib:014"
+        ]
+      },
+      "context_tokens": 2526,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "p-hard-02",
+      "difficulty": "hard",
+      "question": "You must run N coroutines concurrently and collect their results, but one failure must not cancel the others. What do you use, and what is the failure boundary?",
+      "points_total": 3,
+      "hits": [],
+      "missed": [
+        "用 asyncio.gather",
+        "return_exceptions=True 隔离失败",
+        "结果按输入顺序返回"
+      ],
+      "hit_by": [],
+      "answer_chars": 188,
+      "latency_ms": 2393.0,
+      "retrieval_ms": 0.6143000209704041,
+      "prompt_tokens": 2715,
+      "completion_tokens": 129,
+      "cost_usd": 0.0008749500000000001,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "python:asyncio-task:004",
+          "python:asyncio-task:001"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "python:asyncio-task:004",
+          "python:asyncio-task:001"
+        ],
+        "evidence_not_retrieved": [
+          "python:asyncio-task:000",
+          "python:asyncio-task:002",
+          "python:asyncio-task:003",
+          "python:asyncio-task:005",
+          "python:asyncio-task:006",
+          "python:asyncio-task:007",
+          "python:asyncio-task:008",
+          "python:asyncio-task:009",
+          "python:asyncio-task:010",
+          "python:asyncio-task:012",
+          "python:asyncio-task:013"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": [
+          "python:asyncio-task:011"
+        ]
+      },
+      "context_tokens": 2524,
+      "context_size": 10,
+      "context_dropped": []
+    },
+    {
+      "task_id": "p-hard-03",
+      "difficulty": "hard",
+      "question": "You need to find all files under a directory tree matching a pattern across nested folders. What is the idiomatic pathlib approach, and what is its failure boundary?",
+      "points_total": 2,
+      "hits": [
+        "用 rglob 递归匹配"
+      ],
+      "missed": [
+        "惰性生成器（迭代时才扫）"
+      ],
+      "hit_by": [
+        [
+          "用 rglob 递归匹配",
+          "rglob"
+        ]
+      ],
+      "answer_chars": 795,
+      "latency_ms": 2459.0,
+      "retrieval_ms": 0.5451999604701996,
+      "prompt_tokens": 2884,
+      "completion_tokens": 237,
+      "cost_usd": 0.00103938,
+      "error": "",
+      "out_of_corpus": [],
+      "citation": {
+        "cited": [
+          "python:pathlib:002",
+          "python:pathlib:010",
+          "python:pathlib:015",
+          "python:pathlib:017"
+        ],
+        "fabricated": [],
+        "evidence_cited": [
+          "python:pathlib:002",
+          "python:pathlib:015"
+        ],
+        "evidence_not_retrieved": [
+          "python:pathlib:014"
+        ],
+        "evidence_dropped": [],
+        "evidence_ignored": []
+      },
+      "context_tokens": 2572,
+      "context_size": 10,
+      "context_dropped": []
+    }
+  ]
+}
