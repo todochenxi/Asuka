@@ -50,6 +50,7 @@ from packages.agent_api.handlers import (
     list_approvals,
     list_run_executions,
     list_runs,
+    list_tools,
     start_run,
     step_run,
 )
@@ -246,6 +247,12 @@ def build_app(
         registry = getattr(control_plane, "registry", None)
         agents = registry.all() if registry is not None else ()
         return JSONResponse({"items": [a.as_dict() for a in agents]})
+
+    @app.get("/tools")
+    def _list_tools() -> Any:
+        """M115：本进程能调的工具（连接视图的数据源）。"""
+        response = list_tools(control_plane)
+        return JSONResponse(dict(response.body), status_code=response.status)
 
     @app.get("/runs/{run_id}/approvals")
     def _list_run_approvals(run_id: str) -> Any:

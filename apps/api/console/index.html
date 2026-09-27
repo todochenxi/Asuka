@@ -617,6 +617,16 @@ pre.payload{
 
         <div id="ov-alert"></div>
 
+        <!-- M115：连接 —— 本进程能调的工具（native / mcp / …） -->
+        <div class="card" id="conn-card" hidden style="margin-bottom:16px">
+          <div class="card-h">
+            <svg viewBox="0 0 24 24"><path d="M9 12h6M7 8H5a4 4 0 0 0 0 8h2M17 8h2a4 4 0 0 1 0 8h-2"/></svg>
+            <h2>连接 · 工具</h2>
+            <span class="hint" id="conn-hint">本进程能调的工具（GET /tools）</span>
+          </div>
+          <div id="conn-body"></div>
+        </div>
+
         <!-- M111：业务指标（来自 GET /metrics）。不配取数器时后端 503，这里整块隐藏 -->
         <div class="card" id="metrics-card" hidden style="margin-bottom:16px">
           <div class="card-h">
@@ -881,6 +891,11 @@ pre.payload{
             </button>
             <button class="btn btn-sm btn-ghost" id="btn-trace-use">用当前选中的 Run</button>
           </div>
+          <!-- M114：Execution 与取消归因（数据源：GET /runs/{id}/executions） -->
+          <div id="exec-card" hidden style="margin-bottom:16px">
+            <div class="lay-h" style="margin:0 0 9px">Execution · 取消归因</div>
+            <div id="exec-body"></div>
+          </div>
           <!-- M112：账本太长时先过滤 / 按 Step 分组 -->
           <div class="row" style="margin-bottom:14px;gap:10px;align-items:center">
             <input type="text" id="trace-filter" class="mono" style="flex:1"
@@ -1077,6 +1092,8 @@ const state = {
   history: [],
   serverRuns: [],
   metrics: null,
+  executions: null,
+  tools: null,
   version: "",
   health: null,
   answer: "",
@@ -1222,6 +1239,40 @@ async function fetchMetrics() {
     state.metrics = res.ok ? parseProm(await res.text()) : null;
   } catch (e) { state.metrics = null; }
 }
+/* ---------- M115：连接 · 工具 ---------- */
+function protoClass(p) {
+  const x = String(p || "").toLowerCase();
+  if (x === "mcp") return "brand";
+  if (x === "sandbox") return "warn";
+  if (x === "agent") return "violet";
+  if (x === "http") return "info";
+  return "mute";
+}
+function renderConn() {
+  const card = $("conn-card"), body = $("conn-body");
+  if (!card || !body) return;
+  const t = state.tools;
+  if (!t || !(t.items || []).length) { card.hidden = true; return; }
+  card.hidden = false;
+  const hint = $("conn-hint");
+  if (hint) hint.textContent = t.items.length + " 个工具" +
+    (t.source === "none" ? "（无 tool runtime）" : "");
+  body.innerHTML = t.items.map(function (x) {
+    return '<div class="tl-e"><div class="tl-top"><span class="tl-kind">' + esc(x.name) +
+      "</span>" +
+      '<span class="tag ' + protoClass(x.protocol) + '">' + esc(x.protocol || "native") + "</span>" +
+      '<span class="tag">' + esc(x.side_effect || "") + "</span>" +
+      '<span class="tl-seq">v' + esc(x.version) + "</span></div>" +
+      (x.description ? '<div class="tl-sum">' + esc(x.description) + "</div>" : "") +
+      "</div>";
+  }).join("");
+}
+async function fetchTools() {
+  const r = await api("GET", "/tools");
+  state.tools = r.ok ? r.data : null;
+  renderConn();
+}
+
 function renderMetrics() {
   const card = $("metrics-card"), grid = $("metrics-grid");
   if (!card || !grid) return;
@@ -1420,7 +1471,11 @@ function renderLayers(t) {
   const card = $("layers-card"), el = $("layers");
   if (!card || !el) return;
   const L = (t && t.layers) || null;
-  if (!L || !Object.keys(L).length) { card.hidden = true; el.innerHTML = ""; return; }
+  if (!L || !Object.keys(L).length) {
+    card.hidden = true; el.innerHTML = "";
+    $("exec-card").hidden = true;               // 没账本 → 隐藏执行卡片
+    return;
+  }
   card.hidden = false;
   const secs = [];
 
@@ -1487,6 +1542,41 @@ function renderLayers(t) {
   ])));
 
   el.innerHTML = secs.join("");
+}
+
+/* ---------- M114：Execution 与取消归因 ---------- */
+async function fetchExecutions(run_id) {
+  state.executions = null;
+  if (!run_id) { renderExecutions(); return; }
+  const r = await api("GET", "/runs/" + encodeURIComponent(run_id) + "/executions");
+  state.executions = r.ok ? r.data : null;
+  renderExecutions();
+}
+function renderExecutions() {
+  const card = $("exec-card"), body = $("exec-body");
+  if (!card || !body) return;
+  const e = state.executions;
+  if (!e) { card.hidden = true; return; }
+  card.hidden = false;
+  if (e.source === "none") {
+    /* 内存栈：**没有查询器**，不是"这条 Run 没有 Execution" —— 两件事 */
+    body.innerHTML = '<div class="hint">这个部署没有配 Execution 查询器（内存栈）—— ' +
+      "不是“这条 Run 没有 Execution”，而是这里读不到。接 PG 后可见。</div>";
+    return;
+  }
+  const items = e.items || [];
+  if (!items.length) { body.innerHTML = '<div class="hint">没有 Execution 记录。</div>'; return; }
+  body.innerHTML = items.map(function (x) {
+    const by = x.cancellation_by ? (' · ' + esc(x.cancellation_by)) : "";
+    const reason = x.cancellation_reason ? (' · ' + esc(x.cancellation_reason)) : "";
+    return '<div class="tl-e"><div class="tl-top"><span class="tl-kind">' + esc(x.status || "?") +
+      '</span><span class="tl-seq">' + esc(x.execution_id) + "</span></div>" +
+      '<div class="tl-ids">' +
+      (x.cancellation_requested
+        ? '<span class="tag">取消请求' + by + reason + "</span>"
+        : '<span class="tag">未取消</span>') +
+      "</div></div>";
+  }).join("");
 }
 
 function traceEntryHtml(e, i) {
@@ -1778,6 +1868,7 @@ async function startEvalLive() {
    ============================================================ */
 async function refreshAll() {
   await fetchMetrics();
+  await fetchTools();
   const results = await Promise.all([
     api("GET", "/health"),
     api("GET", "/openapi.json"),
@@ -1795,6 +1886,7 @@ async function refreshAll() {
   state.serverRuns = (rs.ok && rs.data && rs.data.items) ? rs.data.items : [];
   renderHealth();
   renderMetrics();
+  renderConn();
   renderAgents();
   renderApprovals();
   renderRunList();
@@ -1832,6 +1924,7 @@ async function loadRun(run_id, opts) {
   state.runId = run_id;
   state.run = r.data;
   state.answer = await fetchAnswer(run_id);
+  await fetchExecutions(run_id);
   renderRun();
   renderRunList();
   const tr = $("trace-rid");

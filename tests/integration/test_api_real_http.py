@@ -144,6 +144,24 @@ class TheProcessServesTest(RealHttpCase):
         # M112：账本过滤 / 按 Step 分组
         self.assertIn('id="trace-filter"', console.text)
         self.assertIn("按 Step 分组", console.text)
+        # M114：Execution 与取消归因
+        self.assertIn("取消归因", console.text)
+        # M115：连接 · 工具
+        self.assertIn("连接 · 工具", console.text)
+
+    def test_the_executions_endpoint_names_its_source(self) -> None:
+        """M114：`source` 要如实说这份列表是**从哪来的**。
+
+        真 HTTP 部署配了 PG 查询器（`source="executions"`）；内存栈没有
+        （`source="none"`）。两者都会给一个空 `items`，页面上长得一样 ——
+        而"这条 Run 没有 Execution"与"这里读不到"指向完全不同的排查方向。
+        """
+        run_id = self._start()["run_id"]
+        r = self.client.get(f"/runs/{run_id}/executions")
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertIn("items", body)
+        self.assertIn(body["source"], ("executions", "none"))
 
         chat = self.client.get("/")
         self.assertEqual(chat.status_code, 200, chat.text[:200])

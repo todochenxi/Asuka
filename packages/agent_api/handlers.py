@@ -260,7 +260,40 @@ def list_run_executions(cp: ControlPlane, run_id: str) -> ApiResponse:
     """
     lookup = getattr(cp, "executions", None)
     items = lookup(run_id) if lookup is not None else []
-    return _ok({"run_id": run_id, "items": list(items)})
+    # M114：没有查询器（内存栈）时**不能只给空列表** —— 那读起来是"这条 Run 没有
+    # Execution"，而真相是"这个部署没装查询器"。两者在页面上长得一样，
+    # 却指向完全不同的排查方向（PR-19：宁可少说，也要说清为什么）。
+    return _ok(
+        {
+            "run_id": run_id,
+            "items": list(items),
+            "source": "executions" if lookup is not None else "none",
+        }
+    )
+
+
+@guard
+def list_tools(cp: ControlPlane) -> ApiResponse:
+    """`GET /tools` —— 本进程能调的工具（M115 连接视图）。
+
+    ⚠️ 与 `list_runs` 同一条判据：这是**这一进程**的工具表（从它在手的
+    某个 stack 的 `tool_runtime` 读），不是全局清单。没有装载过任何 Run
+    时为空 —— 如实说"没读到"，不假装"一个工具都没有"。
+    """
+    from .metrics import tool_runtime_views
+
+    tool_runtime = None
+    for stack in getattr(cp, "runs", {}).values():
+        tool_runtime = getattr(stack, "tool_runtime", None)
+        if tool_runtime is not None:
+            break
+    items = list(tool_runtime_views(tool_runtime)) if tool_runtime is not None else []
+    return _ok(
+        {
+            "items": items,
+            "source": "tool_runtime" if tool_runtime is not None else "none",
+        }
+    )
 
 
 @guard

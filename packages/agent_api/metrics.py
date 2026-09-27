@@ -108,6 +108,35 @@ def business_metrics(
     )
 
 
+def tool_runtime_views(tool_runtime: Any) -> tuple[dict[str, Any], ...]:
+    """M115：把 `ToolRegistry` 里的工具摊成可展示的形状（名字 / 版本 / 协议 /
+    副作用 / 描述）。它回答"这个进程**能调哪些工具**"，是连接视图的数据源。
+
+    只读 `specs()` —— 不碰实现，也不推断"某类工具一定存在于某处"。
+    """
+    registry = getattr(tool_runtime, "registry", None)
+    if registry is None:
+        return ()
+    out: list[dict[str, Any]] = []
+    for name, spec in registry.specs().items():
+        out.append(
+            {
+                "name": str(name),
+                "version": str(getattr(spec, "version", "")),
+                "protocol": _status_value(getattr(spec, "protocol", "")),
+                "side_effect": _status_value(getattr(spec, "side_effect", "")),
+                "description": str(getattr(spec, "description", "")),
+            }
+        )
+    return tuple(out)
+
+
+def _status_value(obj: Any) -> str:
+    if obj is None:
+        return ""
+    return str(getattr(obj, "value", obj))
+
+
 __all__ = [
     "PENDING_APPROVALS",
     "PENDING_EXECUTIONS",
@@ -116,4 +145,5 @@ __all__ = [
     "Metric",
     "business_metrics",
     "render_prometheus",
+    "tool_runtime_views",
 ]
