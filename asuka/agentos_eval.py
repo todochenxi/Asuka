@@ -58,6 +58,17 @@ from .textutil import CHARS_PER_TOKEN
 EVAL_AGENT_ID = "asuka-eval"
 
 
+def _build_rerank(choice: str) -> Any:
+    """M123：把 `--rerank` 的选择变成 Rerank 实现。`""` = 不重排（现状）。"""
+    if not choice:
+        return None
+    if choice == "lexical":
+        from packages.agent_context.retrieval import LexicalRerank
+
+        return LexicalRerank()
+    raise ValueError(f"unknown rerank: {choice!r}")
+
+
 @dataclass
 class _Ctx:
     """`build_prompt` 只要求 `.key` / `.text`（duck-typed）。"""
@@ -384,6 +395,8 @@ def run_evaluation(
     #: ⚠️ 采样数是**被测量的一部分**：vequip 不同采样数的两次跑**不可比**
     #: （同 `compare.py` 拒绝跨配置比较）—— 采样数进 Trace 身份，改它会拒绝并排。
     samples_per_task: int = 1,
+    #: M123：RAG 链 `→ Rerank →` 那一步的实现。`None` = 不重排。
+    rerank: Any = None,
     gateway: Any = None,
     store: Any = None,
     embedder: Any = None,
@@ -409,6 +422,7 @@ def run_evaluation(
         store=store,
         embedder=embedder,
         allow_non_semantic=allow_non_semantic,
+        rerank=rerank,
     )
     factory = build_stack_factory(
         kb=kb,
@@ -467,6 +481,12 @@ def build_parser() -> Any:
         default=1,
         help="每题采样几条 Run（1=现状；3=s3，出 pass@3 与运行间噪声量级）",
     )
+    parser.add_argument(
+        "--rerank",
+        default="",
+        choices=["", "lexical"],
+        help="RAG 链的 Rerank 步：留空=不重排；lexical=词法重排（LexicalRerank）",
+    )
     parser.add_argument("--embedder", default="auto", choices=["auto", "api", "local", "hashing"])
     parser.add_argument("--model-path", default="")
     parser.add_argument("--allow-non-semantic", action="store_true")
@@ -518,6 +538,7 @@ def _run(args: Any) -> int:
     chars_per_token=args.chars_per_token,
     limit=args.limit,
     samples_per_task=args.samples,
+    rerank=_build_rerank(args.rerank),
     store=store,
     embedder=embedder,
     allow_non_semantic=args.allow_non_semantic,

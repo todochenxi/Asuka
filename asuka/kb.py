@@ -349,6 +349,7 @@ def build_knowledge_base(
     embedder: Embedder | None = None,
     allow_non_semantic: bool = False,
     permission: PermissionFilter | None = None,
+    rerank: Any = None,
 ) -> KnowledgeBase:
     """造一个知识库。
 
@@ -357,6 +358,10 @@ def build_knowledge_base(
 
     `permission` 默认 `PublicCorpusFilter`（fail-closed）。
     **不提供 `None` 表示"不过滤"这个选项** —— C-9 说 permission 是构造期必填。
+
+    `rerank`（M123）：RAG 链里 `→ Rerank →` 那一步的实现（如
+    `packages.agent_context.LexicalRerank`）。`None` = 不重排（现状基线）。
+    它**只换顺序、不增不删**，也**不是**安全边界（C-9 仍由 permission 单独负责）。
     """
     perm = permission or PublicCorpusFilter()
     if kind == "bm25":
@@ -374,9 +379,12 @@ def build_knowledge_base(
     else:
         raise ValueError(f"unknown retriever kind: {kind!r} (bm25/dense)")
 
+    pipeline_kwargs: dict[str, Any] = {"retriever": retriever, "permission": perm}
+    if rerank is not None:
+        pipeline_kwargs["rerank"] = rerank
     return KnowledgeBase(
         topic=topic,
-        pipeline=RetrievalPipeline(retriever=retriever, permission=perm),
+        pipeline=RetrievalPipeline(**pipeline_kwargs),
         retriever=retriever,
         kind=kind,
     )
