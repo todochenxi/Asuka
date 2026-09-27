@@ -861,6 +861,30 @@ PYTHONPATH=. "$PY_UNIT" -m unittest tests.unit.test_asuka_agentos_eval
 > 这张表证明的是"**判据在第二类语料上也测得出来**"，**不是**"python 比 redis 好"。
 > 跨题集比成绩，和 `compare.py` 拒绝跨配置比较是同一条判据。
 
+**实验环（`asuka.experiment`）**：多配置对照 + **噪声门槛** → **三态结论**
+（更好 / 更差 / **分辨不出**）。它回答"这个差是系统变了，还是抽签抽得好"。
+
+```bash
+# 只有被测旋钮可以不同（--vary 声明是哪一个），其余逐项相同，否则拒绝并排
+"$PY_HEAVY" -m asuka.experiment \
+    base=baselines/deepseek-bm25-k10-s3-promptv1.json \
+    v2=baselines/deepseek-bm25-k10-s3-promptv2.json \
+    --vary prompt_id --noise 0.033
+```
+
+> `--noise` 是**实测**的运行间波动（同配置重复跑），由调用方给出并记进报告；
+> 不给就**只印差值、不下结论**。本项目 redis 三次 s3 实测跨度约 **0.033**。
+
+两条已落盘的实验（`baselines/experiment-*.md`）：
+
+| 实验 | 要点召回 | pass@K | 依据召回 |
+|---|---|---|---|
+| prompt v1→v2 | 分辨不出 | **更差**（-0.0417） | 分辨不出 |
+| bm25→dense | 分辨不出 | **更差**（-0.0417） | **更好**（+0.0557） |
+
+即："**检索变好 ≠ 答得变好**"（dense 依据召回涨了，pass@K 反而掉了）——
+这次是形式化结论，不是感觉。它**绝不输出"最优配置"**，只给带门槛的三态。
+
 新增判据一律做**变红验证**（把代码改坏，确认测试真的会红）——
 没红过的测试不算测试。骨架在 `redkit.py`（锚点唯一性断言、残留防护、信号处理）：
 

@@ -1,0 +1,62 @@
+{
+  "baseline": "base",
+  "noise": 0.033,
+  "arms": [
+    {
+      "label": "base",
+      "retriever": "bm25",
+      "top_k": 10,
+      "prompt_id": "",
+      "samples_per_task": 3
+    },
+    {
+      "label": "dense",
+      "retriever": "dense",
+      "top_k": 10,
+      "prompt_id": "",
+      "samples_per_task": 3
+    }
+  ],
+  "verdicts": [
+    {
+      "metric": "mean_recall",
+      "arm": "dense",
+      "baseline": 0.21319444444444444,
+      "value": 0.20347222222222222,
+      "delta": -0.009722222222222215,
+      "conclusion": "indistinguishable"
+    },
+    {
+      "metric": "pass_at_1",
+      "arm": "dense",
+      "baseline": 0.027777777777777776,
+      "value": 0.0,
+      "delta": -0.027777777777777776,
+      "conclusion": "indistinguishable"
+    },
+    {
+      "metric": "pass_at_k",
+      "arm": "dense",
+      "baseline": 0.041666666666666664,
+      "value": 0.0,
+      "delta": -0.041666666666666664,
+      "conclusion": "worse"
+    },
+    {
+      "metric": "evidence_recall",
+      "arm": "dense",
+      "baseline": 0.5455357142857143,
+      "value": 0.6012072434607646,
+      "delta": 0.05567152917505025,
+      "conclusion": "better"
+    },
+    {
+      "metric": "evidence_used_rate",
+      "arm": "dense",
+      "baseline": 0.908625730994152,
+      "value": 0.878021978021978,
+      "delta": -0.030603752972173992,
+      "conclusion": "indistinguishable"
+    }
+  ]
+}
